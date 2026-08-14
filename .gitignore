@@ -55,3 +55,5 @@ venv.bak/
 
 # Model files
 *.pt
+
+.reasonix

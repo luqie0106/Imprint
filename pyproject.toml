@@ -4,21 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photo-sort"
-version = "0.1.0"
-description = "Sort photo albums by detected YOLO labels"
+version = "0.2.0"
+description = "NEF 连拍优选工具"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "ultralytics>=8.3.0",
   "Pillow>=10.0.0",
+  "rawpy>=0.21.0",
+  "opencv-python>=4.8.0",
+  "numpy>=1.24.0",
 ]
-
-[project.scripts]
-photo-sort = "cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["cli", "config", "detector", "sorter", "gui", "model_store", "exif_reader"]
+py-modules = ["config", "burst_filter", "burst_gui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

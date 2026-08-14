@@ -2,7 +2,6 @@ import importlib
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_PATH = PROJECT_ROOT / "src"
 
@@ -21,7 +20,7 @@ def _prompt_path(prompt: str) -> Path:
         print("路径无效，请输入存在的文件夹路径。")
 
 
-def _prompt_optional_float(prompt: str, default: float) -> float:
+def _prompt_float(prompt: str, default: float) -> float:
     raw = input(prompt).strip()
     if not raw:
         return default
@@ -32,83 +31,44 @@ def _prompt_optional_float(prompt: str, default: float) -> float:
         return default
 
 
-def _prompt_yes_no(prompt: str, default: bool = False) -> bool:
-    default_text = "y" if default else "n"
-    raw = input(f"{prompt} (y/n, 默认{default_text}): ").strip().lower()
-    if not raw:
-        return default
-    return raw in {"y", "yes"}
-
-
-def run_console() -> None:
+def run_burst_console() -> None:
     _ensure_src_on_path()
-    sort_config = importlib.import_module("config").SortConfig
-    detector_cls = importlib.import_module("detector").YoloDetector
-    sorter_cls = importlib.import_module("sorter").AlbumSorter
+    BurstFilter = importlib.import_module("burst_filter").BurstFilter
 
-    print("请输入要整理的目录信息：")
-    source_dir = _prompt_path("源目录路径: ")
-    output_dir = _prompt_path("目标目录路径: ")
-    confidence = _prompt_optional_float("置信度(默认0.35): ", 0.35)
-    unknown_bucket = input("未识别目录名(默认unknown): ").strip() or "unknown"
-    copy_mode = (input("处理方式 copy/move (默认copy): ").strip().lower() or "copy") != "move"
-    recursive_scan = _prompt_yes_no("是否递归处理子目录", default=False)
+    print("=== NEF 连拍优选筛选 ===")
+    input_dir = _prompt_path("NEF 文件目录路径: ")
+    review_subdir = input('淘汰子目录名称（默认"审查_连拍淘汰"）: ').strip() or "审查_连拍淘汰"
+    gap = _prompt_float("连拍时间阈值，秒（默认1.5）: ", 1.5)
+    similarity = _prompt_float("视觉相似度阈值 0~1（默认0.85）: ", 0.85)
 
-    config = sort_config(
-        source_dir=source_dir,
-        output_dir=output_dir,
-        model_name="yolo26n.pt",
-        confidence=confidence,
-        copy_mode=copy_mode,
-        unknown_bucket=unknown_bucket,
-        recursive_scan=recursive_scan,
-    )
+    result = BurstFilter(
+        gap_seconds=gap,
+        similarity_threshold=similarity,
+        review_subdir=review_subdir,
+    ).run(input_dir)
 
-    try:
-        detector = detector_cls(model_name=config.model_name, confidence=config.confidence)
-    except FileNotFoundError as exc:
-        print(f"自动下载模型失败: {exc}")
-        local_model = input("请输入本地 .pt 模型路径（留空则退出）: ").strip()
-        if not local_model:
-            print("未提供本地模型，已退出。")
-            return
-        local_model_path = Path(local_model).expanduser()
-        if not local_model_path.exists():
-            print("本地模型路径无效，已退出。")
-            return
-        config.model_name = str(local_model_path)
-        detector = detector_cls(model_name=config.model_name, confidence=config.confidence)
-
-    sorter = sorter_cls(config=config, detector=detector)
-    summary = sorter.sort()
-
-    print(f"模型缓存路径: {detector.model_path}")
-    if not summary:
-        print("未发现支持的图片文件。")
-        return
-
-    print("整理完成：")
-    for category, count in sorted(summary.items()):
-        print(f"- {category}: {count}")
+    print("\n── 处理完成 ────────────────────────────────")
+    print(f"  总 NEF 文件数：    {result.total}")
+    print(f"  单拍跳过（保留）：  {result.skipped_single}")
+    print(f"  连拍组数：         {result.burst_groups}")
+    print(f"  已移动淘汰数：     {result.moved}")
+    if result.review_dir:
+        print(f"  淘汰目录：         {result.review_dir}")
+    for err in result.errors:
+        print(f"  ⚠ {err}")
 
 
-def run_gui_or_fallback(force_console: bool = False) -> None:
+def run_gui() -> None:
     _ensure_src_on_path()
-    if force_console:
-        run_console()
-        return
-
     try:
-        launch_gui = importlib.import_module("gui").launch_gui
-        launch_gui()
+        importlib.import_module("burst_gui").launch_burst_gui()
     except Exception:
-        print("GUI 启动失败，已切换到命令行交互模式。")
-        run_console()
-
-
-def _parse_force_console(args: list[str]) -> bool:
-    return "--cli" in args
+        print("GUI 启动失败，已切换到命令行模式。")
+        run_burst_console()
 
 
 if __name__ == "__main__":
-    run_gui_or_fallback(force_console=_parse_force_console(sys.argv[1:]))
+    if "--cli" in sys.argv:
+        run_burst_console()
+    else:
+        run_gui()
