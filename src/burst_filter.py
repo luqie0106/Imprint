@@ -12,6 +12,7 @@ burst_filter.py — NEF 连拍优选与冗余片自动移动
 from __future__ import annotations
 
 import shutil
+import sys
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -298,7 +299,12 @@ class BurstFilter:
       result = BurstFilter().run(Path("/path/to/nef/folder"))
     """
 
-    _NEF_SUFFIXES = {".nef", ".NEF"}
+    _RAW_SUFFIXES = {
+        ".nef", ".NEF",   # Nikon
+        ".arw", ".ARW",   # Sony
+        ".cr3", ".CR3",   # Canon
+        ".raf", ".RAF",   # Fuji
+    }
 
     def __init__(
         self,
@@ -331,12 +337,12 @@ class BurstFilter:
 
     def run(self, input_dir: Path) -> BurstFilterResult:
         result = BurstFilterResult()
-        nef_files = self._scan_nef(input_dir)
+        nef_files = self._scan_raw(input_dir)
         result.total = len(nef_files)
         if not nef_files:
             return result
 
-        self._notify(f"扫描到 {result.total} 张 NEF，正在分析连拍组…")
+        self._notify(f"扫描到 {result.total} 张 RAW 文件，正在分析连拍组…")
         groups = self._grouper.group(nef_files)
 
         burst_groups = [g for g in groups if len(g) > 1]
@@ -359,10 +365,10 @@ class BurstFilter:
 
         return result
 
-    def _scan_nef(self, input_dir: Path) -> list[Path]:
+    def _scan_raw(self, input_dir: Path) -> list[Path]:
         return sorted(
             p for p in input_dir.iterdir()
-            if p.is_file() and p.suffix in self._NEF_SUFFIXES
+            if p.is_file() and p.suffix in self._RAW_SUFFIXES
         )
 
     def _process_group(

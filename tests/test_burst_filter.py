@@ -227,6 +227,8 @@ class TestBurstFilter:
 
         flt._scorer.extract_preview = fake_extract
         flt._scorer.score = NefSharpnessScorer().score  # 使用真实打分
+        # mock 美学评分：全部返回 1.0（全部通过初筛），测试纯锐度选优逻辑
+        flt._aesthetic_scorer.score = MagicMock(return_value=1.0)
 
         result = flt.run(nef_dir)
 

@@ -35,8 +35,8 @@ def run_burst_console() -> None:
     _ensure_src_on_path()
     BurstFilter = importlib.import_module("burst_filter").BurstFilter
 
-    print("=== NEF 连拍优选筛选 ===")
-    input_dir = _prompt_path("NEF 文件目录路径: ")
+    print("=== RAW 连拍优选筛选（NEF / ARW / CR3 / RAF）===")
+    input_dir = _prompt_path("RAW 文件目录路径: ")
     review_subdir = input('淘汰子目录名称（默认"审查_连拍淘汰"）: ').strip() or "审查_连拍淘汰"
     gap = _prompt_float("连拍时间阈值，秒（默认1.5）: ", 1.5)
     similarity = _prompt_float("视觉相似度阈值 0~1（默认0.85）: ", 0.85)

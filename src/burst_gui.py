@@ -100,7 +100,7 @@ def _pill_button(parent, text, command, big=False):
 class BurstFilterGUI:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("NEF 连拍优选")
+        self.root.title("RAW 连拍优选")
         self.root.configure(bg=_BG)
         self.root.geometry("720x560")
         self.root.resizable(False, False)
@@ -120,9 +120,9 @@ class BurstFilterGUI:
         # ── 标题 ──
         hdr = tk.Frame(self.root, bg=_BG, pady=18)
         hdr.pack(fill="x", padx=28)
-        tk.Label(hdr, text="📷  NEF 连拍优选", bg=_BG, fg=_TEXT,
+        tk.Label(hdr, text="📷  RAW 连拍优选", bg=_BG, fg=_TEXT,
                  font=(_FAM_TITLE, 22, "bold")).pack(anchor="w")
-        tk.Label(hdr, text="自动识别连拍组 · 保留最清晰帧 · 移动冗余片至审查目录",
+        tk.Label(hdr, text="支持 NEF / ARW / CR3 / RAF · 保留最清晰帧 · 移动冗余片至审查目录",
                  bg=_BG, fg=_TEXT_DIM, font=(_FAM, 12)).pack(anchor="w", pady=(3, 0))
         tk.Frame(self.root, bg=_BORDER, height=1).pack(fill="x", padx=28)
 
@@ -135,8 +135,8 @@ class BurstFilterGUI:
         di = tk.Frame(dc, bg=_SURFACE, padx=16, pady=14)
         di.pack(fill="x")
 
-        _label(di, "📁  NEF 文件目录", bold=True).pack(anchor="w")
-        _label(di, "选择包含 .NEF 文件的文件夹", size=10,
+        _label(di, "📁  RAW 文件目录", bold=True).pack(anchor="w")
+        _label(di, "选择包含 NEF / ARW / CR3 / RAF 文件的文件夹", size=10,
                color=_TEXT_DIM).pack(anchor="w", pady=(2, 8))
 
         row = tk.Frame(di, bg=_SURFACE)
