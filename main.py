@@ -40,11 +40,13 @@ def run_burst_console() -> None:
     review_subdir = input('淘汰子目录名称（默认"审查_连拍淘汰"）: ').strip() or "审查_连拍淘汰"
     gap = _prompt_float("连拍时间阈值，秒（默认1.5）: ", 1.5)
     similarity = _prompt_float("视觉相似度阈值 0~1（默认0.85）: ", 0.85)
+    keep_count = int(_prompt_float("每组保留张数（默认1）: ", 1.0))
 
     result = BurstFilter(
         gap_seconds=gap,
         similarity_threshold=similarity,
         review_subdir=review_subdir,
+        keep_count=keep_count,
     ).run(input_dir)
 
     print("\n── 处理完成 ────────────────────────────────")

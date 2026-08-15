@@ -102,13 +102,14 @@ class BurstFilterGUI:
         self.root = tk.Tk()
         self.root.title("RAW 连拍优选")
         self.root.configure(bg=_BG)
-        self.root.geometry("720x560")
-        self.root.resizable(False, False)
+        self.root.geometry("720x660")
+        self.root.resizable(True, False)
 
         self.input_dir_var    = tk.StringVar()
         self.review_subdir_var = tk.StringVar(value="审查_连拍淘汰")
         self.gap_var          = tk.StringVar(value="1.5")
         self.similarity_var   = tk.StringVar(value="0.85")
+        self.keep_count_var   = tk.StringVar(value="1")
         self._running = False
 
         self._build_ui()
@@ -160,6 +161,7 @@ class BurstFilterGUI:
         self._param_row(g, 0, "淘汰子目录名称",   self.review_subdir_var, "相对于输入目录的子文件夹名")
         self._param_row(g, 1, "连拍时间阈值（秒）", self.gap_var,           "前后间隔 ≤ 此值视为连拍候选")
         self._param_row(g, 2, "视觉相似度阈值",   self.similarity_var,    "直方图相关系数阈值，0~1，越高越严格")
+        self._param_row(g, 3, "每组保留张数",     self.keep_count_var,    "1 = 仅保留最优 1 张；填 2 则保留最优 2 张，以此类推")
 
         # ── 执行行 ──
         br = tk.Frame(body, bg=_BG)
@@ -177,10 +179,10 @@ class BurstFilterGUI:
                  font=(_FAM, 11), anchor="w").grid(
             row=row * 2, column=0, sticky="w", padx=(0, 12), pady=(0, 2))
         _entry(parent, var, width=26).grid(
-            row=row * 2, column=1, sticky="we", ipady=5, padx=(0, 20))
+            row=row * 2, column=1, sticky="we", ipady=4, padx=(0, 20))
         tk.Label(parent, text=hint, bg=_SURFACE, fg=_TEXT_DIM,
                  font=(_FAM, 10)).grid(
-            row=row * 2 + 1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+            row=row * 2 + 1, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
     def _apply_style(self):
         s = ttk.Style()
@@ -207,26 +209,29 @@ class BurstFilterGUI:
         try:
             gap = float(self.gap_var.get().strip())
             sim = float(self.similarity_var.get().strip())
+            keep = int(self.keep_count_var.get().strip())
             assert 0.0 < gap <= 30.0
             assert 0.0 < sim <= 1.0
+            assert keep >= 1
         except (ValueError, AssertionError):
-            messagebox.showerror("参数错误", "时间阈值范围 0~30，相似度阈值范围 0~1。")
+            messagebox.showerror("参数错误", "时间阈值范围 0~30，相似度阈值范围 0~1，保留张数 ≥ 1。")
             return
 
         subdir = self.review_subdir_var.get().strip() or "审查_连拍淘汰"
         self._set_running(True)
         threading.Thread(
             target=self._worker,
-            args=(input_dir, gap, sim, subdir),
+            args=(input_dir, gap, sim, subdir, keep),
             daemon=True,
         ).start()
 
-    def _worker(self, input_dir, gap, sim, subdir):
+    def _worker(self, input_dir, gap, sim, subdir, keep):
         try:
             flt = BurstFilter(
                 gap_seconds=gap,
                 similarity_threshold=sim,
                 review_subdir=subdir,
+                keep_count=keep,
                 progress_callback=lambda msg: self.root.after(
                     0, self._set_status, msg),
             )

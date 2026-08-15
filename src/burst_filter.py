@@ -311,11 +311,13 @@ class BurstFilter:
         gap_seconds: float = DEFAULT_TIME_GAP_SECONDS,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
         review_subdir: str = DEFAULT_REVIEW_SUBDIR,
+        keep_count: int = 1,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.gap_seconds = gap_seconds
         self.similarity_threshold = similarity_threshold
         self.review_subdir = review_subdir
+        self.keep_count = max(1, keep_count)   # 至少保留 1 张
         self.progress_callback = progress_callback
 
         self._exif_reader = NefExifReader()
@@ -397,31 +399,34 @@ class BurstFilter:
             return 0, errors
 
         moved = 0
-        
-        # 1. AI 初筛：只保留得分 >= 50% 的构图合格候选者
+
+        # 1. AI 初筛：只保留构图得分 >= 50% 的候选者
         candidates = [p for p in scored if getattr(p, 'aesthetic_prob', 1.0) >= 0.5 and p.score >= 0]
-        
-        best = None
+
         if not candidates:
-            # 全军覆没：组内所有照片构图均不合格 (或读取失败)
-            best = None
+            # 全军覆没：组内所有照片构图均不合格，全部移动
+            keep_paths: set[Path] = set()
         else:
-            # 2. OpenCV 终选：在构图合格的照片中挑出最锐利的一张
-            best = max(candidates, key=lambda x: x.score)
+            # 2. OpenCV 终选：在构图合格的照片中按锐度降序，保留前 keep_count 张
+            candidates_sorted = sorted(candidates, key=lambda x: x.score, reverse=True)
+            keep_n = min(self.keep_count, len(candidates_sorted))
+            keep_paths = {p.path for p in candidates_sorted[:keep_n]}
 
         for photo in scored:
-            # 如果全军覆没，或者当前照片不是 best，则移动淘汰
-            if best is None or photo.path != best.path or photo.score < 0:
-                try:
-                    dest = review_dir / photo.path.name
-                    if dest.exists():
-                        dest = review_dir / f"{photo.path.stem}_dup{photo.path.suffix}"
-                    shutil.move(str(photo.path), str(dest))
-                    moved += 1
-                except Exception as exc:
-                    msg = f"移动 {photo.path.name} 失败: {exc}"
-                    warnings.warn(msg)
-                    errors.append(msg)
+            if photo.path in keep_paths:
+                continue  # 保留
+            if photo.score < 0:
+                continue  # 读取失败的保守保留
+            try:
+                dest = review_dir / photo.path.name
+                if dest.exists():
+                    dest = review_dir / f"{photo.path.stem}_dup{photo.path.suffix}"
+                shutil.move(str(photo.path), str(dest))
+                moved += 1
+            except Exception as exc:
+                msg = f"移动 {photo.path.name} 失败: {exc}"
+                warnings.warn(msg)
+                errors.append(msg)
 
         return moved, errors
 
