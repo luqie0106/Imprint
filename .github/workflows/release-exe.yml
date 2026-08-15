@@ -1,0 +1,47 @@
+name: Build and Release Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*' # 当推送到带有 v 开头的 tag 时自动触发，例如 git push origin v1.0.0
+  workflow_dispatch: # 允许在 GitHub Actions 网页端手动触发
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write # 必须配置，否则 GitHub Actions 没有权限创建 Release
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11' # 这里默认配置了 3.11，如果您的项目有特殊要求可以修改
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build EXE
+      # --name 指定生成的 exe 文件名，代替默认的 main.exe
+      run: pyinstaller --onefile --name photo_sort main.py
+      
+    - name: Upload Artifact (For Manual Runs)
+      # 这一步的作用是：如果是手动触发，也会提供下载压缩包
+      uses: actions/upload-artifact@v4
+      with:
+        name: photo_sort_windows_exe
+        path: dist/photo_sort.exe
+        
+    - name: Create Release and Upload Asset
+      uses: softprops/action-gh-release@v2
+      # 仅在通过 tag 触发时才发布到 Releases 页面
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: dist/photo_sort.exe
+        generate_release_notes: true # 自动生成 release 包含的 commits 记录
