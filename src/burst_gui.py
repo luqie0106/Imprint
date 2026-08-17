@@ -107,8 +107,8 @@ class BurstFilterGUI:
 
         self.input_dir_var    = tk.StringVar()
         self.review_subdir_var = tk.StringVar(value="审查_连拍淘汰")
-        self.gap_var          = tk.StringVar(value="1.5")
-        self.similarity_var   = tk.StringVar(value="0.85")
+        self.gap_var           = tk.StringVar(value="1.5")
+        self.hamming_var        = tk.StringVar(value="12")
         self.keep_count_var   = tk.StringVar(value="1")
         self._running = False
 
@@ -159,8 +159,8 @@ class BurstFilterGUI:
         g = tk.Frame(pi, bg=_SURFACE)
         g.pack(fill="x")
         self._param_row(g, 0, "淘汰子目录名称",   self.review_subdir_var, "相对于输入目录的子文件夹名")
-        self._param_row(g, 1, "连拍时间阈值（秒）", self.gap_var,           "前后间隔 ≤ 此值视为连拍候选")
-        self._param_row(g, 2, "视觉相似度阈值",   self.similarity_var,    "直方图相关系数阈值，0~1，越高越严格")
+        self._param_row(g, 1, "连拍时间阈值（秒）",   self.gap_var,     "前后间隔 ≤ 此値视为连拍候选")
+        self._param_row(g, 2, "dHash 汉明限制",      self.hamming_var, "64 位哈希中允许的最大差异位数，推荐 8〕12〕20")
         self._param_row(g, 3, "每组保留张数",     self.keep_count_var,    "1 = 仅保留最优 1 张；填 2 则保留最优 2 张，以此类推")
 
         # ── 执行行 ──
@@ -207,29 +207,29 @@ class BurstFilterGUI:
             return
 
         try:
-            gap = float(self.gap_var.get().strip())
-            sim = float(self.similarity_var.get().strip())
-            keep = int(self.keep_count_var.get().strip())
+            gap    = float(self.gap_var.get().strip())
+            hamming = int(self.hamming_var.get().strip())
+            keep   = int(self.keep_count_var.get().strip())
             assert 0.0 < gap <= 30.0
-            assert 0.0 < sim <= 1.0
+            assert 1 <= hamming <= 64
             assert keep >= 1
         except (ValueError, AssertionError):
-            messagebox.showerror("参数错误", "时间阈值范围 0~30，相似度阈值范围 0~1，保留张数 ≥ 1。")
+            messagebox.showerror("参数错误", "时间阈値范围 0~30，汉明限制范围 1~64，保留张数 ≥ 1。")
             return
 
         subdir = self.review_subdir_var.get().strip() or "审查_连拍淘汰"
         self._set_running(True)
         threading.Thread(
             target=self._worker,
-            args=(input_dir, gap, sim, subdir, keep),
+            args=(input_dir, gap, hamming, subdir, keep),
             daemon=True,
         ).start()
 
-    def _worker(self, input_dir, gap, sim, subdir, keep):
+    def _worker(self, input_dir, gap, hamming, subdir, keep):
         try:
             flt = BurstFilter(
                 gap_seconds=gap,
-                similarity_threshold=sim,
+                max_hamming_distance=hamming,
                 review_subdir=subdir,
                 keep_count=keep,
                 progress_callback=lambda msg: self.root.after(

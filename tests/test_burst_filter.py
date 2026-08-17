@@ -24,8 +24,8 @@ if str(_SRC) not in sys.path:
 from burst_filter import (  # noqa: E402
     BurstFilter,
     BurstGrouper,
-    NefExifReader,
-    NefSharpnessScorer,
+    RawExifReader,
+    RawEvaluator,
     ScoredPhoto,
 )
 
@@ -59,45 +59,45 @@ def _make_nef_placeholder(directory: Path, name: str) -> Path:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NefSharpnessScorer 测试
+# RawEvaluator 测试
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestNefSharpnessScorer:
+class TestRawEvaluator:
     def setup_method(self):
-        self.scorer = NefSharpnessScorer()
+        self.scorer = RawEvaluator()
 
     def test_sharp_image_scores_higher_than_blurry(self):
         sharp = _make_sharp_image()
         blurry = _make_blurry_image()
-        score_sharp = self.scorer.score(sharp)
-        score_blurry = self.scorer.score(blurry)
+        score_sharp = self.scorer.sharpness(sharp)
+        score_blurry = self.scorer.sharpness(blurry)
         assert score_sharp > score_blurry, (
             f"清晰图得分 {score_sharp:.2f} 应高于模糊图 {score_blurry:.2f}"
         )
 
     def test_score_returns_positive_float(self):
         img = _make_sharp_image()
-        score = self.scorer.score(img)
+        score = self.scorer.sharpness(img)
         assert isinstance(score, float)
         assert score >= 0.0
 
     def test_uniform_image_scores_near_zero(self):
         """全灰图像（无纹理）的锐度得分应接近 0。"""
         flat = np.full((128, 128, 3), 128, dtype=np.uint8)
-        score = self.scorer.score(flat)
+        score = self.scorer.sharpness(flat)
         assert score < 1.0, f"均一图像的得分应接近0，实际={score}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NefExifReader 测试
+# RawExifReader 测试
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestNefExifReader:
+class TestRawExifReader:
     def test_fallback_to_mtime_on_exif_failure(self, tmp_path: Path):
         """无法读取 EXIF 时，应回退到文件系统 mtime。"""
         fake = tmp_path / "fake.NEF"
         fake.write_bytes(b"\x00")
-        reader = NefExifReader()
+        reader = RawExifReader()
         dt = reader.read_datetime(fake)
         assert isinstance(dt, datetime)
 
@@ -113,10 +113,12 @@ class TestBurstGrouper:
         """
         构造一个 BurstGrouper：
         - exif_reader.read_datetime 按索引返回对应时间
-        - _histogram_correl 被 mock 为固定返回值（similar=True → 0.95，False → 0.50）
+        - _safe_dhash 被 mock：
+            similar=True  → 返回汉明距离=0（完全相同）
+            similar=False → 返回汉明距离=30（构图很不同）
         """
-        mock_exif = MagicMock(spec=NefExifReader)
-        mock_scorer = MagicMock(spec=NefSharpnessScorer)
+        mock_exif = MagicMock(spec=RawExifReader)
+        mock_scorer = MagicMock(spec=RawEvaluator)
 
         paths = [Path(f"img_{i:03d}.NEF") for i in range(len(times))]
         mock_exif.read_datetime.side_effect = lambda p: times[paths.index(p)]
@@ -126,12 +128,23 @@ class TestBurstGrouper:
             exif_reader=mock_exif,
             preview_extractor=mock_scorer,
             gap_seconds=1.5,
-            similarity_threshold=0.85,
+            max_hamming_distance=12,
         )
-        # 新算法通过 _histogram_correl 控制相似度
-        corr_val = 0.95 if similar else 0.50
-        grouper._histogram_correl = MagicMock(return_value=corr_val)
+        # 通过 mock _safe_dhash 控制汉明距离：
+        # similar=True  → 所有帧哈希相同（距离=0）
+        # similar=False → 第二帧起返回不同哈希（距离=30 > 12）
+        identical_hash = np.ones((8, 8), dtype=bool)
+        different_hash = np.zeros((8, 8), dtype=bool)
+        call_count = [0]
 
+        def fake_dhash(path):
+            i = call_count[0]
+            call_count[0] += 1
+            if i == 0 or similar:
+                return identical_hash
+            return different_hash
+
+        grouper._safe_dhash = fake_dhash
         return grouper, paths
 
     def test_single_file_is_single_group(self):
@@ -226,7 +239,8 @@ class TestBurstFilter:
             return blurry_img
 
         flt._scorer.extract_preview = fake_extract
-        flt._scorer.score = NefSharpnessScorer().score  # 使用真实打分
+        flt._scorer.sharpness = RawEvaluator().score  # 使用真实打分
+        flt._scorer.exposure_score = MagicMock(return_value=1.0)
         # mock 美学评分：全部返回 1.0（全部通过初筛），测试纯锐度选优逻辑
         flt._aesthetic_scorer.score = MagicMock(return_value=1.0)
 
@@ -259,7 +273,8 @@ class TestBurstFilter:
         sharp_img = _make_sharp_image()
         blurry_img = _make_blurry_image()
         flt._scorer.extract_preview = lambda p: sharp_img if p == paths[0] else blurry_img
-        flt._scorer.score = NefSharpnessScorer().score
+        flt._scorer.sharpness = RawEvaluator().score
+        flt._scorer.exposure_score = MagicMock(return_value=1.0)
 
         result = flt.run(nef_dir)
 

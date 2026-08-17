@@ -1,11 +1,11 @@
 """
-burst_filter.py — NEF 连拍优选与冗余片自动移动
+burst_filter.py — RAW 连拍优选与冗余片自动移动
 
 算法说明（BurstGrouper）：
-  采用"首帧锚点比对"法。每个子组以第一张照片作为基准帧。
+  采用"首帧锡点比对"法。每个子组以第一张照片作为基准帧。
   后续照片满足以下两个条件才归入同一子组：
     1. 与前一张的时间间隔 <= gap_seconds
-    2. 与当前子组基准帧的直方图相关系数 >= similarity_threshold
+    2. 与当前子组基准帧的 dHash 汉明距离 <= max_hamming_distance
   任意一个条件不满足，则截断当前子组，以该照片开启新子组。
 """
 
@@ -25,6 +25,16 @@ import numpy as np
 import rawpy
 from PIL import Image
 
+# ── 人脸检测器（加载失败时降级为中心区域锡度）───────────────────────────
+try:
+    _FACE_CASCADE = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    _FACE_DETECTION_AVAILABLE = not _FACE_CASCADE.empty()
+except Exception:
+    _FACE_CASCADE = None
+    _FACE_DETECTION_AVAILABLE = False
+
 # ── EXIF 常量 ─────────────────────────────────────────────────────────────────
 _EXIF_IFD_TAG = 34665
 _DATETIME_ORIGINAL_TAG = 36867
@@ -32,7 +42,7 @@ _DATETIME_FMT = "%Y:%m:%d %H:%M:%S"
 
 # ── 默认参数 ──────────────────────────────────────────────────────────────────
 DEFAULT_TIME_GAP_SECONDS: float = 1.5
-DEFAULT_SIMILARITY_THRESHOLD: float = 0.85
+DEFAULT_MAX_HAMMING_DISTANCE: int = 12   # dHash 64 位中允许的最大不同位数
 DEFAULT_REVIEW_SUBDIR: str = "审查_连拍淘汰"
 
 _CENTER_CROP_RATIO: float = 0.6
@@ -79,12 +89,16 @@ class BurstFilterResult:
     errors: list[str] = field(default_factory=list)
 
 
+# ── 亚秒 EXIF 标签 ────────────────────────────────────────────────────────────
+_SUBSEC_TIME_ORIGINAL_TAG  = 37521   # SubSecTimeOriginal
+_SUBSEC_TIME_DIGITIZED_TAG = 37522   # SubSecTimeDigitized
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EXIF 时间读取
 # ══════════════════════════════════════════════════════════════════════════════
 
-class NefExifReader:
-    """读取拍摄时间，失败时回退 mtime。"""
+class RawExifReader:
+    """读取拍摄时间（精确到微秒），失败时回退 mtime。适用于所有 RAW 格式。"""
 
     def read_datetime(self, path: Path) -> datetime:
         try:
@@ -95,14 +109,31 @@ class NefExifReader:
     def _from_exif(self, path: Path) -> datetime:
         with Image.open(path) as img:
             exif = img.getexif()
-            raw = None
-            if hasattr(exif, "get_ifd"):
-                raw = exif.get_ifd(_EXIF_IFD_TAG).get(_DATETIME_ORIGINAL_TAG)
-            if not raw:
-                raw = exif.get(_DATETIME_ORIGINAL_TAG)
+            ifd  = exif.get_ifd(_EXIF_IFD_TAG) if hasattr(exif, "get_ifd") else {}
+
+            # 整秒时间
+            raw = ifd.get(_DATETIME_ORIGINAL_TAG) or exif.get(_DATETIME_ORIGINAL_TAG)
             if not raw:
                 raise ValueError("No DateTimeOriginal")
-            return datetime.strptime(str(raw).strip(), _DATETIME_FMT)
+            dt = datetime.strptime(str(raw).strip(), _DATETIME_FMT)
+
+            # 亚秒时间（优先 SubSecTimeOriginal，次选 SubSecTimeDigitized）
+            subsec_raw = (
+                ifd.get(_SUBSEC_TIME_ORIGINAL_TAG)
+                or ifd.get(_SUBSEC_TIME_DIGITIZED_TAG)
+                or exif.get(_SUBSEC_TIME_ORIGINAL_TAG)
+                or exif.get(_SUBSEC_TIME_DIGITIZED_TAG)
+            )
+            microseconds = 0
+            if subsec_raw is not None:
+                try:
+                    # 字段如 "45" 表示 0.45 秒，左对齐填充到 6 位
+                    s = str(subsec_raw).strip()
+                    microseconds = int(s[:6].ljust(6, "0"))
+                except (ValueError, TypeError):
+                    microseconds = 0
+
+            return dt.replace(microsecond=microseconds)
 
     @staticmethod
     def _from_mtime(path: Path) -> datetime:
@@ -110,13 +141,17 @@ class NefExifReader:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 预览提取 & 锐度评分
+# 预览提取 & 多维度评估
 # ══════════════════════════════════════════════════════════════════════════════
 
-class NefSharpnessScorer:
+class RawEvaluator:
     """
-    提取 NEF 内嵌缩略图并计算中心区域锐度得分。
-    得分 = Laplacian方差 + Tenengrad梯度能量（越大越清晰）。
+    适用于所有 RAW 格式的预览提取器 + 多维度评估器。
+
+    evaluate(img) 返回 (sharpness: float, exposure_score: float)：
+      - sharpness      : Laplacian 方差 + Tenengrad 梯度（越大越清晰），
+                         优先在人脸区域计算，无人脸则用中心裁剪区。
+      - exposure_score : 0.0~1.0，对高光过曝重罚、对欠曝宽容。
     """
 
     def extract_preview(self, path: Path) -> np.ndarray:
@@ -127,7 +162,7 @@ class NefSharpnessScorer:
         try:
             return self._half_decode(path)
         except Exception as exc:
-            raise RuntimeError(f"无法读取 NEF 预览: {path.name}") from exc
+            raise RuntimeError(f"无法读取 RAW 预览: {path.name}") from exc
 
     @staticmethod
     def _extract_thumb(path: Path) -> np.ndarray:
@@ -144,16 +179,68 @@ class NefSharpnessScorer:
         with rawpy.imread(str(path)) as raw:
             return raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
 
-    def score(self, img: np.ndarray) -> float:
-        h, w = img.shape[:2]
+    # ── 人脸优先的锐度计算 ────────────────────────────────────────────────────
+
+    def sharpness(self, img_rgb: np.ndarray) -> float:
+        """计算锐度：优先在人脸框内计算，无人脸则中心裁剪。"""
+        gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+        regions = self._face_regions(gray)
+        if regions:
+            scores = [self._region_sharpness(gray, x, y, w, h) for x, y, w, h in regions]
+            return float(np.mean(scores))
+        return self._center_sharpness(gray)
+
+    @staticmethod
+    def _face_regions(gray: np.ndarray) -> list[tuple[int, int, int, int]]:
+        """检测人脸，返回 [(x, y, w, h), ...]；无法检测则返回空列表。"""
+        if not _FACE_DETECTION_AVAILABLE:
+            return []
+        try:
+            faces = _FACE_CASCADE.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+            )
+            if len(faces) == 0:
+                return []
+            return [tuple(f) for f in faces]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _region_sharpness(gray: np.ndarray, x: int, y: int, w: int, h: int) -> float:
+        """计算指定矩形区域的 Laplacian + Sobel 锐度。"""
+        roi = gray[y:y + h, x:x + w].astype(np.float64)
+        lap = cv2.Laplacian(roi, cv2.CV_64F).var()
+        sx = cv2.Sobel(roi, cv2.CV_64F, 1, 0, ksize=3)
+        sy = cv2.Sobel(roi, cv2.CV_64F, 0, 1, ksize=3)
+        return lap + float((sx ** 2 + sy ** 2).mean())
+
+    def _center_sharpness(self, gray: np.ndarray) -> float:
+        """无人脸时：计算画面中心 60% 区域的锐度。"""
+        h, w = gray.shape
         mh = int(h * (1 - _CENTER_CROP_RATIO) / 2)
         mw = int(w * (1 - _CENTER_CROP_RATIO) / 2)
-        crop = img[mh:h - mh, mw:w - mw]
-        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY).astype(np.float64)
-        lap = cv2.Laplacian(gray, cv2.CV_64F).var()
-        sx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        sy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        return lap + float((sx ** 2 + sy ** 2).mean())
+        return self._region_sharpness(gray, mw, mh, w - 2 * mw, h - 2 * mh)
+
+    # ── 曝光评分（倾向于欠曝，重惩高光溢出）──────────────────────────────────
+
+    @staticmethod
+    def exposure_score(img_rgb: np.ndarray) -> float:
+        """
+        返回 0.0~1.0 的曝光评分。
+        公式：1.0 - pct_white * 2.0 - pct_black * 0.5，夹紧到 [0, 1]。
+        """
+        gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+        total = gray.size
+        pct_black = float(np.sum(gray <= 5)) / total
+        pct_white = float(np.sum(gray >= 250)) / total
+        raw = 1.0 - pct_white * 2.0 - pct_black * 0.5
+        return float(np.clip(raw, 0.0, 1.0))
+
+    # ── 向后兼容：旧的 score() 接口仍可用（BurstGrouper 不使用此方法）──────
+
+    def score(self, img_rgb: np.ndarray) -> float:
+        """兼容旧接口，返回绝对锐度值。"""
+        return self.sharpness(img_rgb)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -296,28 +383,29 @@ class AestheticScorer:
 
 class BurstGrouper:
     """
-    一次循环完成时间+视觉双重聚类：
+    首帧锚点比对法（Anchor-frame）连拍分组。
 
     对每张照片（按拍摄时间排序后）：
-      - 若与前一张时间间隔 > gap_seconds  → 截断，开新组
-      - 否则与当前子组的基准帧（第一张）比对直方图：
-          相关系数 >= threshold → 加入当前子组
-          相关系数 <  threshold → 截断（构图变化），开新组
+      - 若与前一张时间间隔 > gap_seconds      → 截断，开新组
+      - 否则计算当前帧与锚点帧的 dHash 汉明距离：
+          距离 <= max_hamming_distance → 加入当前子组（锚点不变）
+          距离 >  max_hamming_distance → 截断（构图/角度变化），开新子组
 
+    dHash 优于直方图：对曝光变化不敏感，对结构/边缘更敏感。
     返回 list[list[Path]]，单元素 = 单拍，多元素 = 连拍子组。
     """
 
     def __init__(
         self,
-        exif_reader: NefExifReader,
-        preview_extractor: NefSharpnessScorer,
+        exif_reader: RawExifReader,
+        preview_extractor: RawEvaluator,
         gap_seconds: float = DEFAULT_TIME_GAP_SECONDS,
-        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        max_hamming_distance: int = DEFAULT_MAX_HAMMING_DISTANCE,
     ) -> None:
         self._exif = exif_reader
         self._previewer = preview_extractor
         self.gap_seconds = gap_seconds
-        self.similarity_threshold = similarity_threshold
+        self.max_hamming_distance = max_hamming_distance
 
     def group(self, nef_files: Sequence[Path]) -> list[list[Path]]:
         if not nef_files:
@@ -332,7 +420,7 @@ class BurstGrouper:
         # 2. 首帧锚点比对聚类
         result: list[list[Path]] = []
         current_group: list[Path] = [timed[0][1]]
-        anchor_preview: np.ndarray | None = self._safe_preview(timed[0][1])
+        anchor_hash: np.ndarray | None = self._safe_dhash(timed[0][1])
         prev_time = timed[0][0]
 
         for cur_time, cur_path in timed[1:]:
@@ -343,46 +431,59 @@ class BurstGrouper:
             if gap > self.gap_seconds:
                 result.append(current_group)
                 current_group = [cur_path]
-                anchor_preview = self._safe_preview(cur_path)
+                anchor_hash = self._safe_dhash(cur_path)
                 continue
 
-            # 条件 2：与锚点比对视觉相似度
-            cur_preview = self._safe_preview(cur_path)
-            if anchor_preview is None or cur_preview is None:
+            # 条件 2：与锚点帧比对 dHash 汉明距离
+            cur_hash = self._safe_dhash(cur_path)
+            if anchor_hash is None or cur_hash is None:
                 # 预览提取失败，保守截断
                 result.append(current_group)
                 current_group = [cur_path]
-                anchor_preview = cur_preview
+                anchor_hash = cur_hash
                 continue
 
-            corr = self._histogram_correl(anchor_preview, cur_preview)
-            if corr >= self.similarity_threshold:
+            dist = self._hamming(anchor_hash, cur_hash)
+            if dist <= self.max_hamming_distance:
                 # 同一场景，加入当前子组（锚点保持第一张不变）
                 current_group.append(cur_path)
             else:
                 # 构图/角度变化，截断并以当前帧开启新子组
                 result.append(current_group)
                 current_group = [cur_path]
-                anchor_preview = cur_preview
+                anchor_hash = cur_hash
 
         result.append(current_group)
         return result
 
-    def _safe_preview(self, path: Path) -> np.ndarray | None:
+    def _safe_dhash(self, path: Path) -> np.ndarray | None:
+        """提取 dHash；失败返回 None，不会泄漏 numpy 数组引用。"""
         try:
-            return self._previewer.extract_preview(path)
+            preview = self._previewer.extract_preview(path)
+            h = self._dhash(preview)
+            del preview
+            return h
         except Exception:
             return None
 
     @staticmethod
-    def _histogram_correl(a: np.ndarray, b: np.ndarray) -> float:
-        ga = cv2.cvtColor(a, cv2.COLOR_RGB2GRAY)
-        gb = cv2.cvtColor(b, cv2.COLOR_RGB2GRAY)
-        ha = cv2.calcHist([ga], [0], None, [64], [0, 256])
-        hb = cv2.calcHist([gb], [0], None, [64], [0, 256])
-        cv2.normalize(ha, ha)
-        cv2.normalize(hb, hb)
-        return float(cv2.compareHist(ha, hb, cv2.HISTCMP_CORREL))
+    def _dhash(img_rgb: np.ndarray) -> np.ndarray:
+        """
+        差异哈希（dHash）：将图像缩小为 9x8 灰度图，
+        比较每行相邻像素大小，生成 64 位 bool 数组。
+        """
+        small = cv2.resize(
+            cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY),
+            (9, 8),
+            interpolation=cv2.INTER_AREA,
+        )
+        # 每行 9 个像素，比较相邻两列差值：生成 8x8=64 位
+        return small[:, :-1] > small[:, 1:]   # shape (8, 8), dtype bool
+
+    @staticmethod
+    def _hamming(a: np.ndarray, b: np.ndarray) -> int:
+        """两个 dHash 之间的汉明距离（不同位数）。"""
+        return int(np.count_nonzero(a != b))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -405,24 +506,24 @@ class BurstFilter:
     def __init__(
         self,
         gap_seconds: float = DEFAULT_TIME_GAP_SECONDS,
-        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        max_hamming_distance: int = DEFAULT_MAX_HAMMING_DISTANCE,
         review_subdir: str = DEFAULT_REVIEW_SUBDIR,
         keep_count: int = 1,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.gap_seconds = gap_seconds
-        self.similarity_threshold = similarity_threshold
+        self.max_hamming_distance = max_hamming_distance
         self.review_subdir = review_subdir
-        self.keep_count = max(1, keep_count)   # 至少保留 1 张
+        self.keep_count = max(1, keep_count)
         self.progress_callback = progress_callback
 
-        self._exif_reader = NefExifReader()
-        self._scorer = NefSharpnessScorer()
+        self._exif_reader = RawExifReader()
+        self._scorer = RawEvaluator()
         self._grouper = BurstGrouper(
             exif_reader=self._exif_reader,
             preview_extractor=self._scorer,
             gap_seconds=gap_seconds,
-            similarity_threshold=similarity_threshold,
+            max_hamming_distance=max_hamming_distance,
         )
         
         # 尝试加载美学模型（支持 ONNX 与 PyTorch 双引擎）
@@ -478,55 +579,82 @@ class BurstFilter:
     def _process_group(
         self, group: list[Path], review_dir: Path
     ) -> tuple[int, list[str]]:
-        scored: list[ScoredPhoto] = []
+        """
+        对连拍组内所有照片进行多维度评估，综合加权后保留前 keep_count 张。
+
+        各维度权重：
+          AI 美学概率   : 0.6
+          归一化锐度    : 0.3
+          曝光评分      : 0.1
+        """
+        # ── 阶段 1：为每张照片提取三个维度的原始分数 ──────────────────────────
+        @dataclass
+        class _Photo:
+            path: Path
+            sharpness: float = 0.0
+            exposure: float  = 1.0
+            aesthetic: float = 1.0
+            failed: bool     = False
+
+        photos: list[_Photo] = []
         errors: list[str] = []
 
         for path in group:
+            p = _Photo(path=path)
             try:
                 preview = self._scorer.extract_preview(path)
-                s_sharpness = self._scorer.score(preview)
-                s_aesthetic = self._aesthetic_scorer.score(preview)
+                p.sharpness = self._scorer.sharpness(preview)
+                p.exposure  = self._scorer.exposure_score(preview)
+                p.aesthetic = self._aesthetic_scorer.score(preview)
             except Exception as exc:
                 warnings.warn(f"跳过 {path.name}: {exc}")
                 errors.append(f"{path.name}: {exc}")
-                scored.append(ScoredPhoto(path=path, score=-1.0))
-                continue
-            
-            # 临时把 score 存为锐度，把 AI 偏好概率附在对象上
-            photo_obj = ScoredPhoto(path=path, score=s_sharpness)
-            setattr(photo_obj, 'aesthetic_prob', s_aesthetic)
-            scored.append(photo_obj)
+                p.failed = True
+            photos.append(p)
 
-        if not scored:
+        if not photos:
             return 0, errors
 
+        # ── 阶段 2：组内归一化锐度（避免绝对值量纲差异主导结果）─────────────
+        valid = [p for p in photos if not p.failed]
+        if valid:
+            max_s = max(p.sharpness for p in valid)
+            min_s = min(p.sharpness for p in valid)
+            span  = max_s - min_s + 1e-6
+            for p in valid:
+                p._norm_sharp = (p.sharpness - min_s) / span   # type: ignore[attr-defined]
+        for p in photos:
+            if not hasattr(p, '_norm_sharp'):
+                p._norm_sharp = 0.0   # type: ignore[attr-defined]
+
+        # ── 阶段 3：计算综合得分并排序 ────────────────────────────────────────
+        for p in valid:
+            p.final_score = (                                   # type: ignore[attr-defined]
+                p.aesthetic     * 0.6
+                + p._norm_sharp * 0.3   # type: ignore[attr-defined]
+                + p.exposure    * 0.1
+            )
+        for p in photos:
+            if not hasattr(p, 'final_score'):
+                p.final_score = -1.0    # type: ignore[attr-defined]
+
+        keep_n = min(self.keep_count, len(valid))
+        top = sorted(valid, key=lambda x: x.final_score, reverse=True)[:keep_n]  # type: ignore[attr-defined]
+        keep_paths: set[Path] = {p.path for p in top}
+
+        # ── 阶段 4：移动淘汰照片 ──────────────────────────────────────────────
         moved = 0
-
-        # 1. AI 初筛：只保留构图得分 >= 50% 的候选者
-        candidates = [p for p in scored if getattr(p, 'aesthetic_prob', 1.0) >= 0.5 and p.score >= 0]
-
-        if not candidates:
-            # 全军覆没：组内所有照片构图均不合格，全部移动
-            keep_paths: set[Path] = set()
-        else:
-            # 2. OpenCV 终选：在构图合格的照片中按锐度降序，保留前 keep_count 张
-            candidates_sorted = sorted(candidates, key=lambda x: x.score, reverse=True)
-            keep_n = min(self.keep_count, len(candidates_sorted))
-            keep_paths = {p.path for p in candidates_sorted[:keep_n]}
-
-        for photo in scored:
-            if photo.path in keep_paths:
-                continue  # 保留
-            if photo.score < 0:
-                continue  # 读取失败的保守保留
+        for p in photos:
+            if p.path in keep_paths or p.failed:
+                continue
             try:
-                dest = review_dir / photo.path.name
+                dest = review_dir / p.path.name
                 if dest.exists():
-                    dest = review_dir / f"{photo.path.stem}_dup{photo.path.suffix}"
-                shutil.move(str(photo.path), str(dest))
+                    dest = review_dir / f"{p.path.stem}_dup{p.path.suffix}"
+                shutil.move(str(p.path), str(dest))
                 moved += 1
             except Exception as exc:
-                msg = f"移动 {photo.path.name} 失败: {exc}"
+                msg = f"移动 {p.path.name} 失败: {exc}"
                 warnings.warn(msg)
                 errors.append(msg)
 
