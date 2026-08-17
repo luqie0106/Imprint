@@ -55,5 +55,12 @@ venv.bak/
 
 # Model files
 *.pt
+*.onnx
+
+# Explicitly track our custom trained aesthetic MLP (since it is small)
+!aesthetic_mlp.pth
+
+# PyInstaller
+*.spec
 
 .reasonix

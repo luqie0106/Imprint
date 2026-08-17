@@ -41,10 +41,23 @@ _CENTER_CROP_RATIO: float = 0.6
 try:
     import torch
     import torch.nn as nn
-    from torchvision import models, transforms
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+
+# ── 动态加载 CLIP（transformers）─────────────────────────────────────────────
+try:
+    from transformers import CLIPProcessor, CLIPModel
+    CLIP_AVAILABLE = True
+except ImportError:
+    CLIP_AVAILABLE = False
+
+# ── 动态加载 ONNX Runtime ───────────────────────────────────────────────────
+try:
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError:
+    ONNX_AVAILABLE = False
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 数据类
@@ -144,54 +157,137 @@ class NefSharpnessScorer:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AI 美学评分器
+# AI 美学评分器（CLIP 特征提取 + 轻量 MLP 分类头）
 # ══════════════════════════════════════════════════════════════════════════════
 
+# MLP 分类头定义（必须与训练时结构一致，用于 PyTorch Fallback）
+if TORCH_AVAILABLE:
+    class _AestheticMLP(nn.Module):
+        """接受 CLIP 512 维特征，输出 2 分类 logits。"""
+        def __init__(self, input_dim: int = 512):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, 256),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, 2),
+            )
+
+        def forward(self, x):
+            return self.net(x)
+
+
 class AestheticScorer:
-    """加载 MobileNetV3 偏好模型，输出 0.0~1.0 的 Like 概率。"""
-    
-    def __init__(self, model_path: Path):
+    """
+    优先使用 ONNX 引擎（极速、脱离 PyTorch）。
+    如果 ONNX 模型不存在或依赖缺失，则回退到 PyTorch + Transformers（供本地训练后快速验证）。
+    如果均不可用，自动降级（score 返回 1.0 全部通过）。
+    """
+
+    _CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
+
+    def __init__(self, project_root: Path):
         self.available = False
-        if not TORCH_AVAILABLE or not model_path.exists():
-            return
-            
-        try:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            if sys.platform == "darwin" and torch.backends.mps.is_available():
-                self.device = torch.device("mps")
-                
-            weights = models.MobileNet_V3_Small_Weights.DEFAULT
-            self.model = models.mobilenet_v3_small(weights=weights)
-            num_features = self.model.classifier[3].in_features
-            self.model.classifier[3] = nn.Linear(num_features, 2)
-            
-            self.model.load_state_dict(torch.load(str(model_path), map_location=self.device, weights_only=True))
-            self.model.to(self.device)
-            self.model.eval()
-            
-            self.transform = transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            self.available = True
-        except Exception as e:
-            warnings.warn(f"无法加载 AI 美学模型: {e}")
-            self.available = False
+        self.engine = None  # "onnx" or "torch"
+
+        onnx_path = project_root / "photo_sort_model.onnx"
+        mlp_path = project_root / "aesthetic_mlp.pth"
+
+        # 1. 尝试初始化 ONNX 引擎
+        if ONNX_AVAILABLE and onnx_path.exists():
+            try:
+                self._session = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
+                self.engine = "onnx"
+                self.available = True
+                return
+            except Exception as exc:
+                warnings.warn(f"无法加载 ONNX 模型，尝试降级: {exc}")
+
+        # 2. 尝试回退到 PyTorch 引擎
+        if TORCH_AVAILABLE and CLIP_AVAILABLE and mlp_path.exists():
+            try:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                if sys.platform == "darwin" and torch.backends.mps.is_available():
+                    self.device = torch.device("mps")
+
+                self._clip_model = CLIPModel.from_pretrained(self._CLIP_MODEL_NAME)
+                self._clip_model.to(self.device)
+                self._clip_model.eval()
+                for p in self._clip_model.parameters():
+                    p.requires_grad_(False)
+
+                self._clip_processor = CLIPProcessor.from_pretrained(self._CLIP_MODEL_NAME)
+
+                self._mlp = _AestheticMLP(input_dim=512).to(self.device)
+                state = torch.load(str(mlp_path), map_location=self.device, weights_only=True)
+                self._mlp.load_state_dict(state)
+                self._mlp.eval()
+
+                self.engine = "torch"
+                self.available = True
+                return
+            except Exception as exc:
+                warnings.warn(f"无法加载 PyTorch 模型: {exc}")
+
+    def _preprocess_onnx(self, img_rgb: np.ndarray) -> np.ndarray:
+        """纯 numpy/cv2 实现 CLIP 的图像预处理"""
+        h, w = img_rgb.shape[:2]
+        
+        if h < w:
+            new_h = 224
+            new_w = int(w * (224 / h))
+        else:
+            new_w = 224
+            new_h = int(h * (224 / w))
+        
+        img_resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        
+        start_y = (new_h - 224) // 2
+        start_x = (new_w - 224) // 2
+        img_cropped = img_resized[start_y:start_y+224, start_x:start_x+224]
+        
+        img_float = img_cropped.astype(np.float32) / 255.0
+        mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
+        std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
+        img_norm = (img_float - mean) / std
+        
+        img_transposed = np.transpose(img_norm, (2, 0, 1))
+        return np.expand_dims(img_transposed, axis=0)
 
     def score(self, img_rgb: np.ndarray) -> float:
+        """返回 0.0~1.0 的 Like 概率，不可用时返回 1.0（全部通过）。"""
         if not self.available:
-            return 1.0 # 如果没有模型，默认全部通过构图测试
-            
-        try:
-            tensor = self.transform(img_rgb).unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                outputs = self.model(tensor)
-                probs = torch.softmax(outputs, dim=1)
-                return probs[0][1].item() # 返回类别 1 (like) 的概率
-        except Exception:
             return 1.0
+
+        if self.engine == "onnx":
+            try:
+                inputs = self._preprocess_onnx(img_rgb)
+                ort_inputs = {self._session.get_inputs()[0].name: inputs}
+                probs = self._session.run(None, ort_inputs)[0]
+                return float(probs[0])
+            except Exception:
+                return 1.0
+        
+        elif self.engine == "torch":
+            try:
+                pil_img = Image.fromarray(img_rgb)
+                inputs = self._clip_processor(
+                    images=pil_img, return_tensors="pt", padding=True
+                )
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+                with torch.no_grad():
+                    vision_out = self._clip_model.vision_model(
+                        pixel_values=inputs['pixel_values']
+                    )
+                    pooled = vision_out.pooler_output
+                    features = self._clip_model.visual_projection(pooled)
+                    features = features / features.norm(dim=-1, keepdim=True)
+                    logits = self._mlp(features)
+                    prob = torch.softmax(logits, dim=1)[0][1].item()
+                return prob
+            except Exception:
+                return 1.0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -329,13 +425,19 @@ class BurstFilter:
             similarity_threshold=similarity_threshold,
         )
         
-        # 尝试加载 AI 模型 (假设在项目根目录)
-        project_root = Path(__file__).resolve().parent.parent
-        self._aesthetic_scorer = AestheticScorer(project_root / "aesthetic_model.pth")
-        if self._aesthetic_scorer.available:
-            print("🚀 已启用 AI 美学评分模型 (aesthetic_model.pth)！")
+        # 尝试加载美学模型（支持 ONNX 与 PyTorch 双引擎）
+        if getattr(sys, 'frozen', False):
+            # PyInstaller 环境
+            project_root = Path(sys._MEIPASS)
         else:
-            print("ℹ️ 未检测到有效 AI 模型，降级为纯 OpenCV 锐度过滤。")
+            project_root = Path(__file__).resolve().parent.parent
+
+        self._aesthetic_scorer = AestheticScorer(project_root)
+        if self._aesthetic_scorer.available:
+            engine_str = "ONNX" if self._aesthetic_scorer.engine == "onnx" else "PyTorch"
+            print(f"🚀 已启用 {engine_str} 美学评分模型！")
+        else:
+            print("ℹ️ 未检测到有效的美学模型，降级为纯 OpenCV 锐度过滤。")
 
     def run(self, input_dir: Path) -> BurstFilterResult:
         result = BurstFilterResult()

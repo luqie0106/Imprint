@@ -21,13 +21,12 @@ _BORDER = "#E2E8F0"
 _FAM = "SF Pro Text" if sys.platform == "darwin" else "Segoe UI"
 _FAM_TITLE = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
 
-# ── 动态加载 PyTorch 防止在没有环境的 Mac 上崩溃 ────────────────────────────
+# ── 动态加载 PyTorch ───────────────────────────────────────────────────────
 try:
     import torch
     import torch.nn as nn
     import torch.optim as optim
     from torch.utils.data import Dataset, DataLoader
-    from torchvision import models, transforms
     import rawpy
     from PIL import Image
     import numpy as np
@@ -35,14 +34,24 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+# ── 动态加载 CLIP（transformers）──────────────────────────────────────────
+try:
+    from transformers import CLIPProcessor, CLIPModel
+    CLIP_AVAILABLE = True
+except ImportError:
+    CLIP_AVAILABLE = False
+
+_ALL_AVAILABLE = TORCH_AVAILABLE and CLIP_AVAILABLE
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 数据集与模型逻辑 (仅在 TORCH_AVAILABLE 时可用)
+# 数据集与模型逻辑 (仅在依赖齐全时可用)
 # ══════════════════════════════════════════════════════════════════════════════
 
-if TORCH_AVAILABLE:
+if _ALL_AVAILABLE:
+    # ---------- RAW 预览提取 ----------
     def _extract_preview(path: Path) -> Image.Image:
-        """从 NEF 提取预览图供训练使用。"""
+        """从 RAW 文件提取预览图（NEF/ARW/CR3/RAF 均可）。"""
         try:
             with rawpy.imread(str(path)) as raw:
                 thumb = raw.extract_thumb()
@@ -53,28 +62,34 @@ if TORCH_AVAILABLE:
             return img.convert("RGB")
         except Exception:
             pass
-
-        # 降级：半尺寸解码
         with rawpy.imread(str(path)) as raw:
             arr = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
         return Image.fromarray(arr).convert("RGB")
 
-    class NefAestheticDataset(Dataset):
-        def __init__(self, root_dir: Path, transform=None):
-            self.root_dir = root_dir
-            self.transform = transform
-            self.samples = []
-            
-            # 定义类别：0 为不偏好 (dislike)，1 为偏好 (like)
-            dislike_dir = root_dir / "dislike"
-            like_dir = root_dir / "like"
-            
-            if dislike_dir.exists():
-                for p in dislike_dir.glob("*.[nN][eE][fF]"):
-                    self.samples.append((p, 0))
-            if like_dir.exists():
-                for p in like_dir.glob("*.[nN][eE][fF]"):
-                    self.samples.append((p, 1))
+    # ---------- 数据集 ----------
+    _RAW_GLOB_PATTERNS = ["*.[nN][eE][fF]", "*.[aA][rR][wW]",
+                          "*.[cC][rR]3", "*.[rR][aA][fF]"]
+
+    class RawAestheticDataset(Dataset):
+        """
+        目录结构：
+          root/
+            like/      <- 喜欢的照片 (label=1)
+            dislike/   <- 不喜欢的照片 (label=0)
+        """
+        def __init__(self, root_dir: Path, clip_processor, clip_model, device):
+            self.samples: list[tuple[Path, int]] = []
+            self._processor = clip_processor
+            self._clip = clip_model
+            self._device = device
+
+            for label, subdir in ((1, "like"), (0, "dislike")):
+                d = root_dir / subdir
+                if not d.exists():
+                    continue
+                for pat in _RAW_GLOB_PATTERNS:
+                    for p in d.glob(pat):
+                        self.samples.append((p, label))
 
         def __len__(self):
             return len(self.samples)
@@ -84,21 +99,34 @@ if TORCH_AVAILABLE:
             try:
                 img = _extract_preview(path)
             except Exception:
-                # 极端异常情况返回纯黑图片占位
                 img = Image.new("RGB", (224, 224), (0, 0, 0))
-                
-            if self.transform:
-                img = self.transform(img)
-            return img, label
 
-    def create_model():
-        """创建用于二分类微调的 MobileNetV3 预训练模型"""
-        weights = models.MobileNet_V3_Small_Weights.DEFAULT
-        model = models.mobilenet_v3_small(weights=weights)
-        # 替换全连接层，输出为2类 (0: dislike, 1: like)
-        num_features = model.classifier[3].in_features
-        model.classifier[3] = nn.Linear(num_features, 2)
-        return model
+            inputs = self._processor(images=img, return_tensors="pt", padding=True)
+            inputs = {k: v.squeeze(0) for k, v in inputs.items()}
+            return inputs, label
+
+    def collate_fn(batch):
+        inputs_list, labels = zip(*batch)
+        collated = {
+            k: torch.stack([d[k] for d in inputs_list])
+            for k in inputs_list[0]
+        }
+        return collated, torch.tensor(labels, dtype=torch.long)
+
+    # ---------- MLP 分类头（与 burst_filter.py 中结构完全一致）----------
+    class AestheticMLP(nn.Module):
+        def __init__(self, input_dim: int = 512):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, 256),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, 2),
+            )
+
+        def forward(self, x):
+            return self.net(x)
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -170,7 +198,7 @@ class TrainerGUI:
         hdr = tk.Frame(self.root, bg=_BG, pady=18)
         hdr.pack(fill="x", padx=28)
         tk.Label(hdr, text="🧠 审美偏好模型训练", bg=_BG, fg=_TEXT, font=(_FAM_TITLE, 22, "bold")).pack(anchor="w")
-        tk.Label(hdr, text="基于你的分类（like/dislike），自动微调 MobileNet 视觉模型",
+        tk.Label(hdr, text="冻结 CLIP 视觉编码器 + 轻量 MLP 分类头，仅训练 MLP 权重",
                  bg=_BG, fg=_TEXT_DIM, font=(_FAM, 12)).pack(anchor="w", pady=(3, 0))
         tk.Frame(self.root, bg=_BORDER, height=1).pack(fill="x", padx=28)
 
@@ -209,8 +237,8 @@ class TrainerGUI:
         br.pack(fill="x")
         
         # 判断环境
-        if not TORCH_AVAILABLE:
-            tk.Label(br, text="⚠️ 未检测到 PyTorch，请在配置好的环境中运行。", fg=_ERROR, bg=_BG, font=(_FAM, 11, "bold")).pack(side="left")
+        if not _ALL_AVAILABLE:
+            tk.Label(br, text="⚠️ 需要 PyTorch + transformers，请检查环境。", fg=_ERROR, bg=_BG, font=(_FAM, 11, "bold")).pack(side="left")
             self.run_btn = _pill_button(br, "环境缺失", lambda: None, big=True, active=False)
             self.run_btn.pack(side="right")
         else:
@@ -276,71 +304,85 @@ class TrainerGUI:
 
     def _train_task(self, data_dir: Path, epochs: int):
         try:
-            # 1. 准备数据
-            self.root.after(0, self._log, "正在扫描 NEF 文件...")
-            transform = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            dataset = NefAestheticDataset(data_dir, transform=transform)
-            
+            # 1. 设备
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if sys.platform == "darwin" and torch.backends.mps.is_available():
+                device = torch.device("mps")
+            self.root.after(0, self._log, f"计算设备: {device}")
+
+            # 2. 加载冻结的 CLIP（特征提取器）
+            self.root.after(0, self._log, "正在加载 CLIP 编码器（首次运行将联网下载）…")
+            clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+            clip_model.to(device).eval()
+            for p in clip_model.parameters():
+                p.requires_grad_(False)
+            clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            self.root.after(0, self._log, "✅ CLIP 加载完成。")
+
+            # 3. 扫描数据集
+            self.root.after(0, self._log, "正在扫描 RAW 文件…")
+            dataset = RawAestheticDataset(data_dir, clip_processor, clip_model, device)
             if len(dataset) == 0:
-                self.root.after(0, self._log, "❌ 错误: 在 like/dislike 文件夹中没有找到任何 NEF 文件！")
+                self.root.after(0, self._log, "❌ like/dislike 文件夹中未找到任何 RAW 文件！")
                 self.root.after(0, self._finish_run)
                 return
-                
             self.root.after(0, self._log, f"✅ 找到 {len(dataset)} 张照片。")
-            
-            dataloader = DataLoader(dataset, batch_size=8, shuffle=True, num_workers=0)
-            
-            # 2. 准备模型和设备
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.root.after(0, self._log, f"使用计算设备: {device}")
-            
-            model = create_model().to(device)
+            dataloader = DataLoader(dataset, batch_size=8, shuffle=True,
+                                    num_workers=0, collate_fn=collate_fn)
+
+            # 4. 初始化 MLP 和优化器（只训练 MLP，CLIP 已冻结）
+            mlp = AestheticMLP(input_dim=512).to(device)
             criterion = nn.CrossEntropyLoss()
-            optimizer = optim.Adam(model.parameters(), lr=1e-4)
-            
-            # 3. 开始训练循环
-            self.root.after(0, lambda: self.status_lbl.configure(text="正在训练..."))
+            optimizer = optim.Adam(mlp.parameters(), lr=1e-3)
+
+            # 5. 训练循环
+            self.root.after(0, lambda: self.status_lbl.configure(text="正在训练…"))
             for epoch in range(epochs):
-                model.train()
+                mlp.train()
                 running_loss = 0.0
                 correct = 0
                 total = 0
-                
-                for batch_idx, (inputs, labels) in enumerate(dataloader):
-                    inputs, labels = inputs.to(device), labels.to(device)
-                    
+
+                for batch_inputs, labels in dataloader:
+                    batch_inputs = {k: v.to(device) for k, v in batch_inputs.items()}
+                    labels = labels.to(device)
+
+                    # CLIP 提取特征（no_grad，冻结）
+                    with torch.no_grad():
+                        vision_out = clip_model.vision_model(
+                            pixel_values=batch_inputs['pixel_values']
+                        )
+                        pooled = vision_out.pooler_output           # [B, hidden_dim]
+                        features = clip_model.visual_projection(pooled)  # [B, 512]
+                        features = features / features.norm(dim=-1, keepdim=True)
+
+                    # MLP 前向 + 反向
                     optimizer.zero_grad()
-                    outputs = model(inputs)
+                    outputs = mlp(features)
                     loss = criterion(outputs, labels)
                     loss.backward()
                     optimizer.step()
-                    
+
                     running_loss += loss.item()
                     _, predicted = torch.max(outputs.data, 1)
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
-                    
+
                 epoch_loss = running_loss / len(dataloader)
                 epoch_acc = 100 * correct / total
-                
-                # 汇报进度
-                msg = f"Epoch [{epoch+1}/{epochs}] - Loss: {epoch_loss:.4f} - Accuracy: {epoch_acc:.2f}%"
+                msg = f"Epoch [{epoch+1}/{epochs}]  Loss: {epoch_loss:.4f}  Acc: {epoch_acc:.1f}%"
                 self.root.after(0, self._log, msg)
-                progress_val = int(100 * (epoch + 1) / epochs)
-                self.root.after(0, lambda v=progress_val: self.progress.configure(value=v))
+                pv = int(100 * (epoch + 1) / epochs)
+                self.root.after(0, lambda v=pv: self.progress.configure(value=v))
 
-            # 4. 保存模型
-            save_path = Path(__file__).resolve().parent.parent / "aesthetic_model.pth"
-            torch.save(model.state_dict(), save_path)
-            self.root.after(0, self._log, f"\n🎉 训练完成！模型已保存至:\n{save_path}")
+            # 6. 只保存 MLP 权重
+            save_path = Path(__file__).resolve().parent.parent / "aesthetic_mlp.pth"
+            torch.save(mlp.state_dict(), save_path)
+            self.root.after(0, self._log, f"\n🎉 训练完成！MLP 已保存至:\n{save_path}")
             self.root.after(0, lambda: self.status_lbl.configure(text="训练完毕"))
 
-        except Exception as e:
-            self.root.after(0, self._log, f"\n❌ 训练过程发生错误: {str(e)}")
+        except Exception as exc:
+            self.root.after(0, self._log, f"\n❌ 训练出错: {exc}")
             self.root.after(0, lambda: self.status_lbl.configure(text="训练失败"))
         finally:
             self.root.after(0, self._finish_run)
