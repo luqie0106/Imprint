@@ -15,6 +15,9 @@ jobs:
     
     runs-on: ${{ matrix.os }}
     
+    env:
+      PYTHONIOENCODING: utf-8
+      
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

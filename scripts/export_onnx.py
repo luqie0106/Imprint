@@ -39,8 +39,11 @@ class CombinedAestheticModel(nn.Module):
         self.mlp = mlp
 
     def forward(self, pixel_values):
-        # 1. 过 CLIP 提取特征
-        features = self.clip.get_image_features(pixel_values=pixel_values)
+        # 1. 过 CLIP 提取特征：手动走底层模型，强制 return_dict=False 确保返回 tuple，这对于 ONNX tracing 最为安全
+        vision_outputs = self.clip.vision_model(pixel_values=pixel_values, return_dict=False)
+        pooled_output = vision_outputs[1]  # tuple 的第二个元素是 pooler_output
+        features = self.clip.visual_projection(pooled_output)
+        
         # 2. L2 归一化
         features = features / features.norm(dim=-1, keepdim=True)
         # 3. 过 MLP
@@ -59,7 +62,7 @@ def main():
         sys.exit(1)
 
     print("加载 CLIP 视觉编码器...")
-    clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+    clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", return_dict=False)
     clip_model.eval()
 
     print("加载 AestheticMLP...")
