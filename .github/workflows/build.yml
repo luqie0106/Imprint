@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     
@@ -26,7 +27,7 @@ jobs:
       - name: Install PyTorch and Transformers (for ONNX Export)
         run: |
           python -m pip install --upgrade pip
-          pip install torch transformers
+          pip install torch transformers onnx onnxscript
 
       - name: Export ONNX Model
         run: |
