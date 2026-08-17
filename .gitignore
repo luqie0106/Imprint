@@ -62,5 +62,6 @@ venv.bak/
 
 # PyInstaller
 *.spec
+!photo_sort.spec
 
 .reasonix
