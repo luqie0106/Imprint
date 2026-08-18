@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import threading
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -276,6 +277,7 @@ class AestheticScorer:
     def __init__(self, project_root: Path):
         self.available = False
         self.engine = None  # "onnx" or "torch"
+        self._infer_lock = threading.Lock()
 
         onnx_path = project_root / "photo_sort_model.onnx"
         mlp_path = project_root / "aesthetic_mlp.pth"
@@ -283,7 +285,12 @@ class AestheticScorer:
         # 1. 尝试初始化 ONNX 引擎
         if ONNX_AVAILABLE and onnx_path.exists():
             try:
-                self._session = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
+                # 动态探寻本地支持的硬件加速器 (CoreML 苹果芯片, DML Windows显卡, CUDA Nvidia显卡)
+                available_providers = ort.get_available_providers()
+                target_providers = ['CUDAExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
+                active_providers = [p for p in target_providers if p in available_providers]
+                
+                self._session = ort.InferenceSession(str(onnx_path), providers=active_providers)
                 self.engine = "onnx"
                 self.available = True
                 return
@@ -350,7 +357,8 @@ class AestheticScorer:
             try:
                 inputs = self._preprocess_onnx(img_rgb)
                 ort_inputs = {self._session.get_inputs()[0].name: inputs}
-                probs = self._session.run(None, ort_inputs)[0]
+                with self._infer_lock:
+                    probs = self._session.run(None, ort_inputs)[0]
                 return float(probs[0])
             except Exception:
                 return 1.0
@@ -363,15 +371,16 @@ class AestheticScorer:
                 )
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-                with torch.no_grad():
-                    vision_out = self._clip_model.vision_model(
-                        pixel_values=inputs['pixel_values']
-                    )
-                    pooled = vision_out.pooler_output
-                    features = self._clip_model.visual_projection(pooled)
-                    features = features / features.norm(dim=-1, keepdim=True)
-                    logits = self._mlp(features)
-                    prob = torch.softmax(logits, dim=1)[0][1].item()
+                with self._infer_lock:
+                    with torch.no_grad():
+                        vision_out = self._clip_model.vision_model(
+                            pixel_values=inputs['pixel_values']
+                        )
+                        pooled = vision_out.pooler_output
+                        features = self._clip_model.visual_projection(pooled)
+                        features = features / features.norm(dim=-1, keepdim=True)
+                        logits = self._mlp(features)
+                        prob = torch.softmax(logits, dim=1)[0][1].item()
                 return prob
             except Exception:
                 return 1.0
@@ -411,16 +420,28 @@ class BurstGrouper:
         if not nef_files:
             return []
 
-        # 1. 读取时间并排序
+        # 1. 多线程并发读取时间与提取 dHash
+        def _parse_meta(p: Path) -> tuple[Path, datetime, np.ndarray | None]:
+            return p, self._exif.read_datetime(p), self._safe_dhash(p)
+
+        import concurrent.futures
+        import os
+        workers = min(8, (os.cpu_count() or 4))
+
+        meta_map: dict[Path, tuple[datetime, np.ndarray | None]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            for p, dt, h in executor.map(_parse_meta, nef_files):
+                meta_map[p] = (dt, h)
+
         timed: list[tuple[datetime, Path]] = sorted(
-            ((self._exif.read_datetime(p), p) for p in nef_files),
+            ((meta_map[p][0], p) for p in nef_files),
             key=lambda x: x[0],
         )
 
         # 2. 首帧锚点比对聚类
         result: list[list[Path]] = []
         current_group: list[Path] = [timed[0][1]]
-        anchor_hash: np.ndarray | None = self._safe_dhash(timed[0][1])
+        anchor_hash: np.ndarray | None = meta_map[timed[0][1]][1]
         prev_time = timed[0][0]
 
         for cur_time, cur_path in timed[1:]:
@@ -431,11 +452,11 @@ class BurstGrouper:
             if gap > self.gap_seconds:
                 result.append(current_group)
                 current_group = [cur_path]
-                anchor_hash = self._safe_dhash(cur_path)
+                anchor_hash = meta_map[cur_path][1]
                 continue
 
             # 条件 2：与锚点帧比对 dHash 汉明距离
-            cur_hash = self._safe_dhash(cur_path)
+            cur_hash = meta_map[cur_path][1]
             if anchor_hash is None or cur_hash is None:
                 # 预览提取失败，保守截断
                 result.append(current_group)
@@ -599,18 +620,31 @@ class BurstFilter:
         photos: list[_Photo] = []
         errors: list[str] = []
 
-        for path in group:
+        def _evaluate_photo(path: Path) -> _Photo | tuple[_Photo, str]:
             p = _Photo(path=path)
             try:
                 preview = self._scorer.extract_preview(path)
                 p.sharpness = self._scorer.sharpness(preview)
                 p.exposure  = self._scorer.exposure_score(preview)
                 p.aesthetic = self._aesthetic_scorer.score(preview)
+                return p
             except Exception as exc:
-                warnings.warn(f"跳过 {path.name}: {exc}")
-                errors.append(f"{path.name}: {exc}")
                 p.failed = True
-            photos.append(p)
+                return p, f"{path.name}: {exc}"
+
+        import concurrent.futures
+        import os
+        workers = min(8, (os.cpu_count() or 4))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            for result in executor.map(_evaluate_photo, group):
+                if isinstance(result, tuple):
+                    p, err_msg = result
+                    warnings.warn(f"跳过 {p.path.name}: {err_msg}")
+                    errors.append(err_msg)
+                    photos.append(p)
+                else:
+                    photos.append(result)
 
         if not photos:
             return 0, errors
