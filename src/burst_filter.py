@@ -274,7 +274,7 @@ class AestheticScorer:
 
     _CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
 
-    def __init__(self, project_root: Path):
+    def __init__(self, project_root: Path, use_gpu: bool = True):
         self.available = False
         self.engine = None  # "onnx" or "torch"
         self._infer_lock = threading.Lock()
@@ -285,10 +285,13 @@ class AestheticScorer:
         # 1. 尝试初始化 ONNX 引擎
         if ONNX_AVAILABLE and onnx_path.exists():
             try:
-                # 动态探寻本地支持的硬件加速器 (CoreML 苹果芯片, DML Windows显卡, CUDA Nvidia显卡)
-                available_providers = ort.get_available_providers()
-                target_providers = ['CUDAExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
-                active_providers = [p for p in target_providers if p in available_providers]
+                # 动态探寻本地支持的硬件加速器
+                if use_gpu:
+                    available_providers = ort.get_available_providers()
+                    target_providers = ['CUDAExecutionProvider', 'CoreMLExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
+                    active_providers = [p for p in target_providers if p in available_providers]
+                else:
+                    active_providers = ['CPUExecutionProvider']
                 
                 self._session = ort.InferenceSession(str(onnx_path), providers=active_providers)
                 self.engine = "onnx"
@@ -300,9 +303,12 @@ class AestheticScorer:
         # 2. 尝试回退到 PyTorch 引擎
         if TORCH_AVAILABLE and CLIP_AVAILABLE and mlp_path.exists():
             try:
-                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                if sys.platform == "darwin" and torch.backends.mps.is_available():
-                    self.device = torch.device("mps")
+                if use_gpu:
+                    self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    if sys.platform == "darwin" and torch.backends.mps.is_available():
+                        self.device = torch.device("mps")
+                else:
+                    self.device = torch.device("cpu")
 
                 self._clip_model = CLIPModel.from_pretrained(self._CLIP_MODEL_NAME)
                 self._clip_model.to(self.device)
@@ -410,11 +416,13 @@ class BurstGrouper:
         preview_extractor: RawEvaluator,
         gap_seconds: float = DEFAULT_TIME_GAP_SECONDS,
         max_hamming_distance: int = DEFAULT_MAX_HAMMING_DISTANCE,
+        max_workers: int = 4,
     ) -> None:
         self._exif = exif_reader
         self._previewer = preview_extractor
         self.gap_seconds = gap_seconds
         self.max_hamming_distance = max_hamming_distance
+        self.max_workers = max_workers
 
     def group(self, nef_files: Sequence[Path]) -> list[list[Path]]:
         if not nef_files:
@@ -426,7 +434,7 @@ class BurstGrouper:
 
         import concurrent.futures
         import os
-        workers = min(8, (os.cpu_count() or 4))
+        workers = max(1, self.max_workers)
 
         meta_map: dict[Path, tuple[datetime, np.ndarray | None]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
@@ -530,12 +538,16 @@ class BurstFilter:
         max_hamming_distance: int = DEFAULT_MAX_HAMMING_DISTANCE,
         review_subdir: str = DEFAULT_REVIEW_SUBDIR,
         keep_count: int = 1,
+        max_workers: int = 4,
+        use_gpu: bool = True,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.gap_seconds = gap_seconds
         self.max_hamming_distance = max_hamming_distance
         self.review_subdir = review_subdir
         self.keep_count = max(1, keep_count)
+        self.max_workers = max_workers
+        self.use_gpu = use_gpu
         self.progress_callback = progress_callback
 
         self._exif_reader = RawExifReader()
@@ -545,6 +557,7 @@ class BurstFilter:
             preview_extractor=self._scorer,
             gap_seconds=gap_seconds,
             max_hamming_distance=max_hamming_distance,
+            max_workers=max_workers,
         )
         
         # 尝试加载美学模型（支持 ONNX 与 PyTorch 双引擎）
@@ -554,7 +567,7 @@ class BurstFilter:
         else:
             project_root = Path(__file__).resolve().parent.parent
 
-        self._aesthetic_scorer = AestheticScorer(project_root)
+        self._aesthetic_scorer = AestheticScorer(project_root, use_gpu=self.use_gpu)
         if self._aesthetic_scorer.available:
             engine_str = "ONNX" if self._aesthetic_scorer.engine == "onnx" else "PyTorch"
             print(f"🚀 已启用 {engine_str} 美学评分模型！")
@@ -634,7 +647,7 @@ class BurstFilter:
 
         import concurrent.futures
         import os
-        workers = min(8, (os.cpu_count() or 4))
+        workers = max(1, self.max_workers)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             for result in executor.map(_evaluate_photo, group):

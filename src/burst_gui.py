@@ -7,6 +7,7 @@ burst_gui.py — NEF 连拍优选图形化界面
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import tkinter as tk
@@ -102,7 +103,7 @@ class BurstFilterGUI:
         self.root = tk.Tk()
         self.root.title("RAW 连拍优选")
         self.root.configure(bg=_BG)
-        self.root.geometry("720x660")
+        self.root.geometry("720x760")
         self.root.resizable(True, False)
 
         self.input_dir_var    = tk.StringVar()
@@ -110,6 +111,8 @@ class BurstFilterGUI:
         self.gap_var           = tk.StringVar(value="1.5")
         self.hamming_var        = tk.StringVar(value="12")
         self.keep_count_var   = tk.StringVar(value="1")
+        self.workers_var      = tk.StringVar(value=str(max(1, (os.cpu_count() or 4) // 2)))
+        self.gpu_var          = tk.BooleanVar(value=True)
         self._running = False
 
         self._build_ui()
@@ -160,8 +163,18 @@ class BurstFilterGUI:
         g.pack(fill="x")
         self._param_row(g, 0, "淘汰子目录名称",   self.review_subdir_var, "相对于输入目录的子文件夹名")
         self._param_row(g, 1, "连拍时间阈值（秒）",   self.gap_var,     "前后间隔 ≤ 此値视为连拍候选")
-        self._param_row(g, 2, "dHash 汉明限制",      self.hamming_var, "64 位哈希中允许的最大差异位数，推荐 8〕12〕20")
+        self._param_row(g, 2, "dHash 汉明限制",      self.hamming_var, "64 位哈希中允许的最大差异位数，推荐 8～12～20")
         self._param_row(g, 3, "每组保留张数",     self.keep_count_var,    "1 = 仅保留最优 1 张；填 2 则保留最优 2 张，以此类推")
+        
+        max_cpus = os.cpu_count() or 4
+        self._workers_entry = self._param_row(g, 4, "最大并发线程数", self.workers_var, f"建议值不要超过 {max_cpus} (您的系统物理核心数)")
+        self.workers_var.trace_add("write", self._on_workers_changed)
+
+        # GPU 勾选框
+        gpu_row = tk.Frame(g, bg=_SURFACE)
+        gpu_row.grid(row=10, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        tk.Label(gpu_row, text="硬件加速", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 11), anchor="w", width=16).pack(side="left")
+        tk.Checkbutton(gpu_row, text="启用 显卡/NPU 处理核心（若可用）", variable=self.gpu_var, bg=_SURFACE, fg=_TEXT, font=(_FAM, 11), activebackground=_SURFACE).pack(side="left")
 
         # ── 执行行 ──
         br = tk.Frame(body, bg=_BG)
@@ -178,11 +191,26 @@ class BurstFilterGUI:
         tk.Label(parent, text=label, bg=_SURFACE, fg=_TEXT_DIM,
                  font=(_FAM, 11), anchor="w").grid(
             row=row * 2, column=0, sticky="w", padx=(0, 12), pady=(0, 2))
-        _entry(parent, var, width=26).grid(
-            row=row * 2, column=1, sticky="we", ipady=4, padx=(0, 20))
+        ent = _entry(parent, var, width=26)
+        ent.grid(row=row * 2, column=1, sticky="we", ipady=4, padx=(0, 20))
         tk.Label(parent, text=hint, bg=_SURFACE, fg=_TEXT_DIM,
                  font=(_FAM, 10)).grid(
             row=row * 2 + 1, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        return ent
+
+    def _on_workers_changed(self, *args):
+        try:
+            val = int(self.workers_var.get().strip())
+            max_cpus = os.cpu_count() or 4
+            if val > max_cpus:
+                self._workers_entry.configure(fg=_ERROR)
+                self.run_btn.configure(bg=_ACCENT_DIS, cursor="X_cursor")
+            else:
+                self._workers_entry.configure(fg=_TEXT)
+                self.run_btn.configure(bg=_ACCENT, cursor="hand2")
+        except ValueError:
+            self._workers_entry.configure(fg=_ERROR)
+            self.run_btn.configure(bg=_ACCENT_DIS, cursor="X_cursor")
 
     def _apply_style(self):
         s = ttk.Style()
@@ -210,28 +238,40 @@ class BurstFilterGUI:
             gap    = float(self.gap_var.get().strip())
             hamming = int(self.hamming_var.get().strip())
             keep   = int(self.keep_count_var.get().strip())
+            workers = int(self.workers_var.get().strip())
+            use_gpu = self.gpu_var.get()
+            
             assert 0.0 < gap <= 30.0
             assert 1 <= hamming <= 64
             assert keep >= 1
+            
+            max_cpus = os.cpu_count() or 4
+            if workers > max_cpus:
+                messagebox.showerror("线程数超限", f"为防止内存溢出导致闪退，最大线程数不得超过 {max_cpus}！")
+                return
+            assert workers >= 1
+
         except (ValueError, AssertionError):
-            messagebox.showerror("参数错误", "时间阈値范围 0~30，汉明限制范围 1~64，保留张数 ≥ 1。")
+            messagebox.showerror("参数错误", "请检查填写的参数。时间阈値 0~30，汉明限制 1~64，保留张数 ≥ 1，线程数必须为合法正整数且不可越界。")
             return
 
         subdir = self.review_subdir_var.get().strip() or "审查_连拍淘汰"
         self._set_running(True)
         threading.Thread(
             target=self._worker,
-            args=(input_dir, gap, hamming, subdir, keep),
+            args=(input_dir, gap, hamming, subdir, keep, workers, use_gpu),
             daemon=True,
         ).start()
 
-    def _worker(self, input_dir, gap, hamming, subdir, keep):
+    def _worker(self, input_dir, gap, hamming, subdir, keep, workers, use_gpu):
         try:
             flt = BurstFilter(
                 gap_seconds=gap,
                 max_hamming_distance=hamming,
                 review_subdir=subdir,
                 keep_count=keep,
+                max_workers=workers,
+                use_gpu=use_gpu,
                 progress_callback=lambda msg: self.root.after(
                     0, self._set_status, msg),
             )
