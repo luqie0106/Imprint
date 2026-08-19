@@ -279,8 +279,19 @@ class AestheticScorer:
         self.engine = None  # "onnx" or "torch"
         self._infer_lock = threading.Lock()
 
-        onnx_path = project_root / "photo_sort_model.onnx"
-        mlp_path = project_root / "aesthetic_mlp.pth"
+        if getattr(sys, 'frozen', False):
+            bundle_root = Path(sys._MEIPASS)
+            exe_root = Path(sys.executable).parent
+        else:
+            bundle_root = project_root
+            exe_root = project_root
+
+        if (exe_root / "photo_sort_model.onnx").exists():
+            onnx_path = exe_root / "photo_sort_model.onnx"
+        else:
+            onnx_path = bundle_root / "photo_sort_model.onnx"
+
+        mlp_path = exe_root / "aesthetic_mlp.pth"
 
         # 1. 尝试初始化 ONNX 引擎
         if ONNX_AVAILABLE and onnx_path.exists():

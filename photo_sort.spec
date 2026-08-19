@@ -4,27 +4,42 @@ block_cipher = None
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=[],
     datas=[
-        ('photo_sort_model.onnx', '.'),
-        ('aesthetic_mlp.pth', '.'),
-        ('src', 'src')
+        ('photo_sort_model.onnx', '.') if os.path.exists('photo_sort_model.onnx') else None,
+        ('aesthetic_mlp.pth', '.') if os.path.exists('aesthetic_mlp.pth') else None,
+        ('src', 'src'),
     ],
+    datas=[d for d in [
+        ('photo_sort_model.onnx', '.') if os.path.exists('photo_sort_model.onnx') else None,
+        ('aesthetic_mlp.pth', '.') if os.path.exists('aesthetic_mlp.pth') else None,
+        ('src', 'src'),
+    ] if d is not None],
     hiddenimports=[
+        'app_gui',
         'burst_filter',
         'burst_gui',
         'trainer_gui',
+        'model_manager',
+        'onnx_exporter',
         'cv2',
         'numpy',
         'onnxruntime',
         'rawpy',
-        'PIL'
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageTk',
+        'PIL._imaging',
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.filedialog',
+        'tkinter.messagebox',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Exclude PyTorch and Transformers entirely from the build
+    # Exclude PyTorch and Transformers from the lightweight distribution build
     excludes=['torch', 'torchvision', 'transformers', 'huggingface_hub', 'safetensors'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

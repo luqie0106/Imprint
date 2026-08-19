@@ -13,12 +13,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-# 项目根目录
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# 项目根目录与打包资源目录
+if getattr(sys, 'frozen', False):
+    PROJECT_ROOT = Path(sys.executable).parent
+    BUNDLE_ROOT = Path(sys._MEIPASS)
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    BUNDLE_ROOT = PROJECT_ROOT
+
 MODELS_DIR = PROJECT_ROOT / "models"
 CLIP_MODEL_DIR = MODELS_DIR / "clip-vit-base-patch32"
 MLP_WEIGHTS_PATH = PROJECT_ROOT / "aesthetic_mlp.pth"
 ONNX_MODEL_PATH = PROJECT_ROOT / "photo_sort_model.onnx"
+ONNX_BUNDLE_PATH = BUNDLE_ROOT / "photo_sort_model.onnx"
 
 # HuggingFace 默认系统缓存路径
 HF_HUB_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub" / "models--openai--clip-vit-base-patch32"
@@ -166,7 +173,10 @@ def check_all_models() -> ModelStatus:
 
     clip_ok = (clip_loc != "none")
     mlp_ok = MLP_WEIGHTS_PATH.exists() and MLP_WEIGHTS_PATH.stat().st_size > 1000
-    onnx_ok = ONNX_MODEL_PATH.exists() and ONNX_MODEL_PATH.stat().st_size > 100 * 1024 * 1024
+    has_local_onnx = ONNX_MODEL_PATH.exists() and ONNX_MODEL_PATH.stat().st_size > 100 * 1024 * 1024
+    has_bundle_onnx = ONNX_BUNDLE_PATH.exists() and ONNX_BUNDLE_PATH.stat().st_size > 100 * 1024 * 1024
+    onnx_ok = has_local_onnx or has_bundle_onnx
+    actual_onnx_path = ONNX_MODEL_PATH if has_local_onnx else ONNX_BUNDLE_PATH
 
     return ModelStatus(
         clip_ready=clip_ok,
@@ -175,7 +185,7 @@ def check_all_models() -> ModelStatus:
         mlp_ready=mlp_ok,
         mlp_path=str(MLP_WEIGHTS_PATH),
         onnx_ready=onnx_ok,
-        onnx_path=str(ONNX_MODEL_PATH),
+        onnx_path=str(actual_onnx_path),
         is_fully_ready=(onnx_ok or (clip_ok and mlp_ok)),
     )
 

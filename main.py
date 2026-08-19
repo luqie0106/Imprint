@@ -1,15 +1,38 @@
+"""
+main.py — Photo Sort 主程序入口
+"""
+
 import argparse
 import importlib
+import os
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-SRC_PATH = PROJECT_ROOT / "src"
+# 显式导入常用核心库，确保 PyInstaller 打包时能准确解析 Pillow 等底层依赖
+try:
+    import PIL.Image  # noqa: F401
+    import PIL.ImageTk  # noqa: F401
+except ImportError:
+    pass
+
+# 正确适配源码运行与 PyInstaller 打包后的路径
+if getattr(sys, 'frozen', False):
+    # PyInstaller 运行环境
+    BUNDLE_DIR = Path(sys._MEIPASS)
+    PROJECT_ROOT = Path(sys.executable).parent
+else:
+    # 源码开发运行环境
+    BUNDLE_DIR = Path(__file__).resolve().parent
+    PROJECT_ROOT = BUNDLE_DIR
+
+SRC_PATH = BUNDLE_DIR / "src"
 
 
 def _ensure_src_on_path() -> None:
     if str(SRC_PATH) not in sys.path:
         sys.path.insert(0, str(SRC_PATH))
+    if str(BUNDLE_DIR) not in sys.path:
+        sys.path.insert(0, str(BUNDLE_DIR))
 
 
 def _prompt_path(prompt: str) -> Path:
@@ -64,12 +87,12 @@ def run_burst_console() -> None:
 def run_download_models_cli() -> None:
     _ensure_src_on_path()
     download_clip_model = importlib.import_module("model_manager").download_clip_model
-    print("开始下载 CLIP 基础模型到本地 models/ 目录...")
+    print("开始下载/同步 CLIP 基础模型到本地 models/ 目录...")
     def _cb(msg: str, pct: float):
         print(f"[{pct*100:3.0f}%] {msg}")
     success = download_clip_model(use_mirror=True, progress_callback=_cb)
     if success:
-        print("✅ 模型下载并校验成功！")
+        print("✅ 模型就绪！")
     else:
         print("❌ 模型下载失败，请检查网络连接。")
 
@@ -89,7 +112,9 @@ def run_gui() -> None:
     try:
         importlib.import_module("app_gui").launch_main_gui()
     except Exception as exc:
-        print(f"综合 GUI 启动遇到问题 ({exc})，尝试启动经典连拍界面...")
+        # 如果是开发调试，打印异常堆栈
+        import traceback
+        traceback.print_exc()
         try:
             importlib.import_module("burst_gui").launch_burst_gui()
         except Exception:
@@ -103,7 +128,7 @@ def main() -> None:
     parser.add_argument("--download-models", action="store_true", help="下载基础 CLIP 模型至本地 models 目录")
     parser.add_argument("--export-onnx", action="store_true", help="从本地 MLP 权重熔铸并导出 photo_sort_model.onnx")
     parser.add_argument("--train-gui", action="store_true", help="直接打开偏好训练器独立窗口")
-    
+
     args, unknown = parser.parse_known_args()
 
     if args.download_models:
