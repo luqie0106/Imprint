@@ -172,7 +172,11 @@ def check_all_models() -> ModelStatus:
         clip_loc = "none"
 
     clip_ok = (clip_loc != "none")
-    mlp_ok = MLP_WEIGHTS_PATH.exists() and MLP_WEIGHTS_PATH.stat().st_size > 1000
+    has_local_mlp = MLP_WEIGHTS_PATH.exists() and MLP_WEIGHTS_PATH.stat().st_size > 1000
+    has_bundle_mlp = (BUNDLE_ROOT / "aesthetic_mlp.pth").exists() and (BUNDLE_ROOT / "aesthetic_mlp.pth").stat().st_size > 1000
+    mlp_ok = has_local_mlp or has_bundle_mlp
+    actual_mlp_path = MLP_WEIGHTS_PATH if has_local_mlp else (BUNDLE_ROOT / "aesthetic_mlp.pth")
+
     has_local_onnx = ONNX_MODEL_PATH.exists() and ONNX_MODEL_PATH.stat().st_size > 100 * 1024 * 1024
     has_bundle_onnx = ONNX_BUNDLE_PATH.exists() and ONNX_BUNDLE_PATH.stat().st_size > 100 * 1024 * 1024
     onnx_ok = has_local_onnx or has_bundle_onnx
@@ -183,7 +187,7 @@ def check_all_models() -> ModelStatus:
         clip_location=clip_loc,
         clip_path=str(CLIP_MODEL_DIR if is_local else CLIP_REPO_ID),
         mlp_ready=mlp_ok,
-        mlp_path=str(MLP_WEIGHTS_PATH),
+        mlp_path=str(actual_mlp_path),
         onnx_ready=onnx_ok,
         onnx_path=str(actual_onnx_path),
         is_fully_ready=(onnx_ok or (clip_ok and mlp_ok)),

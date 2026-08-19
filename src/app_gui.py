@@ -59,8 +59,9 @@ class MainAppGUI:
         self.root = tk.Tk()
         self.root.title("Photo Sort — RAW 智能连拍优选与个人审美系统")
         self.root.configure(bg=_BG)
-        self.root.geometry("820x820")
-        self.root.minsize(760, 720)
+        # 紧凑尺寸，完美兼容 1080p 及高分屏缩放 (100% ~ 150%)
+        self.root.geometry("760x600")
+        self.root.minsize(700, 520)
 
         self._active_tab_idx = 0
         self._tab_buttons: list[tk.Label] = []
@@ -82,20 +83,20 @@ class MainAppGUI:
 
     def _build_shell(self) -> None:
         # ── 顶部 Header ──
-        hdr = tk.Frame(self.root, bg=_BG, pady=14)
-        hdr.pack(fill="x", padx=28)
+        hdr = tk.Frame(self.root, bg=_BG, pady=10)
+        hdr.pack(fill="x", padx=20)
 
         title_row = tk.Frame(hdr, bg=_BG)
         title_row.pack(fill="x")
         tk.Label(title_row, text="📸  Photo Sort", bg=_BG, fg=_TEXT,
-                 font=(_FAM_TITLE, 22, "bold")).pack(side="left")
+                 font=(_FAM_TITLE, 20, "bold")).pack(side="left")
         tk.Label(title_row, text="RAW 连拍优选 · 审美微调 · ONNX 极速推理",
-                 bg=_BG, fg=_TEXT_DIM, font=(_FAM, 12)).pack(side="left", padx=(12, 0), pady=(6, 0))
+                 bg=_BG, fg=_TEXT_DIM, font=(_FAM, 11)).pack(side="left", padx=(10, 0), pady=(4, 0))
 
         # ── 导航栏 (Tabs Switcher) ──
         nav_container = tk.Frame(self.root, bg=_TAB_BG, highlightthickness=1,
                                  highlightbackground=_BORDER)
-        nav_container.pack(fill="x", padx=28, pady=(4, 10))
+        nav_container.pack(fill="x", padx=20, pady=(2, 6))
 
         tabs_info = [
             ("📷  连拍优选", 0),
@@ -103,13 +104,13 @@ class MainAppGUI:
             ("📦  模型与环境", 2),
         ]
 
-        nav_inner = tk.Frame(nav_container, bg=_TAB_BG, padx=4, pady=4)
+        nav_inner = tk.Frame(nav_container, bg=_TAB_BG, padx=3, pady=3)
         nav_inner.pack(fill="x")
 
         for label_text, idx in tabs_info:
             btn = tk.Label(
                 nav_inner, text=label_text, bg=_TAB_BG, fg=_TEXT_DIM,
-                font=(_FAM, 12, "bold"), cursor="hand2", padx=20, pady=8,
+                font=(_FAM, 11, "bold"), cursor="hand2", padx=16, pady=6,
             )
             btn.bind("<Button-1>", lambda e, i=idx: self._switch_tab(i))
             btn.pack(side="left", padx=2)
@@ -152,27 +153,24 @@ class MainAppGUI:
 
     def _build_model_manager_tab(self, parent: tk.Frame) -> None:
         container = tk.Frame(parent, bg=_BG)
-        container.pack(fill="both", expand=True, padx=28, pady=16)
+        container.pack(fill="both", expand=True, padx=20, pady=10)
 
-        # 标题提示
-        tk.Label(container, text="模型文件状态与本地缓存管理", bg=_BG, fg=_TEXT,
-                 font=(_FAM_TITLE, 16, "bold")).pack(anchor="w")
-        tk.Label(container, text="下载的模型文件将保存在程序当前目录下的 models/ 文件夹中，完全便携且支持离线使用",
-                 bg=_BG, fg=_TEXT_DIM, font=(_FAM, 11)).pack(anchor="w", pady=(2, 14))
+        tk.Label(container, text="模型文件状态与本地管理", bg=_BG, fg=_TEXT,
+                 font=(_FAM_TITLE, 14, "bold")).pack(anchor="w")
+        tk.Label(container, text="模型文件存放于程序目录下的 models/ 文件夹中，支持离线与跨设备便携使用",
+                 bg=_BG, fg=_TEXT_DIM, font=(_FAM, 10)).pack(anchor="w", pady=(1, 8))
 
         # ── 卡片 1：CLIP 基础视觉模型 ──
         c1 = self._create_card(container)
-        c1.pack(fill="x", pady=(0, 12))
-        i1 = tk.Frame(c1, bg=_SURFACE, padx=16, pady=14)
+        c1.pack(fill="x", pady=(0, 8))
+        i1 = tk.Frame(c1, bg=_SURFACE, padx=14, pady=8)
         i1.pack(fill="x")
 
         tk.Label(i1, text="1. 基础视觉主干模型 (CLIP ViT-B/32)", bg=_SURFACE, fg=_TEXT,
-                 font=(_FAM, 13, "bold")).pack(anchor="w")
-        tk.Label(i1, text="用于从 RAW 照片中提取 512 维高维构图与美学特征向量（约 340MB）",
-                 bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 11)).pack(anchor="w", pady=(2, 8))
+                 font=(_FAM, 11, "bold")).pack(anchor="w")
 
-        self.clip_status_label = tk.Label(i1, text="", bg=_SURFACE, font=(_FAM, 11, "bold"))
-        self.clip_status_label.pack(anchor="w", pady=(2, 10))
+        self.clip_status_label = tk.Label(i1, text="", bg=_SURFACE, font=(_FAM, 10, "bold"))
+        self.clip_status_label.pack(anchor="w", pady=(2, 6))
 
         dl_row = tk.Frame(i1, bg=_SURFACE)
         dl_row.pack(fill="x")
@@ -182,25 +180,23 @@ class MainAppGUI:
 
         tk.Checkbutton(
             dl_row, text="使用国内加速镜像 (hf-mirror.com)", variable=self.use_mirror_var,
-            bg=_SURFACE, fg=_TEXT, font=(_FAM, 11), activebackground=_SURFACE,
-        ).pack(side="left", padx=16)
+            bg=_SURFACE, fg=_TEXT, font=(_FAM, 10), activebackground=_SURFACE,
+        ).pack(side="left", padx=12)
 
-        self.dl_progress = ttk.Progressbar(i1, mode="determinate", length=300)
-        self.dl_status_lbl = tk.Label(i1, text="", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 10))
+        self.dl_progress = ttk.Progressbar(i1, mode="determinate", length=240)
+        self.dl_status_lbl = tk.Label(i1, text="", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 9))
 
         # ── 卡片 2：个人偏好 MLP 权重 ──
         c2 = self._create_card(container)
-        c2.pack(fill="x", pady=(0, 12))
-        i2 = tk.Frame(c2, bg=_SURFACE, padx=16, pady=14)
+        c2.pack(fill="x", pady=(0, 8))
+        i2 = tk.Frame(c2, bg=_SURFACE, padx=14, pady=8)
         i2.pack(fill="x")
 
-        tk.Label(i2, text="2. 个人审美偏好分类头 (AestheticMLP 权重)", bg=_SURFACE, fg=_TEXT,
-                 font=(_FAM, 13, "bold")).pack(anchor="w")
-        tk.Label(i2, text="记录你的专属摄影审美偏好分类权重 (aesthetic_mlp.pth)",
-                 bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 11)).pack(anchor="w", pady=(2, 8))
+        tk.Label(i2, text="2. 个人审美偏好分类头 (aesthetic_mlp.pth)", bg=_SURFACE, fg=_TEXT,
+                 font=(_FAM, 11, "bold")).pack(anchor="w")
 
-        self.mlp_status_label = tk.Label(i2, text="", bg=_SURFACE, font=(_FAM, 11, "bold"))
-        self.mlp_status_label.pack(anchor="w", pady=(2, 10))
+        self.mlp_status_label = tk.Label(i2, text="", bg=_SURFACE, font=(_FAM, 10, "bold"))
+        self.mlp_status_label.pack(anchor="w", pady=(2, 6))
 
         mlp_row = tk.Frame(i2, bg=_SURFACE)
         mlp_row.pack(fill="x")
@@ -208,17 +204,15 @@ class MainAppGUI:
 
         # ── 卡片 3：ONNX 极速加速模型 ──
         c3 = self._create_card(container)
-        c3.pack(fill="x", pady=(0, 12))
-        i3 = tk.Frame(c3, bg=_SURFACE, padx=16, pady=14)
+        c3.pack(fill="x", pady=(0, 8))
+        i3 = tk.Frame(c3, bg=_SURFACE, padx=14, pady=8)
         i3.pack(fill="x")
 
         tk.Label(i3, text="3. ONNX 端到端融合模型 (photo_sort_model.onnx)", bg=_SURFACE, fg=_TEXT,
-                 font=(_FAM, 13, "bold")).pack(anchor="w")
-        tk.Label(i3, text="将 CLIP 视觉主干与你的偏好分类头融合为单一模型，免除 PyTorch 庞大开销，实现毫秒级极速推理",
-                 bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 11)).pack(anchor="w", pady=(2, 8))
+                 font=(_FAM, 11, "bold")).pack(anchor="w")
 
-        self.onnx_status_label = tk.Label(i3, text="", bg=_SURFACE, font=(_FAM, 11, "bold"))
-        self.onnx_status_label.pack(anchor="w", pady=(2, 10))
+        self.onnx_status_label = tk.Label(i3, text="", bg=_SURFACE, font=(_FAM, 10, "bold"))
+        self.onnx_status_label.pack(anchor="w", pady=(2, 6))
 
         onnx_row = tk.Frame(i3, bg=_SURFACE)
         onnx_row.pack(fill="x")
@@ -238,8 +232,8 @@ class MainAppGUI:
         lbl = tk.Label(
             parent, text=text,
             bg=_ACCENT if active else _ACCENT_DIS, fg="white",
-            font=(_FAM, 11, "bold"), cursor="hand2" if active else "arrow",
-            padx=14, pady=6,
+            font=(_FAM, 10, "bold"), cursor="hand2" if active else "arrow",
+            padx=12, pady=5,
         )
 
         def _click(e):
@@ -261,10 +255,8 @@ class MainAppGUI:
             else:
                 btn.configure(bg=_TAB_BG, fg=_TEXT_DIM)
 
-        # 提升目标面板到最前层
         self._tab_frames[idx].tkraise()
 
-        # 切换标签时刷新状态
         if idx == 0:
             self.burst_gui.refresh_model_status()
         elif idx == 2:
@@ -273,7 +265,6 @@ class MainAppGUI:
     # ── 模型状态刷新 ───────────────────────────────────────────────────────────
 
     def _on_model_updated(self) -> None:
-        """当模型被训练、下载或熔铸更新时调用"""
         self.burst_gui.refresh_model_status()
         self.refresh_model_mgr_ui()
 
@@ -303,12 +294,10 @@ class MainAppGUI:
 
         # 2. MLP
         if status.mlp_ready:
-            size_kb = MLP_WEIGHTS_PATH.stat().st_size / 1024
-            mtime = MLP_WEIGHTS_PATH.stat().st_mtime
-            import time
-            mtime_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+            p = Path(status.mlp_path)
+            size_kb = p.stat().st_size / 1024 if p.exists() else 0
             self.mlp_status_label.configure(
-                text=f"✅ 已训练 (文件: aesthetic_mlp.pth, 大小: {size_kb:.1f} KB, 更新时间: {mtime_str})",
+                text=f"✅ 已就绪 (文件: {p.name}, 大小: {size_kb:.1f} KB)",
                 fg=_SUCCESS
             )
         else:
@@ -319,9 +308,10 @@ class MainAppGUI:
 
         # 3. ONNX
         if status.onnx_ready:
-            size_mb = ONNX_MODEL_PATH.stat().st_size / (1024 * 1024)
+            p = Path(status.onnx_path)
+            size_mb = p.stat().st_size / (1024 * 1024) if p.exists() else 0
             self.onnx_status_label.configure(
-                text=f"✅ 已就绪 (文件: photo_sort_model.onnx, 大小: {size_mb:.1f} MB, 支持极速硬件加速)",
+                text=f"✅ 已就绪 (文件: {p.name}, 大小: {size_mb:.1f} MB, 支持极速硬件加速)",
                 fg=_SUCCESS
             )
             self.export_onnx_btn.configure(text="⚡  重新熔铸 ONNX", bg=_ACCENT, cursor="hand2")
@@ -362,7 +352,7 @@ class MainAppGUI:
 
         self._downloading_model = True
         self.dl_clip_btn.configure(bg=_ACCENT_DIS, cursor="arrow")
-        self.dl_progress.pack(fill="x", pady=(10, 4))
+        self.dl_progress.pack(fill="x", pady=(6, 2))
         self.dl_progress["value"] = 0
         self.dl_status_lbl.pack(anchor="w")
         self.dl_status_lbl.configure(text="正在准备同步/下载...")
@@ -400,7 +390,7 @@ class MainAppGUI:
         self._on_model_updated()
 
     def _on_manual_export_onnx(self) -> None:
-        if not MLP_WEIGHTS_PATH.exists():
+        if not MLP_WEIGHTS_PATH.exists() and not (BUNDLE_ROOT / "aesthetic_mlp.pth").exists():
             messagebox.showwarning("无法导出", "未找到 aesthetic_mlp.pth 权重文件，请先进行偏好训练。")
             return
 
