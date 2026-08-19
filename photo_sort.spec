@@ -1,21 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
 block_cipher = None
+
+# 收集需要打包的静态资源
+datas = [('src', 'src')]
+if os.path.exists('photo_sort_model.onnx'):
+    datas.append(('photo_sort_model.onnx', '.'))
+if os.path.exists('aesthetic_mlp.pth'):
+    datas.append(('aesthetic_mlp.pth', '.'))
 
 a = Analysis(
     ['main.py'],
     pathex=['src'],
     binaries=[],
-    datas=[
-        ('photo_sort_model.onnx', '.') if os.path.exists('photo_sort_model.onnx') else None,
-        ('aesthetic_mlp.pth', '.') if os.path.exists('aesthetic_mlp.pth') else None,
-        ('src', 'src'),
-    ],
-    datas=[d for d in [
-        ('photo_sort_model.onnx', '.') if os.path.exists('photo_sort_model.onnx') else None,
-        ('aesthetic_mlp.pth', '.') if os.path.exists('aesthetic_mlp.pth') else None,
-        ('src', 'src'),
-    ] if d is not None],
+    datas=datas,
     hiddenimports=[
         'app_gui',
         'burst_filter',
@@ -39,7 +39,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Exclude PyTorch and Transformers from the lightweight distribution build
+    # 排除庞大的训练框架以保持轻量化
     excludes=['torch', 'torchvision', 'transformers', 'huggingface_hub', 'safetensors'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -58,7 +58,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False, # Hide console for GUI app
+    console=False, # GUI 应用无控制台窗口
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
