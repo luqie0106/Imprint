@@ -1,8 +1,5 @@
 """
-burst_gui.py — NEF 连拍优选图形化界面
-
-独立运行：
-    python src/burst_gui.py
+burst_gui.py — RAW 连拍优选图形化界面
 """
 
 from __future__ import annotations
@@ -13,13 +10,15 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 
 # ── 确保 src 在 sys.path 上 ───────────────────────────────────────────────────
 _SRC_DIR = Path(__file__).resolve().parent
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from burst_filter import BurstFilter, BurstFilterResult  # noqa: E402
+from burst_filter import BurstFilter, BurstFilterResult
+from model_manager import check_all_models, PROJECT_ROOT
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 颜色 & 字体常量
@@ -71,15 +70,17 @@ def _card(parent):
                     highlightbackground=_BORDER)
 
 
-def _pill_button(parent, text, command, big=False):
+def _pill_button(parent, text, command, big=False, active=True):
     size = 13 if big else 11
     px = 20 if big else 14
     py = 9 if big else 6
+    bg_col = _ACCENT if active else _ACCENT_DIS
+    cursor = "hand2" if active else "arrow"
     lbl = tk.Label(
         parent, text=text,
-        bg=_ACCENT, fg="white",
+        bg=bg_col, fg="white",
         font=(_FAM, size, "bold"),
-        cursor="hand2", padx=px, pady=py,
+        cursor=cursor, padx=px, pady=py,
     )
 
     def _click(e):
@@ -95,43 +96,64 @@ def _pill_button(parent, text, command, big=False):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 主窗口
+# 连拍优选界面
 # ══════════════════════════════════════════════════════════════════════════════
 
 class BurstFilterGUI:
-    def __init__(self) -> None:
-        self.root = tk.Tk()
-        self.root.title("RAW 连拍优选")
-        self.root.configure(bg=_BG)
-        self.root.geometry("720x760")
-        self.root.resizable(True, False)
+    def __init__(self, parent: tk.Widget | None = None, on_navigate_tab: Callable[[int], None] | None = None) -> None:
+        self.is_standalone = parent is None
+        self.root = tk.Tk() if self.is_standalone else parent
+        self.on_navigate_tab = on_navigate_tab
 
-        self.input_dir_var    = tk.StringVar()
+        if self.is_standalone:
+            self.root.title("RAW 连拍优选")
+            self.root.configure(bg=_BG)
+            self.root.geometry("740x780")
+            self.root.resizable(True, True)
+
+        self.input_dir_var     = tk.StringVar()
         self.review_subdir_var = tk.StringVar(value="审查_连拍淘汰")
         self.gap_var           = tk.StringVar(value="1.5")
-        self.hamming_var        = tk.StringVar(value="12")
-        self.keep_count_var   = tk.StringVar(value="1")
-        self.workers_var      = tk.StringVar(value=str(max(1, (os.cpu_count() or 4) // 2)))
-        self.gpu_var          = tk.BooleanVar(value=True)
+        self.hamming_var       = tk.StringVar(value="12")
+        self.keep_count_var    = tk.StringVar(value="1")
+        self.workers_var       = tk.StringVar(value=str(max(1, (os.cpu_count() or 4) // 2)))
+        self.gpu_var           = tk.BooleanVar(value=True)
         self._running = False
 
         self._build_ui()
         self._apply_style()
+        self.refresh_model_status()
 
     # ── 构建 UI ───────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        # ── 标题 ──
-        hdr = tk.Frame(self.root, bg=_BG, pady=18)
-        hdr.pack(fill="x", padx=28)
-        tk.Label(hdr, text="📷  RAW 连拍优选", bg=_BG, fg=_TEXT,
-                 font=(_FAM_TITLE, 22, "bold")).pack(anchor="w")
-        tk.Label(hdr, text="支持 NEF / ARW / CR3 / RAF · 保留最清晰帧 · 移动冗余片至审查目录",
-                 bg=_BG, fg=_TEXT_DIM, font=(_FAM, 12)).pack(anchor="w", pady=(3, 0))
-        tk.Frame(self.root, bg=_BORDER, height=1).pack(fill="x", padx=28)
+        container = tk.Frame(self.root, bg=_BG)
+        container.pack(fill="both", expand=True)
 
-        body = tk.Frame(self.root, bg=_BG)
-        body.pack(fill="both", expand=True, padx=28, pady=20)
+        # ── 独立运行时显示标题 ──
+        if self.is_standalone:
+            hdr = tk.Frame(container, bg=_BG, pady=18)
+            hdr.pack(fill="x", padx=28)
+            tk.Label(hdr, text="📷  RAW 连拍优选", bg=_BG, fg=_TEXT,
+                     font=(_FAM_TITLE, 22, "bold")).pack(anchor="w")
+            tk.Label(hdr, text="支持 NEF / ARW / CR3 / RAF · 智能保留最优帧 · 移动冗余片至审查目录",
+                     bg=_BG, fg=_TEXT_DIM, font=(_FAM, 12)).pack(anchor="w", pady=(3, 0))
+            tk.Frame(container, bg=_BORDER, height=1).pack(fill="x", padx=28)
+
+        body = tk.Frame(container, bg=_BG)
+        body.pack(fill="both", expand=True, padx=28 if self.is_standalone else 10, pady=16)
+
+        # ── 模型状态栏卡片 ──
+        mc = _card(body)
+        mc.pack(fill="x", pady=(0, 12))
+        self.model_status_frame = tk.Frame(mc, bg=_SURFACE, padx=16, pady=10)
+        self.model_status_frame.pack(fill="x")
+
+        self.model_status_lbl = tk.Label(
+            self.model_status_frame, text="🔍 正在检测美学模型状态...",
+            bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 11)
+        )
+        self.model_status_lbl.pack(side="left")
 
         # ── 目录选择卡片 ──
         dc = _card(body)
@@ -156,25 +178,27 @@ class BurstFilterGUI:
         pi.pack(fill="x")
 
         _label(pi, "⚙️  处理参数", bold=True).pack(anchor="w")
-        _label(pi, "可使用默认值，无需更改", size=10,
+        _label(pi, "可使用推荐默认值，无需频繁更改", size=10,
                color=_TEXT_DIM).pack(anchor="w", pady=(2, 10))
 
         g = tk.Frame(pi, bg=_SURFACE)
         g.pack(fill="x")
-        self._param_row(g, 0, "淘汰子目录名称",   self.review_subdir_var, "相对于输入目录的子文件夹名")
-        self._param_row(g, 1, "连拍时间阈值（秒）",   self.gap_var,     "前后间隔 ≤ 此値视为连拍候选")
-        self._param_row(g, 2, "dHash 汉明限制",      self.hamming_var, "64 位哈希中允许的最大差异位数，推荐 8～12～20")
+        self._param_row(g, 0, "淘汰子目录名称",   self.review_subdir_var, "相对于输入目录的子文件夹名（默认：审查_连拍淘汰）")
+        self._param_row(g, 1, "连拍时间阈值（秒）", self.gap_var,           "前后间隔 ≤ 此値视为连拍候选（推荐 1.0~2.0 秒）")
+        self._param_row(g, 2, "dHash 汉明限制",    self.hamming_var,       "64 位感知哈希最大差异位数（推荐 8～12～20）")
         self._param_row(g, 3, "每组保留张数",     self.keep_count_var,    "1 = 仅保留最优 1 张；填 2 则保留最优 2 张，以此类推")
         
         max_cpus = os.cpu_count() or 4
-        self._workers_entry = self._param_row(g, 4, "最大并发线程数", self.workers_var, f"建议值不要超过 {max_cpus} (您的系统物理核心数)")
+        self._workers_entry = self._param_row(g, 4, "最大并发线程数", self.workers_var, f"建议值不超过 {max_cpus} (物理核心数)")
         self.workers_var.trace_add("write", self._on_workers_changed)
 
         # GPU 勾选框
         gpu_row = tk.Frame(g, bg=_SURFACE)
         gpu_row.grid(row=10, column=0, columnspan=2, sticky="w", pady=(5, 0))
         tk.Label(gpu_row, text="硬件加速", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 11), anchor="w", width=16).pack(side="left")
-        tk.Checkbutton(gpu_row, text="启用 显卡/NPU 处理核心（若可用）", variable=self.gpu_var, bg=_SURFACE, fg=_TEXT, font=(_FAM, 11), activebackground=_SURFACE).pack(side="left")
+        tk.Checkbutton(gpu_row, text="启用 显卡/NPU 硬件加速（CoreML / CUDA / MPS）",
+                       variable=self.gpu_var, bg=_SURFACE, fg=_TEXT, font=(_FAM, 11),
+                       activebackground=_SURFACE).pack(side="left")
 
         # ── 执行行 ──
         br = tk.Frame(body, bg=_BG)
@@ -214,14 +238,34 @@ class BurstFilterGUI:
 
     def _apply_style(self):
         s = ttk.Style()
-        s.theme_use("default")
-        s.configure("Horizontal.TProgressbar",
-                    troughcolor=_SURFACE, background=_ACCENT, thickness=6)
+        try:
+            s.configure("Horizontal.TProgressbar", background=_ACCENT, thickness=6)
+        except Exception:
+            pass
+
+    def refresh_model_status(self):
+        """刷新模型状态指示器"""
+        status = check_all_models()
+        if status.onnx_ready:
+            self.model_status_lbl.configure(
+                text="🟢 AI 美学引擎：ONNX 极速加速已就绪 (photo_sort_model.onnx)",
+                fg=_SUCCESS
+            )
+        elif status.mlp_ready:
+            self.model_status_lbl.configure(
+                text="🟡 AI 美学引擎：PyTorch 模式 (aesthetic_mlp.pth，建议熔铸 ONNX)",
+                fg=_WARNING
+            )
+        else:
+            self.model_status_lbl.configure(
+                text="⚪ AI 美学引擎：未训练 (当前降级为纯 OpenCV 锐度 + 曝光筛选)",
+                fg=_TEXT_DIM
+            )
 
     # ── 事件 ─────────────────────────────────────────────────────────────────
 
     def _pick_dir(self):
-        d = filedialog.askdirectory(title="选择 NEF 文件夹")
+        d = filedialog.askdirectory(title="选择 RAW 文件夹")
         if d:
             self.input_dir_var.set(d)
 
@@ -231,13 +275,13 @@ class BurstFilterGUI:
 
         input_dir = Path(self.input_dir_var.get().strip())
         if not input_dir.exists() or not input_dir.is_dir():
-            messagebox.showerror("路径错误", "请先选择一个有效的 NEF 文件目录。")
+            messagebox.showerror("路径错误", "请先选择一个有效的 RAW 文件目录。")
             return
 
         try:
-            gap    = float(self.gap_var.get().strip())
+            gap     = float(self.gap_var.get().strip())
             hamming = int(self.hamming_var.get().strip())
-            keep   = int(self.keep_count_var.get().strip())
+            keep    = int(self.keep_count_var.get().strip())
             workers = int(self.workers_var.get().strip())
             use_gpu = self.gpu_var.get()
             
@@ -288,12 +332,11 @@ class BurstFilterGUI:
         self._set_status("完成")
 
         if r.total == 0:
-            messagebox.showinfo("处理完成", "目录中未找到任何 NEF 文件。")
+            messagebox.showinfo("处理完成", "目录中未找到任何 RAW 文件（NEF/ARW/CR3/RAF）。")
             return
 
-        # 拼接统计文字
         lines = [
-            f"总 NEF 文件数：    {r.total}",
+            f"总 RAW 文件数：    {r.total}",
             f"单拍跳过（保留）：  {r.skipped_single}",
             f"连拍组数：         {r.burst_groups}",
             f"已移动淘汰数：     {r.moved}",
@@ -305,7 +348,7 @@ class BurstFilterGUI:
 
         if r.errors:
             lines.append(f"\n⚠️  {len(r.errors)} 个文件处理警告：")
-            for e in r.errors[:5]:          # 最多显示前 5 条
+            for e in r.errors[:5]:
                 lines.append(f"  · {e}")
             if len(r.errors) > 5:
                 lines.append(f"  … 共 {len(r.errors)} 条，请查看控制台")
@@ -336,15 +379,10 @@ class BurstFilterGUI:
             self.run_btn.configure(bg=_ACCENT, cursor="hand2")
             self.progress.stop()
 
-    # ── 主循环 ────────────────────────────────────────────────────────────────
-
     def run(self):
-        self.root.mainloop()
+        if self.is_standalone:
+            self.root.mainloop()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 入口
-# ══════════════════════════════════════════════════════════════════════════════
 
 def launch_burst_gui() -> None:
     BurstFilterGUI().run()

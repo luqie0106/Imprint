@@ -310,13 +310,16 @@ class AestheticScorer:
                 else:
                     self.device = torch.device("cpu")
 
-                self._clip_model = CLIPModel.from_pretrained(self._CLIP_MODEL_NAME)
+                local_clip_dir = project_root / "models" / "clip-vit-base-patch32"
+                clip_source = str(local_clip_dir) if local_clip_dir.exists() and (local_clip_dir / "config.json").exists() else self._CLIP_MODEL_NAME
+
+                self._clip_model = CLIPModel.from_pretrained(clip_source)
                 self._clip_model.to(self.device)
                 self._clip_model.eval()
                 for p in self._clip_model.parameters():
                     p.requires_grad_(False)
 
-                self._clip_processor = CLIPProcessor.from_pretrained(self._CLIP_MODEL_NAME)
+                self._clip_processor = CLIPProcessor.from_pretrained(clip_source)
 
                 self._mlp = _AestheticMLP(input_dim=512).to(self.device)
                 state = torch.load(str(mlp_path), map_location=self.device, weights_only=True)

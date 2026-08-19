@@ -1,11 +1,32 @@
+"""
+trainer_gui.py — 个人审美偏好训练器与 ONNX 自动熔铸
+"""
+
+from __future__ import annotations
+
 import io
+import os
 import sys
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 
-# ── 颜色常量 (沿用亮色主题) ───────────────────────────────────────────────────
+# ── 确保 src 在 sys.path ───────────────────────────────────────────────────────
+_SRC_DIR = Path(__file__).resolve().parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from model_manager import (
+    PROJECT_ROOT,
+    get_clip_model_path,
+    is_clip_model_downloaded,
+    download_clip_model,
+)
+from onnx_exporter import export_to_onnx, TORCH_EXPORT_AVAILABLE
+
+# ── 颜色常量 (沿用统一亮色主题) ───────────────────────────────────────────────
 _BG = "#F8FAFC"
 _SURFACE = "#FFFFFF"
 _ACCENT = "#2563EB"
@@ -21,7 +42,7 @@ _BORDER = "#E2E8F0"
 _FAM = "SF Pro Text" if sys.platform == "darwin" else "Segoe UI"
 _FAM_TITLE = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
 
-# ── 动态加载 PyTorch ───────────────────────────────────────────────────────
+# ── 动态加载 PyTorch 与 Transformers ─────────────────────────────────────────
 try:
     import torch
     import torch.nn as nn
@@ -34,7 +55,6 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-# ── 动态加载 CLIP（transformers）──────────────────────────────────────────
 try:
     from transformers import CLIPProcessor, CLIPModel
     CLIP_AVAILABLE = True
@@ -128,7 +148,6 @@ if _ALL_AVAILABLE:
             return self.net(x)
 
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # 小工具
 # ══════════════════════════════════════════════════════════════════════════════
@@ -142,6 +161,7 @@ def _entry(parent, var, **kw):
         font=(_FAM, 12), **kw,
     )
 
+
 def _label(parent, text, size=12, color=None, bold=False):
     weight = "bold" if bold else "normal"
     return tk.Label(
@@ -149,8 +169,10 @@ def _label(parent, text, size=12, color=None, bold=False):
         fg=color or _TEXT, font=(_FAM, size, weight),
     )
 
+
 def _card(parent):
     return tk.Frame(parent, bg=_SURFACE, highlightthickness=1, highlightbackground=_BORDER)
+
 
 def _pill_button(parent, text, command, big=False, active=True):
     size = 13 if big else 11
@@ -158,7 +180,7 @@ def _pill_button(parent, text, command, big=False, active=True):
     py = 9 if big else 6
     bg_color = _ACCENT if active else _ACCENT_DIS
     cursor = "hand2" if active else "arrow"
-    
+
     lbl = tk.Label(
         parent, text=text, bg=bg_color, fg="white",
         font=(_FAM, size, "bold"), cursor=cursor, padx=px, pady=py,
@@ -175,35 +197,44 @@ def _pill_button(parent, text, command, big=False, active=True):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GUI 逻辑
+# 训练界面组件
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TrainerGUI:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("个人审美偏好训练器 (Aesthetic Model Trainer)")
-        self.root.configure(bg=_BG)
-        self.root.geometry("780x580")
-        self.root.resizable(False, False)
+    def __init__(self, parent: tk.Widget | None = None, on_model_updated: Callable[[], None] | None = None):
+        self.is_standalone = parent is None
+        self.root = tk.Tk() if self.is_standalone else parent
+        self.on_model_updated = on_model_updated
+
+        if self.is_standalone:
+            self.root.title("个人审美偏好训练器 (Aesthetic Model Trainer)")
+            self.root.configure(bg=_BG)
+            self.root.geometry("780x640")
+            self.root.resizable(True, True)
 
         self.dataset_dir_var = tk.StringVar()
         self.epochs_var = tk.StringVar(value="5")
+        self.auto_onnx_var = tk.BooleanVar(value=True)
         self._running = False
 
         self._build_ui()
         self._apply_style()
 
     def _build_ui(self):
-        # ── 标题 ──
-        hdr = tk.Frame(self.root, bg=_BG, pady=18)
-        hdr.pack(fill="x", padx=28)
-        tk.Label(hdr, text="🧠 审美偏好模型训练", bg=_BG, fg=_TEXT, font=(_FAM_TITLE, 22, "bold")).pack(anchor="w")
-        tk.Label(hdr, text="冻结 CLIP 视觉编码器 + 轻量 MLP 分类头，仅训练 MLP 权重",
-                 bg=_BG, fg=_TEXT_DIM, font=(_FAM, 12)).pack(anchor="w", pady=(3, 0))
-        tk.Frame(self.root, bg=_BORDER, height=1).pack(fill="x", padx=28)
+        container = tk.Frame(self.root, bg=_BG)
+        container.pack(fill="both", expand=True)
 
-        body = tk.Frame(self.root, bg=_BG)
-        body.pack(fill="both", expand=True, padx=28, pady=20)
+        # ── 标题 ──
+        if self.is_standalone:
+            hdr = tk.Frame(container, bg=_BG, pady=18)
+            hdr.pack(fill="x", padx=28)
+            tk.Label(hdr, text="🧠 审美偏好模型训练", bg=_BG, fg=_TEXT, font=(_FAM_TITLE, 22, "bold")).pack(anchor="w")
+            tk.Label(hdr, text="冻结 CLIP 视觉编码器 + 微调轻量 MLP 分类头，训练完成后自动导出 ONNX",
+                     bg=_BG, fg=_TEXT_DIM, font=(_FAM, 12)).pack(anchor="w", pady=(3, 0))
+            tk.Frame(container, bg=_BORDER, height=1).pack(fill="x", padx=28)
+
+        body = tk.Frame(container, bg=_BG)
+        body.pack(fill="both", expand=True, padx=28 if self.is_standalone else 10, pady=16)
 
         # ── 数据集选择卡片 ──
         dc = _card(body)
@@ -212,7 +243,8 @@ class TrainerGUI:
         di.pack(fill="x")
 
         _label(di, "📁 数据集目录", bold=True).pack(anchor="w")
-        _label(di, "选择包含 'like' 和 'dislike' 子文件夹的根目录", size=10, color=_TEXT_DIM).pack(anchor="w", pady=(2, 8))
+        _label(di, "请选择包含 'like'（好照片）和 'dislike'（淘汰片）子文件夹的根目录",
+               size=10, color=_TEXT_DIM).pack(anchor="w", pady=(2, 8))
 
         row = tk.Frame(di, bg=_SURFACE)
         row.pack(fill="x")
@@ -221,46 +253,57 @@ class TrainerGUI:
 
         # ── 参数卡片 ──
         pc = _card(body)
-        pc.pack(fill="x", pady=(0, 16))
-        pi = tk.Frame(pc, bg=_SURFACE, padx=16, pady=14)
+        pc.pack(fill="x", pady=(0, 14))
+        pi = tk.Frame(pc, bg=_SURFACE, padx=16, pady=12)
         pi.pack(fill="x")
 
-        _label(pi, "⚙️ 训练参数", bold=True).pack(anchor="w")
-        
+        _label(pi, "⚙️ 训练与导出配置", bold=True).pack(anchor="w")
+
         g = tk.Frame(pi, bg=_SURFACE)
-        g.pack(fill="x", pady=(10, 0))
+        g.pack(fill="x", pady=(8, 0))
         tk.Label(g, text="训练轮数 (Epochs):", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 11)).pack(side="left")
-        _entry(g, self.epochs_var, width=8).pack(side="left", padx=10)
+        _entry(g, self.epochs_var, width=8).pack(side="left", padx=(10, 24))
+
+        tk.Checkbutton(
+            g, text="训练完成后自动熔铸为 ONNX 加速模型（免去手动导出）",
+            variable=self.auto_onnx_var, bg=_SURFACE, fg=_TEXT, font=(_FAM, 11),
+            activebackground=_SURFACE,
+        ).pack(side="left")
 
         # ── 执行行 ──
         br = tk.Frame(body, bg=_BG)
-        br.pack(fill="x")
-        
+        br.pack(fill="x", pady=(0, 10))
+
         # 判断环境
         if not _ALL_AVAILABLE:
-            tk.Label(br, text="⚠️ 需要 PyTorch + transformers，请检查环境。", fg=_ERROR, bg=_BG, font=(_FAM, 11, "bold")).pack(side="left")
+            tk.Label(br, text="⚠️ 需要 PyTorch + transformers 依赖，请在 py311 环境下运行。",
+                     fg=_ERROR, bg=_BG, font=(_FAM, 11, "bold")).pack(side="left")
             self.run_btn = _pill_button(br, "环境缺失", lambda: None, big=True, active=False)
             self.run_btn.pack(side="right")
         else:
-            self.run_btn = _pill_button(br, "▶  开始训练", self._on_run, big=True)
+            self.run_btn = _pill_button(br, "▶  开始训练与熔铸", self._on_run, big=True)
             self.run_btn.pack(side="left")
-            
+
             self.progress = ttk.Progressbar(br, mode="determinate", length=200)
             self.progress.pack(side="left", padx=(14, 0))
-            
-            self.status_lbl = tk.Label(br, text="等待开始...", bg=_BG, fg=_TEXT_DIM, font=(_FAM, 11))
+
+            self.status_lbl = tk.Label(br, text="就绪", bg=_BG, fg=_TEXT_DIM, font=(_FAM, 11))
             self.status_lbl.pack(side="left", padx=(12, 0))
 
         # ── 日志区 ──
         lc = _card(body)
-        lc.pack(fill="both", expand=True, pady=(16, 0))
-        self.log_text = tk.Text(lc, bg="#F1F5F9", fg=_TEXT, relief="flat", bd=0, font=("Consolas", 11), state="disabled")
+        lc.pack(fill="both", expand=True)
+        self.log_text = tk.Text(lc, bg="#F1F5F9", fg=_TEXT, relief="flat", bd=0,
+                                font=("Consolas" if sys.platform != "darwin" else "Menlo", 11),
+                                state="disabled")
         self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
 
     def _apply_style(self):
         s = ttk.Style()
-        s.theme_use("default")
-        s.configure("Horizontal.TProgressbar", troughcolor=_SURFACE, background=_ACCENT, thickness=6)
+        try:
+            s.configure("Horizontal.TProgressbar", background=_ACCENT, thickness=6)
+        except Exception:
+            pass
 
     def _pick_dir(self):
         d = filedialog.askdirectory(title="选择数据集根目录")
@@ -272,21 +315,31 @@ class TrainerGUI:
         self.log_text.insert("end", msg + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
-        self.root.update_idletasks()
+        if self.is_standalone:
+            self.root.update_idletasks()
 
     def _on_run(self):
         if self._running:
             return
-            
+
         dataset_path = Path(self.dataset_dir_var.get().strip())
         if not dataset_path.exists() or not dataset_path.is_dir():
             messagebox.showerror("错误", "请先选择有效的数据集目录")
             return
-            
+
+        like_dir = dataset_path / "like"
+        dislike_dir = dataset_path / "dislike"
+        if not like_dir.exists() and not dislike_dir.exists():
+            messagebox.showerror(
+                "数据集格式错误",
+                f"所选目录下未找到 'like' 或 'dislike' 文件夹！\n路径: {dataset_path}"
+            )
+            return
+
         try:
             epochs = int(self.epochs_var.get().strip())
             assert epochs > 0
-        except:
+        except Exception:
             messagebox.showerror("错误", "Epoch 必须是正整数")
             return
 
@@ -296,41 +349,57 @@ class TrainerGUI:
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
-        
+
         self._log(f"🚀 初始化训练任务，目标 Epoch: {epochs}...")
         self._log(f"📁 数据集路径: {dataset_path}")
-        
-        threading.Thread(target=self._train_task, args=(dataset_path, epochs), daemon=True).start()
 
-    def _train_task(self, data_dir: Path, epochs: int):
+        threading.Thread(
+            target=self._train_task,
+            args=(dataset_path, epochs, self.auto_onnx_var.get()),
+            daemon=True,
+        ).start()
+
+    def _train_task(self, data_dir: Path, epochs: int, auto_onnx: bool):
         try:
             # 1. 设备
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if sys.platform == "darwin" and torch.backends.mps.is_available():
                 device = torch.device("mps")
-            self.root.after(0, self._log, f"计算设备: {device}")
+            self.root.after(0, self._log, f"💻 计算加速设备: {device}")
 
-            # 2. 加载冻结的 CLIP（特征提取器）
-            self.root.after(0, self._log, "正在加载 CLIP 编码器（首次运行将联网下载）…")
-            clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+            # 2. 检查并加载 CLIP 编码器
+            clip_source = get_clip_model_path()
+            if not is_clip_model_downloaded():
+                self.root.after(0, self._log, "ℹ️ 检测到本地尚未下载完整 CLIP 视觉主干，将自动下载至当前程序 models/ 目录...")
+                self.root.after(0, lambda: self.status_lbl.configure(text="正在下载基础模型…"))
+                
+                def _dl_cb(msg: str, pct: float):
+                    self.root.after(0, self._log, f"  [下载进度 {pct*100:.0f}%] {msg}")
+                    self.root.after(0, lambda v=int(pct * 100): self.progress.configure(value=v))
+
+                download_clip_model(use_mirror=True, progress_callback=_dl_cb)
+                clip_source = get_clip_model_path()
+
+            self.root.after(0, self._log, f"正在加载 CLIP 视觉主干 ({clip_source}) …")
+            clip_model = CLIPModel.from_pretrained(clip_source)
             clip_model.to(device).eval()
             for p in clip_model.parameters():
                 p.requires_grad_(False)
-            clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-            self.root.after(0, self._log, "✅ CLIP 加载完成。")
+            clip_processor = CLIPProcessor.from_pretrained(clip_source)
+            self.root.after(0, self._log, "✅ CLIP 特征提取器加载完成。")
 
             # 3. 扫描数据集
-            self.root.after(0, self._log, "正在扫描 RAW 文件…")
+            self.root.after(0, self._log, "正在扫描 RAW 文件并提取预览…")
             dataset = RawAestheticDataset(data_dir, clip_processor, clip_model, device)
             if len(dataset) == 0:
-                self.root.after(0, self._log, "❌ like/dislike 文件夹中未找到任何 RAW 文件！")
+                self.root.after(0, self._log, "❌ like/dislike 文件夹中未找到任何有效 RAW 文件！")
                 self.root.after(0, self._finish_run)
                 return
-            self.root.after(0, self._log, f"✅ 找到 {len(dataset)} 张照片。")
+            self.root.after(0, self._log, f"✅ 成功加载 {len(dataset)} 张样本照片。")
             dataloader = DataLoader(dataset, batch_size=8, shuffle=True,
                                     num_workers=0, collate_fn=collate_fn)
 
-            # 4. 初始化 MLP 和优化器（只训练 MLP，CLIP 已冻结）
+            # 4. 初始化 MLP 分类头
             mlp = AestheticMLP(input_dim=512).to(device)
             criterion = nn.CrossEntropyLoss()
             optimizer = optim.Adam(mlp.parameters(), lr=1e-3)
@@ -347,16 +416,14 @@ class TrainerGUI:
                     batch_inputs = {k: v.to(device) for k, v in batch_inputs.items()}
                     labels = labels.to(device)
 
-                    # CLIP 提取特征（no_grad，冻结）
                     with torch.no_grad():
                         vision_out = clip_model.vision_model(
                             pixel_values=batch_inputs['pixel_values']
                         )
-                        pooled = vision_out.pooler_output           # [B, hidden_dim]
-                        features = clip_model.visual_projection(pooled)  # [B, 512]
+                        pooled = vision_out.pooler_output
+                        features = clip_model.visual_projection(pooled)
                         features = features / features.norm(dim=-1, keepdim=True)
 
-                    # MLP 前向 + 反向
                     optimizer.zero_grad()
                     outputs = mlp(features)
                     loss = criterion(outputs, labels)
@@ -368,22 +435,44 @@ class TrainerGUI:
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
 
-                epoch_loss = running_loss / len(dataloader)
-                epoch_acc = 100 * correct / total
-                msg = f"Epoch [{epoch+1}/{epochs}]  Loss: {epoch_loss:.4f}  Acc: {epoch_acc:.1f}%"
+                epoch_loss = running_loss / max(1, len(dataloader))
+                epoch_acc = 100 * correct / max(1, total)
+                msg = f"  Epoch [{epoch+1:02d}/{epochs:02d}]  Loss: {epoch_loss:.4f}  Acc: {epoch_acc:.1f}%"
                 self.root.after(0, self._log, msg)
                 pv = int(100 * (epoch + 1) / epochs)
                 self.root.after(0, lambda v=pv: self.progress.configure(value=v))
 
-            # 6. 只保存 MLP 权重
-            save_path = Path(__file__).resolve().parent.parent / "aesthetic_mlp.pth"
+            # 6. 保存 MLP 权重
+            save_path = PROJECT_ROOT / "aesthetic_mlp.pth"
             torch.save(mlp.state_dict(), save_path)
-            self.root.after(0, self._log, f"\n🎉 训练完成！MLP 已保存至:\n{save_path}")
-            self.root.after(0, lambda: self.status_lbl.configure(text="训练完毕"))
+            self.root.after(0, self._log, f"\n💾 MLP 权重已保存至: {save_path.name}")
+
+            # 7. 自动熔铸为 ONNX
+            if auto_onnx:
+                self.root.after(0, lambda: self.status_lbl.configure(text="正在熔铸 ONNX…"))
+                self.root.after(0, self._log, "\n⚡ 开始自动熔铸 ONNX 模型...")
+
+                def _onnx_cb(m: str):
+                    self.root.after(0, self._log, f"  {m}")
+
+                onnx_out = export_to_onnx(
+                    project_root=PROJECT_ROOT,
+                    mlp_path=save_path,
+                    clip_source=clip_source,
+                    progress_callback=_onnx_cb,
+                )
+                self.root.after(0, self._log, f"🎉 ONNX 模型已生成: {onnx_out.name}，连拍筛选将自动启用极速加速！")
+
+            self.root.after(0, lambda: self.status_lbl.configure(text="训练完成"))
+            if self.on_model_updated:
+                self.root.after(0, self.on_model_updated)
+
+            messagebox.showinfo("训练成功", "个人偏好模型训练已完成！" + ("\n已自动熔铸 ONNX 加速模型。" if auto_onnx else ""))
 
         except Exception as exc:
             self.root.after(0, self._log, f"\n❌ 训练出错: {exc}")
             self.root.after(0, lambda: self.status_lbl.configure(text="训练失败"))
+            messagebox.showerror("训练出错", str(exc))
         finally:
             self.root.after(0, self._finish_run)
 
@@ -392,7 +481,9 @@ class TrainerGUI:
         self.run_btn.configure(bg=_ACCENT, cursor="hand2")
 
     def run(self):
-        self.root.mainloop()
+        if self.is_standalone:
+            self.root.mainloop()
+
 
 if __name__ == "__main__":
     TrainerGUI().run()

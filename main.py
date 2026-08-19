@@ -1,3 +1,4 @@
+import argparse
 import importlib
 import sys
 from pathlib import Path
@@ -50,7 +51,7 @@ def run_burst_console() -> None:
     ).run(input_dir)
 
     print("\n── 处理完成 ────────────────────────────────")
-    print(f"  总 NEF 文件数：    {result.total}")
+    print(f"  总 RAW 文件数：    {result.total}")
     print(f"  单拍跳过（保留）：  {result.skipped_single}")
     print(f"  连拍组数：         {result.burst_groups}")
     print(f"  已移动淘汰数：     {result.moved}")
@@ -60,17 +61,63 @@ def run_burst_console() -> None:
         print(f"  ⚠ {err}")
 
 
+def run_download_models_cli() -> None:
+    _ensure_src_on_path()
+    download_clip_model = importlib.import_module("model_manager").download_clip_model
+    print("开始下载 CLIP 基础模型到本地 models/ 目录...")
+    def _cb(msg: str, pct: float):
+        print(f"[{pct*100:3.0f}%] {msg}")
+    success = download_clip_model(use_mirror=True, progress_callback=_cb)
+    if success:
+        print("✅ 模型下载并校验成功！")
+    else:
+        print("❌ 模型下载失败，请检查网络连接。")
+
+
+def run_export_onnx_cli() -> None:
+    _ensure_src_on_path()
+    export_to_onnx = importlib.import_module("onnx_exporter").export_to_onnx
+    try:
+        out = export_to_onnx(project_root=PROJECT_ROOT)
+        print(f"✅ ONNX 模型成功生成: {out}")
+    except Exception as exc:
+        print(f"❌ ONNX 导出失败: {exc}")
+
+
 def run_gui() -> None:
     _ensure_src_on_path()
     try:
-        importlib.import_module("burst_gui").launch_burst_gui()
-    except Exception:
-        print("GUI 启动失败，已切换到命令行模式。")
+        importlib.import_module("app_gui").launch_main_gui()
+    except Exception as exc:
+        print(f"综合 GUI 启动遇到问题 ({exc})，尝试启动经典连拍界面...")
+        try:
+            importlib.import_module("burst_gui").launch_burst_gui()
+        except Exception:
+            print("GUI 无法启动，已切换到命令行模式。")
+            run_burst_console()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Photo Sort — RAW 智能连拍优选与个人审美系统")
+    parser.add_argument("--cli", action="store_true", help="以命令行模式运行连拍筛选")
+    parser.add_argument("--download-models", action="store_true", help="下载基础 CLIP 模型至本地 models 目录")
+    parser.add_argument("--export-onnx", action="store_true", help="从本地 MLP 权重熔铸并导出 photo_sort_model.onnx")
+    parser.add_argument("--train-gui", action="store_true", help="直接打开偏好训练器独立窗口")
+    
+    args, unknown = parser.parse_known_args()
+
+    if args.download_models:
+        run_download_models_cli()
+    elif args.export_onnx:
+        run_export_onnx_cli()
+    elif args.cli:
         run_burst_console()
+    elif args.train_gui:
+        _ensure_src_on_path()
+        importlib.import_module("trainer_gui").TrainerGUI().run()
+    else:
+        run_gui()
 
 
 if __name__ == "__main__":
-    if "--cli" in sys.argv:
-        run_burst_console()
-    else:
-        run_gui()
+    main()
