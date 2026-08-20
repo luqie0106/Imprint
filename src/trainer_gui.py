@@ -129,7 +129,7 @@ def probe_python_environment(py_bin: str) -> dict:
         return {"error": "路径不存在"}
 
     code = """
-import sys, json
+import sys, json, importlib.util
 info = {
     "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
     "major": sys.version_info.major,
@@ -140,8 +140,9 @@ info = {
 missing = []
 for pkg, imp in [("torch", "torch"), ("transformers", "transformers"), ("rawpy", "rawpy"), ("Pillow", "PIL"), ("onnx", "onnx")]:
     try:
-        __import__(imp)
-    except ImportError:
+        if importlib.util.find_spec(imp) is None:
+            missing.append(pkg)
+    except Exception:
         missing.append(pkg)
 info["missing"] = missing
 print(json.dumps(info))
@@ -152,12 +153,14 @@ print(json.dumps(info))
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=4,
+            timeout=12,
         )
         if res.returncode == 0 and res.stdout.strip():
             return json.loads(res.stdout.strip())
         else:
             return {"error": res.stderr.strip() or "探测失败"}
+    except subprocess.TimeoutExpired:
+        return {"error": "检测超时（环境响应过慢）"}
     except Exception as exc:
         return {"error": str(exc)}
 
