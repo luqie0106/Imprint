@@ -11,6 +11,7 @@ burst_filter.py — RAW 连拍优选与冗余片自动移动
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import threading
@@ -430,12 +431,14 @@ class BurstGrouper:
         preview_extractor: RawEvaluator,
         gap_seconds: float = DEFAULT_TIME_GAP_SECONDS,
         max_hamming_distance: int = DEFAULT_MAX_HAMMING_DISTANCE,
-        max_workers: int = 4,
+        max_workers: int | None = None,
     ) -> None:
         self._exif = exif_reader
         self._previewer = preview_extractor
         self.gap_seconds = gap_seconds
         self.max_hamming_distance = max_hamming_distance
+        if max_workers is None or max_workers <= 0:
+            max_workers = max(1, round((os.cpu_count() or 4) * 0.8))
         self.max_workers = max_workers
 
     def group(self, nef_files: Sequence[Path]) -> list[list[Path]]:
@@ -552,7 +555,7 @@ class BurstFilter:
         max_hamming_distance: int = DEFAULT_MAX_HAMMING_DISTANCE,
         review_subdir: str = DEFAULT_REVIEW_SUBDIR,
         keep_count: int = 1,
-        max_workers: int = 4,
+        max_workers: int | None = None,
         use_gpu: bool = True,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -560,6 +563,8 @@ class BurstFilter:
         self.max_hamming_distance = max_hamming_distance
         self.review_subdir = review_subdir
         self.keep_count = max(1, keep_count)
+        if max_workers is None or max_workers <= 0:
+            max_workers = max(1, round((os.cpu_count() or 4) * 0.8))
         self.max_workers = max_workers
         self.use_gpu = use_gpu
         self.progress_callback = progress_callback

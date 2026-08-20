@@ -116,7 +116,9 @@ class BurstFilterGUI:
         self.gap_var           = tk.StringVar(value="1.5")
         self.hamming_var       = tk.StringVar(value="12")
         self.keep_count_var    = tk.StringVar(value="1")
-        self.workers_var       = tk.StringVar(value=str(max(1, (os.cpu_count() or 4) // 2)))
+        max_cpus = os.cpu_count() or 4
+        default_workers = max(1, round(max_cpus * 0.8))
+        self.workers_var       = tk.StringVar(value=str(default_workers))
         self.gpu_var           = tk.BooleanVar(value=True)
         self._running = False
 
