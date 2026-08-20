@@ -139,7 +139,7 @@ def main() -> None:
         run_burst_console()
     elif args.train_gui:
         _ensure_src_on_path()
-        importlib.import_module("trainer_gui").TrainerGUI().run()
+        importlib.import_module("trainer_gui").launch_trainer_gui()
     else:
         run_gui()
 

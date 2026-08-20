@@ -4,20 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photo-sort"
-version = "0.2.0"
-description = "NEF 连拍优选工具"
+version = "0.3.0"
+description = "RAW 智能连拍优选与个人审美微调系统"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
+  "PySide6>=6.5.0",
   "Pillow>=10.0.0",
   "rawpy>=0.21.0",
-  "opencv-python>=4.8.0",
+  "opencv-python-headless>=4.8.0",
   "numpy>=1.24.0",
+  "onnxruntime>=1.15.0",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["config", "burst_filter", "burst_gui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

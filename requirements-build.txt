@@ -1,4 +1,5 @@
-# Minimal runtime dependencies for ONNX inference and PyInstaller
+# Minimal runtime dependencies for ONNX inference, PySide6 GUI, and PyInstaller
+PySide6>=6.5.0
 Pillow>=10.0.0
 rawpy>=0.21.0
 opencv-python-headless>=4.8.0

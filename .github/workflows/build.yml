@@ -55,14 +55,18 @@ jobs:
       - name: Create DMG (macOS)
         if: runner.os == 'macOS'
         run: |
-          npm install -g create-dmg
-          create-dmg dist/PhotoSort.app || true
-          mv *.dmg dist/PhotoSort-macOS.dmg || true
+          npm install -g create-dmg || true
+          create-dmg dist/PhotoSort.app dist/ 2>/dev/null || true
+          mv *.dmg dist/PhotoSort-macOS.dmg 2>/dev/null || true
+          if [ ! -f dist/PhotoSort-macOS.dmg ]; then
+            echo "Using native hdiutil fallback to create DMG..."
+            hdiutil create -volname PhotoSort -srcfolder dist/PhotoSort.app -ov -format UDZO dist/PhotoSort-macOS.dmg
+          fi
 
       - name: Zip Artifacts (Windows)
         if: runner.os == 'Windows'
         run: |
-          Compress-Archive -Path dist\PhotoSort -DestinationPath dist\PhotoSort-Windows.zip
+          Compress-Archive -Path dist\PhotoSort -DestinationPath dist\PhotoSort-Windows.zip -Force
 
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2

@@ -1,21 +1,26 @@
 """
-trainer_gui.py — 个人审美偏好训练器与 ONNX 自动熔铸
+trainer_gui.py — 个人审美偏好训练器与 ONNX 自动熔铸 (PySide6 / Qt6 现代全圆角矢量设计)
 支持 Python 3.9 ~ 3.13 广泛版本、Conda 环境智能探测与依赖一键自动安装
 """
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 from typing import Callable
+
+from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtWidgets import (
+    QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QCheckBox, QComboBox,
+    QProgressBar, QPlainTextEdit, QFileDialog, QMessageBox
+)
 
 # ── 确保 src 在 sys.path ───────────────────────────────────────────────────────
 _SRC_DIR = Path(__file__).resolve().parent
@@ -30,22 +35,7 @@ from model_manager import (
     download_clip_model,
 )
 from onnx_exporter import export_to_onnx, TORCH_EXPORT_AVAILABLE
-
-# ── 颜色常量 ───────────────────────────────────────────────────────────────────
-_BG      = "#F8FAFC"
-_SURFACE = "#FFFFFF"
-_ACCENT  = "#2563EB"
-_ACCENT_HOVER = "#1D4ED8"
-_ACCENT_DIS   = "#CBD5E1"
-_SUCCESS = "#16A34A"
-_WARNING = "#D97706"
-_ERROR   = "#DC2626"
-_TEXT    = "#0F172A"
-_TEXT_DIM = "#64748B"
-_BORDER  = "#E2E8F0"
-
-_FAM = "SF Pro Text" if sys.platform == "darwin" else "Segoe UI"
-_FAM_TITLE = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
+from qt_theme import GREEN_FG, AMBER_FG, TEXT_TERT, TEXT_SEC
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -53,10 +43,7 @@ _FAM_TITLE = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
 # ══════════════════════════════════════════════════════════════════════════════
 
 def discover_python_environments() -> list[str]:
-    """
-    通用、自动发现本机所有 Conda 环境及 Python 解释器。
-    不硬编码任何具体环境名称，自动解析 ~/.conda/environments.txt 及各 Conda 根目录下的所有子环境。
-    """
+    """通用、自动发现本机所有 Conda 环境及 Python 解释器。"""
     found: list[str] = []
     seen: set[str] = set()
 
@@ -70,13 +57,10 @@ def discover_python_environments() -> list[str]:
             seen.add(str(exe))
             found.append(str(exe))
 
-    # 1. 如果当前不是打包 exe，优先把当前正在运行的 Python 加入首位
     if not getattr(sys, 'frozen', False) and sys.executable:
         _add_env(Path(sys.executable))
 
     home = Path.home()
-
-    # 2. 解析 Conda 全局环境记录列表 (~/.conda/environments.txt)
     env_txt = home / ".conda" / "environments.txt"
     if env_txt.exists():
         try:
@@ -87,7 +71,6 @@ def discover_python_environments() -> list[str]:
         except Exception:
             pass
 
-    # 3. 遍历常见 Conda 安装根目录下的 envs/ 文件夹中的所有子环境
     conda_bases = [
         home / "anaconda3",
         home / "miniconda3",
@@ -117,13 +100,11 @@ def discover_python_environments() -> list[str]:
                 except Exception:
                     pass
 
-    # 4. 系统 PATH 中的 python
     for cmd in ["python3", "python"]:
         w = shutil.which(cmd)
         if w:
             _add_env(Path(w))
 
-    # 5. 排序：优先排查带有 torch/transformers 依赖的环境置顶
     def _rank_score(p_str: str) -> int:
         score = 0
         p = Path(p_str)
@@ -144,10 +125,6 @@ def discover_python_environments() -> list[str]:
 
 
 def probe_python_environment(py_bin: str) -> dict:
-    """
-    轻量快速探针：检测指定 Python 环境的版本及缺少哪些关键训练依赖。
-    返回格式：{"version": "3.11.9", "major_minor": "3.11", "missing": ["torch", ...], "error": None}
-    """
     if not py_bin or not Path(py_bin).exists():
         return {"error": "路径不存在"}
 
@@ -186,374 +163,55 @@ print(json.dumps(info))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 小工具
+# 训练后台线程
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _entry(parent, var, **kw):
-    return tk.Entry(
-        parent, textvariable=var,
-        bg=_SURFACE, fg=_TEXT, insertbackground=_TEXT,
-        relief="flat", bd=0, highlightthickness=1,
-        highlightbackground=_BORDER, highlightcolor=_ACCENT,
-        font=(_FAM, 11), **kw,
-    )
+class TrainWorker(QThread):
+    log_sig = Signal(str)
+    progress_sig = Signal(int)
+    done_sig = Signal(bool, str)
+    need_install_sig = Signal(str, list, str)
 
+    def __init__(self, py_bin: str, data_dir: Path, epochs: int, auto_onnx: bool):
+        super().__init__()
+        self.py_bin = py_bin
+        self.data_dir = data_dir
+        self.epochs = epochs
+        self.auto_onnx = auto_onnx
 
-def _label(parent, text, size=11, color=None, bold=False):
-    weight = "bold" if bold else "normal"
-    return tk.Label(
-        parent, text=text, bg=parent.cget("bg"),
-        fg=color or _TEXT, font=(_FAM, size, weight),
-    )
-
-
-def _card(parent):
-    return tk.Frame(parent, bg=_SURFACE, highlightthickness=1, highlightbackground=_BORDER)
-
-
-def _pill_button(parent, text, command, big=False, active=True):
-    size = 12 if big else 10
-    px = 18 if big else 12
-    py = 7 if big else 5
-    bg_color = _ACCENT if active else _ACCENT_DIS
-    cursor = "hand2" if active else "arrow"
-
-    lbl = tk.Label(
-        parent, text=text, bg=bg_color, fg="white",
-        font=(_FAM, size, "bold"), cursor=cursor, padx=px, pady=py,
-    )
-
-    def _click(e):
-        if lbl.cget("bg") != _ACCENT_DIS:
-            command()
-
-    lbl.bind("<Button-1>", _click)
-    lbl.bind("<Enter>", lambda e: lbl.configure(bg=_ACCENT_HOVER) if lbl.cget("bg") != _ACCENT_DIS else None)
-    lbl.bind("<Leave>", lambda e: lbl.configure(bg=_ACCENT) if lbl.cget("bg") != _ACCENT_DIS else None)
-    return lbl
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 训练界面组件
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TrainerGUI:
-    def __init__(self, parent: tk.Widget | None = None, on_model_updated: Callable[[], None] | None = None):
-        self.is_standalone = parent is None
-        self.root = tk.Tk() if self.is_standalone else parent
-        self.on_model_updated = on_model_updated
-
-        if self.is_standalone:
-            self.root.title("个人审美偏好训练器")
-            self.root.configure(bg=_BG)
-            self.root.geometry("760x600")
-            self.root.minsize(700, 520)
-
-        self.dataset_dir_var = tk.StringVar()
-        self.epochs_var = tk.StringVar(value="5")
-        self.auto_onnx_var = tk.BooleanVar(value=True)
-        self.external_python_var = tk.StringVar()
-        self._running = False
-        self._probing = False
-
-        self._build_ui()
-        self._apply_style()
-
-        # 启动后刷新环境列表
-        self.root.after(100, self._refresh_python_envs)
-
-    def _build_ui(self):
-        container = tk.Frame(self.root, bg=_BG)
-        container.pack(fill="both", expand=True)
-
-        if self.is_standalone:
-            hdr = tk.Frame(container, bg=_BG, pady=10)
-            hdr.pack(fill="x", padx=20)
-            tk.Label(hdr, text="🧠 审美偏好模型训练", bg=_BG, fg=_TEXT, font=(_FAM_TITLE, 20, "bold")).pack(anchor="w")
-            tk.Label(hdr, text="支持 Python 3.9 ~ 3.13 及 Conda 环境 · 训练完成后自动导出极速 ONNX 模型",
-                     bg=_BG, fg=_TEXT_DIM, font=(_FAM, 11)).pack(anchor="w", pady=(2, 0))
-            tk.Frame(container, bg=_BORDER, height=1).pack(fill="x", padx=20)
-
-        body = tk.Frame(container, bg=_BG)
-        body.pack(fill="both", expand=True, padx=20 if self.is_standalone else 12, pady=8)
-
-        # ── 1. Python 环境选择卡片（全场景展示）──
-        env_card = _card(body)
-        env_card.pack(fill="x", pady=(0, 8))
-        ei = tk.Frame(env_card, bg=_SURFACE, padx=14, pady=8)
-        ei.pack(fill="x")
-
-        env_header_row = tk.Frame(ei, bg=_SURFACE)
-        env_header_row.pack(fill="x")
-        tk.Label(env_header_row, text="🐍 Python 训练环境", bg=_SURFACE, fg=_TEXT,
-                 font=(_FAM, 11, "bold")).pack(side="left")
-        self.env_status_lbl = tk.Label(env_header_row, text="🔍 检测中...", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 10))
-        self.env_status_lbl.pack(side="left", padx=(10, 0))
-
-        erow = tk.Frame(ei, bg=_SURFACE)
-        erow.pack(fill="x", pady=(4, 0))
-
-        self.python_combo = ttk.Combobox(
-            erow, textvariable=self.external_python_var,
-            font=(_FAM, 10), state="normal",
-        )
-        self.python_combo.pack(side="left", fill="x", expand=True, ipady=2, padx=(0, 8))
-        self.python_combo.bind("<<ComboboxSelected>>", lambda e: self._on_python_selected())
-        self.python_combo.bind("<FocusOut>", lambda e: self._on_python_selected())
-
-        _pill_button(erow, "浏览 Python", self._pick_python).pack(side="left", padx=(0, 6))
-        _pill_button(erow, "🔄 刷新", self._refresh_python_envs).pack(side="left")
-
-        # ── 2. 数据集选择卡片 ──
-        dc = _card(body)
-        dc.pack(fill="x", pady=(0, 8))
-        di = tk.Frame(dc, bg=_SURFACE, padx=14, pady=8)
-        di.pack(fill="x")
-
-        _label(di, "📁 数据集根目录 (内含 'like' 与 'dislike' 文件夹)", bold=True, size=11).pack(anchor="w", pady=(0, 4))
-        row = tk.Frame(di, bg=_SURFACE)
-        row.pack(fill="x")
-        _entry(row, self.dataset_dir_var).pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 8))
-        _pill_button(row, "选择目录", self._pick_dir).pack(side="left")
-
-        # ── 3. 参数配置卡片 ──
-        pc = _card(body)
-        pc.pack(fill="x", pady=(0, 8))
-        pi = tk.Frame(pc, bg=_SURFACE, padx=14, pady=8)
-        pi.pack(fill="x")
-
-        g = tk.Frame(pi, bg=_SURFACE)
-        g.pack(fill="x")
-        tk.Label(g, text="训练轮数 (Epochs):", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 10)).pack(side="left")
-        _entry(g, self.epochs_var, width=6).pack(side="left", padx=(6, 16))
-
-        tk.Checkbutton(
-            g, text="训练完成后自动熔铸为 ONNX 极速加速模型（推荐）",
-            variable=self.auto_onnx_var, bg=_SURFACE, fg=_TEXT, font=(_FAM, 10),
-            activebackground=_SURFACE,
-        ).pack(side="left")
-
-        # ── 4. 执行行 ──
-        br = tk.Frame(body, bg=_BG)
-        br.pack(fill="x", pady=(0, 6))
-
-        self.run_btn = _pill_button(br, "▶  开始训练与熔铸", self._on_run, big=True)
-        self.run_btn.pack(side="left")
-
-        self.progress = ttk.Progressbar(br, mode="determinate", length=180)
-        self.progress.pack(side="left", padx=(12, 0))
-
-        self.status_lbl = tk.Label(br, text="就绪", bg=_BG, fg=_TEXT_DIM, font=(_FAM, 11))
-        self.status_lbl.pack(side="left", padx=(10, 0))
-
-        # ── 5. 紧凑日志区 ──
-        lc = _card(body)
-        lc.pack(fill="both", expand=True)
-        self.log_text = tk.Text(lc, bg="#F1F5F9", fg=_TEXT, relief="flat", bd=0, height=8,
-                                font=("Consolas" if sys.platform != "darwin" else "Menlo", 10),
-                                state="disabled")
-        self.log_text.pack(fill="both", expand=True, padx=6, pady=6)
-
-    def _apply_style(self):
-        s = ttk.Style()
-        try:
-            s.configure("Horizontal.TProgressbar", background=_ACCENT, thickness=6)
-        except Exception:
-            pass
-
-    def _refresh_python_envs(self):
-        """刷新环境列表并自动探针"""
-        envs = discover_python_environments()
-        self.python_combo["values"] = envs
-        if envs and not self.external_python_var.get():
-            self.external_python_var.set(envs[0])
-        self._on_python_selected()
-
-    def _on_python_selected(self):
-        """异步探针当前选中的 Python 环境"""
-        py_bin = self.external_python_var.get().strip()
-        if not py_bin:
-            self.env_status_lbl.configure(text="（未指定 Python 环境）", fg=_TEXT_DIM)
-            return
-
-        def _task():
-            info = probe_python_environment(py_bin)
-            if info.get("error"):
-                self.root.after(0, lambda: self.env_status_lbl.configure(
-                    text=f"⚠️ 环境异常: {info['error']}", fg=_ERROR
-                ))
-            else:
-                ver = info.get("version", "")
-                missing = info.get("missing", [])
-                if not missing:
-                    self.root.after(0, lambda: self.env_status_lbl.configure(
-                        text=f"✅ Python {ver} · torch, transformers 依赖齐全", fg=_SUCCESS
-                    ))
-                else:
-                    self.root.after(0, lambda: self.env_status_lbl.configure(
-                        text=f"🟡 Python {ver} · 缺少: {', '.join(missing)} (点击训练可一键安装)", fg=_WARNING
-                    ))
-
-        threading.Thread(target=_task, daemon=True).start()
-
-    def _pick_python(self):
-        f = filedialog.askopenfilename(
-            title="选择 Python 解释器",
-            filetypes=[("Python", "python.exe" if sys.platform == "win32" else "python*"), ("All Files", "*.*")]
-        )
-        if f:
-            self.external_python_var.set(f)
-            self._on_python_selected()
-
-    def _pick_dir(self):
-        d = filedialog.askdirectory(title="选择数据集根目录")
-        if d:
-            self.dataset_dir_var.set(d)
-
-    def _log(self, msg: str):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", msg + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-        if self.is_standalone:
-            self.root.update_idletasks()
-
-    def _on_run(self):
-        if self._running:
-            return
-
-        py_bin = self.external_python_var.get().strip()
-        if not py_bin or not Path(py_bin).exists():
-            messagebox.showerror("环境错误", "请先选择一个有效的 Python 解释器路径。")
-            return
-
-        dataset_path = Path(self.dataset_dir_var.get().strip())
-        if not dataset_path.exists() or not dataset_path.is_dir():
-            messagebox.showerror("错误", "请先选择有效的数据集目录")
-            return
-
-        like_dir = dataset_path / "like"
-        dislike_dir = dataset_path / "dislike"
-        if not like_dir.exists() and not dislike_dir.exists():
-            messagebox.showerror(
-                "数据集格式错误",
-                f"所选目录下未找到 'like' 或 'dislike' 文件夹！\n路径: {dataset_path}"
-            )
-            return
-
-        try:
-            epochs = int(self.epochs_var.get().strip())
-            assert epochs > 0
-        except Exception:
-            messagebox.showerror("错误", "Epoch 必须是正整数")
-            return
-
-        self._running = True
-        self.run_btn.configure(bg=_ACCENT_DIS, cursor="arrow")
-        self.progress["value"] = 0
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
-
-        # 异步探针并处理依赖安装
-        threading.Thread(
-            target=self._check_and_start_training,
-            args=(py_bin, dataset_path, epochs, self.auto_onnx_var.get()),
-            daemon=True,
-        ).start()
-
-    def _check_and_start_training(self, py_bin: str, data_dir: Path, epochs: int, auto_onnx: bool):
-        self.root.after(0, lambda: self.status_lbl.configure(text="正在检测运行环境…"))
-        info = probe_python_environment(py_bin)
-
+    def run(self):
+        info = probe_python_environment(self.py_bin)
         if info.get("error"):
-            self.root.after(0, self._log, f"❌ Python 环境检测失败: {info['error']}")
-            self.root.after(0, lambda: messagebox.showerror("环境错误", f"无法启动指定的 Python 解释器:\n{info['error']}"))
-            self.root.after(0, self._finish_run)
+            self.done_sig.emit(False, f"Python 环境检测失败: {info['error']}")
             return
 
         major = info.get("major", 0)
         minor = info.get("minor", 0)
         ver_str = info.get("version", "未知")
 
-        # 支持 Python 3.9 ~ 3.13
         if major < 3 or (major == 3 and minor < 9):
-            self.root.after(0, lambda: messagebox.showerror(
-                "Python 版本过低",
-                f"当前检测到的 Python 版本为 {ver_str}。\n模型训练建议使用 Python 3.9 ~ 3.13 (如 Python 3.10、3.11 或 3.12)。\n请在上方切换更高级别的 Python 环境。"
-            ))
-            self.root.after(0, self._finish_run)
+            self.done_sig.emit(False, f"当前 Python 版本为 {ver_str}，建议使用 Python 3.9 ~ 3.13。")
             return
 
         missing = info.get("missing", [])
         if missing:
-            missing_str = ", ".join(missing)
-            # 弹窗询问用户是否自动安装
-            confirm = messagebox.askyesno(
-                "需要安装训练依赖",
-                f"检测到所选 Python 环境 (Python {ver_str}) 缺少以下依赖库：\n\n"
-                f"  • {missing_str}\n\n"
-                f"是否立即为您自动执行 pip 安装？\n"
-                f"（将使用国内镜像源高速下载安装，安装完毕后自动开始训练）"
-            )
-            if not confirm:
-                self.root.after(0, self._log, "ℹ️ 用户取消了依赖安装，训练已终止。")
-                self.root.after(0, self._finish_run)
-                return
+            # 需要在主线程弹窗确认
+            self.need_install_sig.emit(self.py_bin, missing, ver_str)
+            return
 
-            # 执行 pip 安装
-            self.root.after(0, lambda: self.status_lbl.configure(text="正在安装依赖…"))
-            self.root.after(0, self._log, f"📦 开始为 Python {ver_str} 安装依赖: {missing_str} ...")
+        self._execute_training()
 
-            pkgs_to_install = []
-            for m in missing:
-                if m == "Pillow":
-                    pkgs_to_install.append("Pillow")
-                elif m == "onnx":
-                    pkgs_to_install.extend(["onnx", "onnxscript"])
-                else:
-                    pkgs_to_install.append(m)
+    def run_with_install(self):
+        self._execute_training()
 
-            install_cmd = [
-                py_bin, "-m", "pip", "install",
-                *pkgs_to_install,
-                "-i", "https://pypi.tuna.tsinghua.edu.cn/simple",
-            ]
-
-            proc = subprocess.Popen(
-                install_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            for line in iter(proc.stdout.readline, ''):
-                l = line.strip()
-                if l:
-                    self.root.after(0, self._log, f"  [pip] {l}")
-            proc.stdout.close()
-            ret = proc.wait()
-
-            if ret != 0:
-                self.root.after(0, self._log, "❌ 依赖安装失败，请检查网络连接或手动执行 pip install。")
-                self.root.after(0, lambda: messagebox.showerror("安装失败", "依赖自动安装失败，请查看日志详情。"))
-                self.root.after(0, self._finish_run)
-                return
-
-            self.root.after(0, self._log, "✅ 依赖库安装成功！即将启动训练...\n")
-            self.root.after(0, self._on_python_selected)
-
-        # 依赖就绪，开始训练
-        self._train_task_external(py_bin, data_dir, epochs, auto_onnx)
-
-    def _train_task_external(self, py_bin: str, data_dir: Path, epochs: int, auto_onnx: bool):
+    def _execute_training(self):
         try:
-            self.root.after(0, lambda: self.status_lbl.configure(text="正在启动训练进程…"))
+            self.log_sig.emit("🚀 启动审美偏好训练进程...")
             script = f"""
 import sys
 from pathlib import Path
-data_dir = Path(r"{data_dir}")
-epochs = {epochs}
+data_dir = Path(r"{self.data_dir}")
+epochs = {self.epochs}
 
 try:
     import torch
@@ -605,7 +263,7 @@ def collate_fn(batch):
 dataset = RawDataset(data_dir)
 print(f"✅ 成功扫描到 {{len(dataset)}} 张照片", flush=True)
 if len(dataset) == 0:
-    print("❌ 数据集为空", flush=True)
+    print("❌ 数据集为空，请检查 like/dislike 目录", flush=True)
     sys.exit(1)
 
 dataloader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=collate_fn)
@@ -639,8 +297,8 @@ save_path = Path(r"{PROJECT_ROOT}") / "aesthetic_mlp.pth"
 torch.save(mlp.state_dict(), save_path)
 print(f"💾 权重已保存: {{save_path.name}}", flush=True)
 
-if {auto_onnx}:
-    print("⚡ 正在导出 ONNX 模型...", flush=True)
+if {self.auto_onnx}:
+    print("⚡ 正在导出 ONNX 极速加速模型...", flush=True)
     class Combined(nn.Module):
         def __init__(self, clip, mlp):
             super().__init__()
@@ -657,7 +315,7 @@ if {auto_onnx}:
     print("🎉 ONNX 模型生成完毕！", flush=True)
 """
             proc = subprocess.Popen(
-                [py_bin, "-c", script],
+                [self.py_bin, "-c", script],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -666,38 +324,350 @@ if {auto_onnx}:
             for line in iter(proc.stdout.readline, ''):
                 l = line.strip()
                 if l:
-                    self.root.after(0, self._log, l)
+                    self.log_sig.emit(l)
                     if "Epoch [" in l:
                         try:
                             cur_ep = int(l.split("[")[1].split("/")[0])
-                            self.root.after(0, lambda v=int(100 * cur_ep / epochs): self.progress.configure(value=v))
+                            self.progress_sig.emit(int(100 * cur_ep / self.epochs))
                         except Exception:
                             pass
             proc.stdout.close()
             ret = proc.wait()
-            if ret == 0:
-                self.root.after(0, lambda: self.status_lbl.configure(text="训练完成"))
-                if self.on_model_updated:
-                    self.root.after(0, self.on_model_updated)
-                messagebox.showinfo("训练成功", "专属审美偏好模型训练已完成！\nONNX 模型已保存在当前程序目录下，连拍筛选即刻生效！")
-            else:
-                self.root.after(0, lambda: self.status_lbl.configure(text="训练失败"))
-                messagebox.showerror("训练失败", "训练进程返回了异常退出码，请查看日志详情。")
 
+            if ret == 0:
+                self.done_sig.emit(True, "专属审美偏好模型训练已完成！\nONNX 模型已保存在当前程序目录下，连拍筛选即刻生效！")
+            else:
+                self.done_sig.emit(False, "训练进程返回了异常退出码，请查看日志详情。")
         except Exception as exc:
-            self.root.after(0, self._log, f"❌ 启动失败: {exc}")
-            self.root.after(0, lambda: self.status_lbl.configure(text="执行出错"))
-        finally:
-            self.root.after(0, self._finish_run)
+            self.done_sig.emit(False, f"执行出错: {exc}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 偏好训练界面
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TrainerGUI(QWidget):
+    """个人审美偏好训练器 (PySide6 现代全圆角矢量界面)"""
+
+    def __init__(self, on_model_updated: Callable[[], None] | None = None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.on_model_updated = on_model_updated
+        self._running = False
+        self._worker: TrainWorker | None = None
+
+        self._build_ui()
+        QtCore.QTimer.singleShot(100, self._refresh_python_envs)
+
+    def _build_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 10, 0, 10)
+        main_layout.setSpacing(10)
+
+        # ── 1. Python 环境选择卡片 ──
+        env_card = QFrame()
+        env_card.setProperty("class", "CardFrame")
+        e_layout = QVBoxLayout(env_card)
+        e_layout.setContentsMargins(16, 12, 16, 12)
+        e_layout.setSpacing(8)
+
+        env_header = QHBoxLayout()
+        t1 = QLabel("Python 训练环境")
+        t1.setProperty("class", "CardTitle")
+        env_header.addWidget(t1)
+
+        self.env_status_lbl = QLabel("🔍 检测中...")
+        self.env_status_lbl.setProperty("class", "SecondaryLabel")
+        env_header.addWidget(self.env_status_lbl)
+        env_header.addStretch()
+        e_layout.addLayout(env_header)
+
+        erow = QHBoxLayout()
+        erow.setSpacing(8)
+
+        self.python_combo = QComboBox()
+        self.python_combo.setEditable(True)
+        self.python_combo.currentTextChanged.connect(self._on_python_changed)
+        erow.addWidget(self.python_combo, stretch=1)
+
+        self.pick_py_btn = QPushButton("浏览 Python")
+        self.pick_py_btn.setProperty("class", "SecondaryBtn")
+        self.pick_py_btn.clicked.connect(self._pick_python)
+        erow.addWidget(self.pick_py_btn)
+
+        self.refresh_py_btn = QPushButton("🔄 刷新")
+        self.refresh_py_btn.setProperty("class", "SecondaryBtn")
+        self.refresh_py_btn.clicked.connect(self._refresh_python_envs)
+        erow.addWidget(self.refresh_py_btn)
+
+        e_layout.addLayout(erow)
+        main_layout.addWidget(env_card)
+
+        # ── 2. 数据集选择卡片 ──
+        ds_card = QFrame()
+        ds_card.setProperty("class", "CardFrame")
+        ds_layout = QVBoxLayout(ds_card)
+        ds_layout.setContentsMargins(16, 12, 16, 12)
+        ds_layout.setSpacing(8)
+
+        t2 = QLabel("训练数据集根目录 (内含 'like' 与 'dislike' 文件夹)")
+        t2.setProperty("class", "CardTitle")
+        ds_layout.addWidget(t2)
+
+        ds_row = QHBoxLayout()
+        ds_row.setSpacing(8)
+
+        self.ds_input = QLineEdit()
+        self.ds_input.setPlaceholderText("选择包含 like / dislike 子文件夹的数据集根目录...")
+        ds_row.addWidget(self.ds_input, stretch=1)
+
+        self.pick_ds_btn = QPushButton("选择目录")
+        self.pick_ds_btn.setProperty("class", "SecondaryBtn")
+        self.pick_ds_btn.clicked.connect(self._pick_dataset_dir)
+        ds_row.addWidget(self.pick_ds_btn)
+
+        ds_layout.addLayout(ds_row)
+        main_layout.addWidget(ds_card)
+
+        # ── 3. 参数配置卡片 ──
+        param_card = QFrame()
+        param_card.setProperty("class", "CardFrame")
+        p_layout = QHBoxLayout(param_card)
+        p_layout.setContentsMargins(16, 12, 16, 12)
+        p_layout.setSpacing(16)
+
+        ep_lbl = QLabel("训练轮数 (Epochs):")
+        ep_lbl.setProperty("class", "SecondaryLabel")
+        p_layout.addWidget(ep_lbl)
+
+        self.epochs_input = QLineEdit("5")
+        self.epochs_input.setFixedWidth(60)
+        p_layout.addWidget(self.epochs_input)
+
+        self.auto_onnx_cb = QCheckBox("训练完成后自动熔铸为 ONNX 极速加速模型（推荐）")
+        self.auto_onnx_cb.setChecked(True)
+        p_layout.addWidget(self.auto_onnx_cb)
+        p_layout.addStretch()
+
+        main_layout.addWidget(param_card)
+
+        # ── 4. 执行行 ──
+        br_layout = QHBoxLayout()
+        br_layout.setSpacing(12)
+
+        self.run_btn = QPushButton("▶  开始训练与熔铸")
+        self.run_btn.setProperty("class", "PrimaryBtn")
+        self.run_btn.clicked.connect(self._on_run)
+        br_layout.addWidget(self.run_btn)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFixedWidth(160)
+        br_layout.addWidget(self.progress_bar)
+
+        self.status_lbl = QLabel("就绪")
+        self.status_lbl.setProperty("class", "SecondaryLabel")
+        br_layout.addWidget(self.status_lbl)
+        br_layout.addStretch()
+
+        main_layout.addLayout(br_layout)
+
+        # ── 5. 现代化训练日志卡片 ──
+        log_card = QFrame()
+        log_card.setProperty("class", "CardFrame")
+        l_layout = QVBoxLayout(log_card)
+        l_layout.setContentsMargins(16, 12, 16, 12)
+        l_layout.setSpacing(8)
+
+        log_title = QLabel("📋 训练实时进度与指标")
+        log_title.setProperty("class", "CardTitle")
+        l_layout.addWidget(log_title)
+
+        self.log_text = QPlainTextEdit()
+        self.log_text.setProperty("class", "LogConsole")
+        self.log_text.setReadOnly(True)
+        self.log_text.setPlaceholderText("💡 准备就绪。\n点击上方“▶ 开始训练与熔铸”后，将在此实时显示：\n  · 照片样本扫描与特征提取进度\n  · 每一轮 (Epoch) 的 Loss 损失函数与准确率\n  · ONNX 硬件加速模型的自动生成与导出状态\n")
+        l_layout.addWidget(self.log_text)
+
+        main_layout.addWidget(log_card, stretch=1)
+
+    def _refresh_python_envs(self):
+        envs = discover_python_environments()
+        self.python_combo.clear()
+        self.python_combo.addItems(envs)
+        if envs:
+            self.python_combo.setCurrentIndex(0)
+            self._on_python_changed(envs[0])
+
+    def _on_python_changed(self, py_bin: str):
+        py_bin = py_bin.strip()
+        if not py_bin or not Path(py_bin).exists():
+            self.env_status_lbl.setText("（未指定有效 Python 路径）")
+            self.env_status_lbl.setStyleSheet(f"color: {TEXT_TERT};")
+            return
+
+        def _task():
+            info = probe_python_environment(py_bin)
+            if info.get("error"):
+                self.env_status_lbl.setText(f"⚠️ 环境异常: {info['error']}")
+                self.env_status_lbl.setStyleSheet("color: #DC2626;")
+            else:
+                ver = info.get("version", "")
+                missing = info.get("missing", [])
+                if not missing:
+                    self.env_status_lbl.setText(f"✅ Python {ver} · 依赖齐全")
+                    self.env_status_lbl.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
+                else:
+                    self.env_status_lbl.setText(f"🟡 Python {ver} · 缺少: {', '.join(missing)} (点击训练可一键安装)")
+                    self.env_status_lbl.setStyleSheet(f"color: {AMBER_FG}; font-weight: bold;")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _pick_python(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "选择 Python 解释器", "",
+            "Python (python.exe python*);;All Files (*.*)"
+        )
+        if f:
+            self.python_combo.setEditText(f)
+
+    def _pick_dataset_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "选择训练数据集根目录")
+        if d:
+            self.ds_input.setText(d)
+
+    def _append_log(self, msg: str):
+        self.log_text.appendPlainText(msg)
+        self.log_text.ensureCursorVisible()
+
+    def _on_run(self):
+        if self._running:
+            return
+
+        py_bin = self.python_combo.currentText().strip()
+        if not py_bin or not Path(py_bin).exists():
+            QMessageBox.critical(self, "环境错误", "请先选择一个有效的 Python 解释器路径。")
+            return
+
+        dataset_path = Path(self.ds_input.text().strip())
+        if not dataset_path.exists() or not dataset_path.is_dir():
+            QMessageBox.critical(self, "错误", "请先选择有效的数据集目录。")
+            return
+
+        like_dir = dataset_path / "like"
+        dislike_dir = dataset_path / "dislike"
+        if not like_dir.exists() and not dislike_dir.exists():
+            QMessageBox.critical(
+                self, "数据集格式错误",
+                f"所选目录下未找到 'like' 或 'dislike' 文件夹！\n路径: {dataset_path}"
+            )
+            return
+
+        try:
+            epochs = int(self.epochs_input.text().strip())
+            assert epochs > 0
+        except Exception:
+            QMessageBox.critical(self, "错误", "Epoch 必须是正整数。")
+            return
+
+        self._running = True
+        self.run_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.log_text.clear()
+        self.status_lbl.setText("正在检测环境…")
+
+        self._worker = TrainWorker(
+            py_bin=py_bin,
+            data_dir=dataset_path,
+            epochs=epochs,
+            auto_onnx=self.auto_onnx_cb.isChecked(),
+        )
+        self._worker.log_sig.connect(self._append_log)
+        self._worker.progress_sig.connect(lambda v: self.progress_bar.setValue(v))
+        self._worker.done_sig.connect(self._on_training_done)
+        self._worker.need_install_sig.connect(self._on_need_install)
+        self._worker.start()
+
+    def _on_need_install(self, py_bin: str, missing: list, ver_str: str):
+        missing_str = ", ".join(missing)
+        ret = QMessageBox.question(
+            self, "需要安装训练依赖",
+            f"检测到所选 Python 环境 (Python {ver_str}) 缺少以下依赖库：\n\n"
+            f"  • {missing_str}\n\n"
+            f"是否立即为您自动执行 pip 安装？\n"
+            f"（将使用国内镜像源高速下载安装，安装完毕后自动开始训练）",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ret != QMessageBox.Yes:
+            self._append_log("ℹ️ 用户取消了依赖安装，训练已终止。")
+            self._finish_run()
+            return
+
+        self.status_lbl.setText("正在安装依赖…")
+        self._append_log(f"📦 开始为 Python {ver_str} 安装依赖: {missing_str} ...")
+
+        def _install_task():
+            pkgs = []
+            for m in missing:
+                if m == "Pillow":
+                    pkgs.append("Pillow")
+                elif m == "onnx":
+                    pkgs.extend(["onnx", "onnxscript"])
+                else:
+                    pkgs.append(m)
+
+            cmd = [py_bin, "-m", "pip", "install", *pkgs, "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in iter(proc.stdout.readline, ''):
+                l = line.strip()
+                if l:
+                    self._append_log(f"  [pip] {l}")
+            proc.stdout.close()
+            code = proc.wait()
+
+            if code != 0:
+                self._append_log("❌ 依赖安装失败，请检查网络连接或手动执行 pip install。")
+                self.done_sig_proxy(False, "依赖自动安装失败，请查看日志详情。")
+            else:
+                self._append_log("✅ 依赖库安装成功！即将启动训练...\n")
+                self._worker._execute_training()
+
+        threading.Thread(target=_install_task, daemon=True).start()
+
+    def done_sig_proxy(self, success: bool, msg: str):
+        QtCore.QMetaObject.invokeMethod(self, lambda: self._on_training_done(success, msg), Qt.QueuedConnection)
+
+    def _on_training_done(self, success: bool, msg: str):
+        self._finish_run()
+        if success:
+            self.status_lbl.setText("训练完成")
+            if self.on_model_updated:
+                self.on_model_updated()
+            QMessageBox.information(self, "训练成功", msg)
+        else:
+            self.status_lbl.setText("训练失败")
+            QMessageBox.critical(self, "训练失败", msg)
 
     def _finish_run(self):
         self._running = False
-        self.run_btn.configure(bg=_ACCENT, cursor="hand2")
+        self.run_btn.setEnabled(True)
 
-    def run(self):
-        if self.is_standalone:
-            self.root.mainloop()
+
+def launch_trainer_gui():
+    from qt_theme import APP_STYLE
+    app = QtWidgets.QApplication(sys.argv)
+    if sys.platform == "darwin":
+        app.setFont(QtGui.QFont(".AppleSystemUIFont", 12))
+    elif sys.platform == "win32":
+        app.setFont(QtGui.QFont("Segoe UI", 10))
+    app.setStyleSheet(APP_STYLE)
+    w = QtWidgets.QMainWindow()
+    w.setWindowTitle("Photo Sort — 个人审美偏好训练")
+    w.resize(760, 600)
+    w.setCentralWidget(TrainerGUI())
+    w.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    TrainerGUI().run()
+    launch_trainer_gui()
