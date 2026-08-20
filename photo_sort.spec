@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import sys
 
 block_cipher = None
 
@@ -85,6 +86,11 @@ a = Analysis(
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# 图标配置
+icon_file = 'src/assets/icon.ico' if os.name == 'nt' or sys.platform == 'win32' else 'src/assets/icon.icns'
+if not os.path.exists(icon_file):
+    icon_file = 'src/assets/icon.png' if os.path.exists('src/assets/icon.png') else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -101,6 +107,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=icon_file,
 )
 
 coll = COLLECT(
@@ -117,6 +124,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='PhotoSort.app',
-    icon=None,
-    bundle_identifier=None,
+    icon='src/assets/icon.icns' if os.path.exists('src/assets/icon.icns') else None,
+    bundle_identifier='com.photosort.app',
 )

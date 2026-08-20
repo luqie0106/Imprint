@@ -82,9 +82,13 @@ class MainAppGUI(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Photo Sort — RAW 智能连拍优选与个人审美系统")
+        self.setWindowTitle("Photo Sort — 智能连拍优选与个人审美系统")
         self.resize(760, 620)
         self.setMinimumSize(700, 540)
+
+        icon_path = _SRC_DIR / "assets" / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
 
         self._download_worker: DownloadWorker | None = None
         self._export_worker: ExportWorker | None = None
@@ -392,6 +396,11 @@ def launch_main_gui() -> None:
         app.setFont(QtGui.QFont(".AppleSystemUIFont", 12))
     elif sys.platform == "win32":
         app.setFont(QtGui.QFont("Segoe UI", 10))
+    
+    icon_path = _SRC_DIR / "assets" / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QtGui.QIcon(str(icon_path)))
+
     app.setStyleSheet(APP_STYLE)
     win = MainAppGUI()
     win.show()
