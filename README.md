@@ -1,176 +1,136 @@
-# Photo Sort — RAW 智能连拍优选与个人审美引擎
+# Photo Sort
 
-**Photo Sort** 专为摄影师（特别是航空、体育、人像、生态打鸟等高频连拍场景）量身打造，用于全自动筛选并归拢冗余连拍照片，保留每个精彩瞬间的最优帧。
+[![Python](https://img.shields.io/badge/Python-3.9%20~%203.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![GUI](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt6-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython/)
+[![Inference](https://img.shields.io/badge/Inference-ONNX%20Runtime%20%7C%20DirectML%20%7C%20CoreML-005CED?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
+[![Formats](https://img.shields.io/badge/Formats-RAW%20%7C%20JPEG%20%7C%20JXL%20%7C%20HIF%2FHEIF-FF6F00)]()
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?logo=apple&logoColor=black)]()
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-18%2F18%20Passed-brightgreen)]()
 
-软件无缝集成了 **RAW 智能连拍聚类**、**个人摄影审美微调** 与 **模型本地化管理**，提供极简现代、零延迟响应的图形化桌面应用。
+本地连拍照片智能筛选与优选工具。
 
----
-
-## ✨ 核心特性
-
-### 1. 现代化一体集成界面 (Unified Desktop App)
-- **多标签即时切换**：主界面直观整合【📷 连拍优选】、【🧠 偏好训练】与【📦 模型与环境】三大核心功能，`grid + tkraise` 架构保障 0 毫秒无闪烁流畅切换。
-- **模型状态动态感知**：自动感知当前推理引擎（🟢 ONNX 极速硬件加速 / 🟡 PyTorch 本地模型 / ⚪ 纯 OpenCV 锐度模式）。
-- **全自动闭环工作流**：在图形界面完成个人偏好训练后，**自动熔铸为单体 ONNX 模型**，连拍筛选即刻生效，无需手动运行任何外部脚本。
-
-### 2. 智能连拍聚类引擎 (Burst Grouping)
-- **感知哈希 (dHash) 视觉比对**：利用差异哈希算计图像结构特征（汉明距离），无视曝光微变和白平衡跳动，精准识别同一场景。
-- **亚秒级 (Sub-second) EXIF 解析**：深度挖掘 RAW 内嵌元数据，支持毫秒/微秒级时间戳分割，完美驾驭现代微单 30fps 以上的极限连拍。
-- **平移跟拍 (Panning) 智能截断**：采用“首帧锚点比对”逻辑。当你追随运动主体长跨度连拍时，一旦构图或机位角度发生实质性变化，程序将自动截断并开启新子组，**确保每个经典角度都能为你保留最优帧**。
-
-### 3. 多维综合加权打分 (Scoring Engine)
-抛弃死板单一的判断标准，采用多维度加权公式，确保筛选出的照片兼具焦点清晰、构图高级与曝光准确：
-- **60% | AI 美感与构图 (CLIP + MLP)**：基于 OpenAI CLIP 视觉主干提取高维特征，结合自研 MLP 分类头，精准量化你的个人摄影审美偏好。
-- **30% | 人脸优先锐度 (Sharpness)**：内置 Haar Cascade 人脸检测。只要画面中有人脸，锐度评估将仅针对人脸区域进行（解决“背景锐利但人脸虚焦”痛点）；无人脸时自动降级为画面中心区域测算，并在组内进行 Min-Max 归一化。
-- **10% | 宽容欠曝的曝光评分 (Exposure)**：深度分析直方图数据。遵循摄影“宁欠勿曝”原则，对“高光死白”予以重惩，对“暗部死黑”仅做轻微扣分。
-
-### 4. 模型本地化管理与国内加速 (Model Manager)
-- **系统缓存自动识别**：智能检测系统 HuggingFace 缓存（`~/.cache/huggingface/hub/`），若已存在直接识别使用。
-- **秒级本地同步**：支持一键将系统缓存模型硬链接/同步至当前项目 `./models/` 目录，完全无需重复联网。
-- **国内高速镜像**：内置 `hf-mirror.com` 国内加速下载节点，断点续传并实时显示下载进度与传输速率。
-- **安全与非破坏性**：绝不修改或删除原始 RAW 文件，淘汰片仅安全移动至当前目录下的审查子文件夹中。
+专为高频连拍场景（航空、体育、人像、生态等）设计，自动根据拍摄时间与画面相似度对连拍进行分组，结合局部清晰度（人脸优先）、曝光以及本地 AI 模型选出每组中的最佳照片，并将多余废片整理到审查目录。
 
 ---
 
-## 📷 支持的 RAW 格式
+## 主要功能
 
-| 相机品牌 | 支持格式后缀 |
-| :--- | :--- |
-| **Nikon (尼康)** | `.NEF`, `.nef` |
-| **Sony (索尼)** | `.ARW`, `.arw` |
-| **Canon (佳能)** | `.CR3`, `.cr3` |
-| **Fujifilm (富士)** | `.RAF`, `.raf` |
+- **连拍自动分组**：结合 EXIF 亚秒级拍摄时间（$\le 1.5$ 秒）与 dHash 图像感知哈希，自动识别同一连拍序列。长距离追焦移镜时，画面发生明显变化会自动拆分子组；三脚架定机位摆拍不会因时间不同被误合并。
+- **多维度选优打分**：
+  - **清晰度（人脸优先）**：自动检测人脸区域并计算 Laplacian 梯度；无人脸时以画面中心主体区域为主。
+  - **曝光评估**：统计直方图高光与暗部，对高光过曝（死白）施加惩罚。
+  - **AI 美学与构图打分（可选）**：基于本地 CLIP 视觉特征，量化整体构图与美感。
+- **个人审美偏好微调**：内置轻量训练器，只需提供 `like` 和 `dislike` 两个文件夹，即可在本地训练自己的审美模型，并一键导出为 ONNX 格式调用 NPU / GPU 硬件加速。
+- **全格式支持**：
+  - **相机 RAW**：尼康 (`.NEF`)、索尼 (`.ARW`)、佳能 (`.CR3`/`.CR2`)、富士 (`.RAF`)、DNG 等。
+  - **高效率格式**：索尼/佳能 10-bit `.HIF`、苹果 `.HEIC`/`.HEIF`、JPEG XL (`.JXL`)。
+  - **通用格式**：`.JPG`、`.JPEG`、`.PNG`、`.WebP`。
+- **安全与非破坏性**：只读取元数据与缩略图，不修改原片，淘汰的照片移动到同目录下的 `审查_连拍淘汰` 文件夹，方便随时人工复查。
 
 ---
 
-## 🚀 安装与环境配置
+## 运行环境与安装
 
-推荐使用 Conda Python 3.11 环境运行：
+建议使用 Python 3.9 ~ 3.13（推荐 Conda 环境）：
 
 ```bash
-# 1. 激活你的 Conda Python 3.11 环境
-conda activate py311
+# 克隆仓库
+git clone https://github.com/luqie0106/photo_sort.git
+cd photo_sort
 
-# 2. 安装项目依赖
+# 安装依赖
 pip install -r requirements.txt
 ```
 
 ---
 
-## 💻 使用指南
+## 使用说明
 
-### 1. 启动图形化主程序（推荐）
+### 1. 图形界面（默认）
+
+运行主程序打开桌面界面：
+
 ```bash
 python main.py
 ```
 
-打开后即可在三大面板间自由切换：
+界面包含三个标签页：
+- **连拍优选**：选择照片文件夹，设置连拍时间阈值（默认 1.5s）和每组保留张数，点击开始筛选。
+- **偏好训练**：选择包含 `like/` 与 `dislike/` 的数据集根目录，本地训练专属审美模型并自动熔铸为 ONNX 模型。
+- **模型与环境**：查看本地基础模型（CLIP）与 ONNX 状态，支持一键从国内镜像下载。
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│  📸 Photo Sort   RAW 连拍优选 · 审美微调 · ONNX 极速推理      │
-├───────────────────────────────────────────────────────────────┤
-│  [ 📷 连拍优选 ]      [ 🧠 偏好训练 ]      [ 📦 模型与环境 ]  │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│   📁 RAW 文件目录: [/Volumes/Photos/202608_Airshow      ] [选择]│
-│   ⚙️ 处理参数:                                                 │
-│      · 连拍时间阈值: [ 1.5 ] 秒                               │
-│      · dHash 汉明限制: [ 12  ]                                │
-│      · 每组保留张数: [ 1   ]                                  │
-│      · 最大并发线程: [ 6   ]                                  │
-│      · 硬件加速:     [√] 启用显卡/NPU 处理核心                 │
-│                                                               │
-│   [ ▶ 开始筛选 ]  ==================== 100%                   │
-└───────────────────────────────────────────────────────────────┘
-```
+### 2. 命令行模式 (CLI)
 
-#### 功能介绍：
-- **📷 连拍优选**：选择包含 RAW 文件的文件夹，点击【▶ 开始筛选】，系统自动聚类、打分并将淘汰冗余片移入 `审查_连拍淘汰` 文件夹。
-- **🧠 偏好训练**：选择你的训练样本目录，一键训练你的专属摄影审美模型，训练完毕自动熔铸为 ONNX 极速模型。
-- **📦 模型与环境**：查看模型状态（CLIP 基础视觉模型、AestheticMLP 权重、ONNX 模型），支持一键秒级同步或下载。
-
----
-
-### 2. 命令行快捷指令 (CLI)
-
-适合脚本批处理或无图形界面环境：
+适合脚本批量处理或无界面的终端环境：
 
 ```bash
-# 1. 纯命令行交互式运行连拍筛选
+# 交互式命令行运行筛选
 python main.py --cli
 
-# 2. 命令行一键下载/同步基础模型至本地 models/ 目录
+# 下载/同步基础模型到本地 models/ 目录
 python main.py --download-models
 
-# 3. 命令行从现有 MLP 权重直接熔铸并导出 photo_sort_model.onnx
+# 从现有权重直接导出 ONNX 模型
 python main.py --export-onnx
-
-# 4. 直接打开偏好训练器独立窗口
-python main.py --train-gui
 ```
 
 ---
 
-## 🧠 如何训练属于你的专属审美模型
+## 训练个人审美偏好
 
-通过训练，你可以让 Photo Sort 成为最懂你构图与审美偏好的私人助手：
+如果希望系统按照你的个人喜好（构图、色彩偏好）来选片：
 
-1. **整理训练数据集**：在任意位置新建一个文件夹（例如 `my_dataset/`），并在其内部建立两个子文件夹：
+1. 准备样本文件夹，结构如下：
    ```
-   my_dataset/
-   ├── like/       <-- 放入你满意、喜欢的精选 RAW 照片（建议 20~100 张以上）
-   └── dislike/    <-- 放入你淘汰、不满意的废片/构图不佳照片（建议数量相当）
+   dataset/
+   ├── like/       # 放入满意的精选照片（建议 30~100 张以上，格式不限）
+   └── dislike/    # 放入不满意的废片/构图不佳照片
    ```
-2. **开始训练**：
-   - 打开 Photo Sort，切换到 **🧠 偏好训练** 面板。
-   - 点击【选择目录】选中 `my_dataset` 根文件夹。
-   - 确认勾选【训练完成后自动熔铸为 ONNX 加速模型】。
-   - 点击 **【▶ 开始训练与熔铸】**。
-3. **即刻生效**：
-   - 训练完成后，程序会自动在根目录保存 `aesthetic_mlp.pth` 并熔铸生成 `photo_sort_model.onnx`。
-   - 切换回 **📷 连拍优选** 面板，状态指示灯将自动变为 🟢 **ONNX 极速加速已就绪**！
+2. 打开软件切到【偏好训练】页，选择 `dataset` 目录。
+3. 点击【开始训练与熔铸】，训练完成后会自动生成 `photo_sort_model.onnx`。
+4. 返回【连拍优选】页即可直接使用新模型进行硬件加速筛选。
 
 ---
 
-## 📂 项目结构说明
+## 编译打包
+
+项目使用 PyInstaller 打包，已排除 PyTorch 训练库与未使用的 Qt 模块：
+
+```bash
+# 安装打包依赖
+pip install -r requirements-build.txt
+
+# 打包生成可执行文件
+pyinstaller photo_sort.spec
+```
+
+- **macOS**：在 `dist/` 生成 `PhotoSort.app`，可通过 GitHub Actions 自动构建 `.dmg`。
+- **Windows**：在 `dist/` 生成 `PhotoSort/` 绿色运行目录，自动压缩为 `.zip`。
+
+---
+
+## 目录结构
 
 ```
 photo_sort/
-├── main.py                     # 程序主入口（支持图形界面与 CLI 指令）
-├── requirements.txt            # 项目 Python 依赖清单
-├── aesthetic_mlp.pth           # 训练好的个人审美 MLP 权重文件
-├── photo_sort_model.onnx       # 熔铸后的端到端极速 ONNX 模型
-├── models/                     # 本地基础模型存放目录
-│   └── clip-vit-base-patch32/  # 本地 CLIP ViT-B/32 视觉编码器
+├── main.py                     # 程序入口（GUI / CLI）
+├── photo_sort.spec             # PyInstaller 打包配置
+├── requirements.txt            # 运行依赖
+├── requirements-build.txt      # 构建依赖
 ├── src/
-│   ├── app_gui.py              # 一体化多标签主窗口 (Main GUI)
-│   ├── burst_gui.py            # 连拍优选图形化组件
-│   ├── trainer_gui.py          # 偏好训练器图形化组件
-│   ├── burst_filter.py         # 连拍聚类、EXIF 解析与综合打分引擎
-│   ├── model_manager.py        # 模型检测、缓存同步与自动下载管理模块
-│   ├── onnx_exporter.py        # CLIP + MLP 端到端 ONNX 熔铸模块
-│   ├── exif_reader.py          # EXIF 亚秒时间读取工具
-│   └── config.py               # 数据配置类
-├── tests/                      # 自动化测试套件
-└── README.md                   # 项目使用与技术说明文档
+│   ├── app_gui.py              # 主界面 (PySide6)
+│   ├── burst_gui.py            # 连拍优选面板
+│   ├── trainer_gui.py          # 偏好训练面板
+│   ├── qt_theme.py             # 界面样式与主题
+│   ├── burst_filter.py         # 连拍聚类、EXIF 与打分核心逻辑
+│   ├── model_manager.py        # 模型下载与状态管理
+│   └── onnx_exporter.py        # ONNX 导出工具
+└── tests/                      # 单元测试套件
 ```
 
 ---
 
-## ❓ 常见问题 (FAQ)
+## 开源协议
 
-**Q1：模型下载会存放在哪里？**
-- 基础视觉模型下载到当前项目目录下的 `./models/clip-vit-base-patch32/` 中。若系统缓存 `~/.cache/huggingface/` 中已存在，程序支持直接导入，无需重新联网。
-
-**Q2：运行筛选会损坏或修改原片吗？**
-- 绝对不会。Photo Sort 采用只读方式读取 RAW 预览与 EXIF，未选中的淘汰照片会被完整移动到同级目录下的 `审查_连拍淘汰` 文件夹中，您可以随时复查或一键撤销。
-
-**Q3：没有独立显卡可以使用吗？**
-- 完全支持！程序会自动检测硬件平台：macOS 自动调用 Apple Silicon (MPS / CoreML)，Windows/Linux 自动调用 CUDA 或多核 CPU 并发指令集。
-
----
-
-## 📄 开源许可
-
-本项目遵循 [Apache 2.0 License](LICENSE) 开源协议。
+本项目采用 [Apache 2.0](LICENSE) 协议开源。
