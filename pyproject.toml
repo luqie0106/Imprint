@@ -5,12 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "photo-sort"
 version = "0.3.0"
-description = "RAW 智能连拍优选与个人审美微调系统"
+description = "RAW / JPEG / JXL / HIF 智能连拍优选与个人审美微调系统"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
   "PySide6>=6.5.0",
   "Pillow>=10.0.0",
+  "pillow-heif>=0.15.0",
+  "pillow-jxl-plugin>=1.3.0",
   "rawpy>=0.21.0",
   "opencv-python-headless>=4.8.0",
   "numpy>=1.24.0",

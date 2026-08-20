@@ -101,7 +101,7 @@ class BurstFilterGUI(QWidget):
         d_layout.setContentsMargins(16, 12, 16, 12)
         d_layout.setSpacing(8)
 
-        title_lbl = QLabel("RAW 照片文件夹")
+        title_lbl = QLabel("照片文件夹 (支持 RAW / JPEG / JPEG XL / HIF / HEIF / PNG)")
         title_lbl.setProperty("class", "CardTitle")
         d_layout.addWidget(title_lbl)
 
@@ -109,7 +109,7 @@ class BurstFilterGUI(QWidget):
         d_row.setSpacing(10)
 
         self.dir_input = QLineEdit()
-        self.dir_input.setPlaceholderText("选择或输入包含 RAW 格式照片的文件夹路径...")
+        self.dir_input.setPlaceholderText("选择或输入包含 RAW、JPEG、JPEG XL、HIF、HEIF 格式照片的文件夹路径...")
         d_row.addWidget(self.dir_input)
 
         self.pick_dir_btn = QPushButton("选择文件夹")
@@ -295,11 +295,11 @@ class BurstFilterGUI(QWidget):
         self._set_status("筛选完成")
 
         if r.total == 0:
-            QMessageBox.information(self, "处理完成", "目录中未找到任何 RAW 文件（NEF/ARW/CR3/RAF）。")
+            QMessageBox.information(self, "处理完成", "目录中未找到任何支持的照片文件（支持 RAW / JPEG / JXL / HIF / HEIF / PNG）。")
             return
 
         lines = [
-            f"总 RAW 文件数：    {r.total}",
+            f"总照片文件数：    {r.total}",
             f"单拍跳过（保留）：  {r.skipped_single}",
             f"连拍组数：         {r.burst_groups}",
             f"已移动淘汰数：     {r.moved}",

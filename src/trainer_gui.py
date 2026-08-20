@@ -236,24 +236,52 @@ clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device
 for p in clip_model.parameters(): p.requires_grad_(False)
 clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
+
+try:
+    import pillow_jxl
+except Exception:
+    pass
+
+RAW_SUFFIXES = {
+    ".nef", ".arw", ".cr3", ".cr2", ".raf", ".dng", ".rw2", ".orf", ".pef"
+}
+STANDARD_SUFFIXES = {
+    ".jpg", ".jpeg", ".jpe", ".jxl", ".hif", ".heif", ".heic", ".png", ".webp", ".tiff", ".tif"
+}
+ALL_PHOTO_SUFFIXES = RAW_SUFFIXES | STANDARD_SUFFIXES
+
 class RawDataset:
     def __init__(self, root):
         self.samples = []
         for l, dname in ((1, "like"), (0, "dislike")):
             d = root / dname
             if d.exists():
-                for pat in ("*.nef", "*.NEF", "*.arw", "*.ARW", "*.cr3", "*.CR3", "*.raf", "*.RAF"):
-                    for p in d.glob(pat): self.samples.append((p, l))
+                for p in d.iterdir():
+                    if p.is_file() and p.suffix.lower() in ALL_PHOTO_SUFFIXES:
+                        self.samples.append((p, l))
     def __len__(self): return len(self.samples)
     def __getitem__(self, idx):
         p, l = self.samples[idx]
-        try:
-            with rawpy.imread(str(p)) as raw: thumb = raw.extract_thumb()
-            img = Image.open(io.BytesIO(thumb.data)).convert("RGB")
-        except Exception:
+        img = None
+        if p.suffix.lower() in RAW_SUFFIXES:
             try:
-                with rawpy.imread(str(p)) as raw: arr = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
-                img = Image.fromarray(arr).convert("RGB")
+                with rawpy.imread(str(p)) as raw: thumb = raw.extract_thumb()
+                img = Image.open(io.BytesIO(thumb.data)).convert("RGB")
+            except Exception:
+                try:
+                    with rawpy.imread(str(p)) as raw: arr = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
+                    img = Image.fromarray(arr).convert("RGB")
+                except Exception:
+                    pass
+        if img is None:
+            try:
+                with Image.open(p) as im:
+                    img = im.convert("RGB")
             except Exception:
                 img = Image.new("RGB", (224, 224), (0, 0, 0))
         inp = clip_processor(images=img, return_tensors="pt", padding=True)

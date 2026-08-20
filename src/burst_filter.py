@@ -27,7 +27,33 @@ import numpy as np
 import rawpy
 from PIL import Image
 
-# ── 人脸检测器（加载失败时降级为中心区域锡度）───────────────────────────
+# ── 注册现代高效率图像格式解码器 (HIF / HEIF / HEIC / JPEG XL) ───────────
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
+
+try:
+    import pillow_jxl
+except Exception:
+    pass
+
+# ── 支持的照片扩展名格式集 ───────────────────────────────────────────────────
+RAW_SUFFIXES = {
+    ".nef", ".arw", ".cr3", ".cr2", ".raf", ".dng", ".rw2", ".orf", ".pef"
+}
+
+STANDARD_IMAGE_SUFFIXES = {
+    ".jpg", ".jpeg", ".jpe",
+    ".jxl",
+    ".hif", ".heif", ".heic",
+    ".png", ".webp", ".tiff", ".tif"
+}
+
+SUPPORTED_PHOTO_SUFFIXES = RAW_SUFFIXES | STANDARD_IMAGE_SUFFIXES
+
+# ── 人脸检测器（加载失败时降级为中心区域锐度）───────────────────────────
 try:
     _FACE_CASCADE = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -157,14 +183,22 @@ class RawEvaluator:
     """
 
     def extract_preview(self, path: Path) -> np.ndarray:
-        try:
-            return self._extract_thumb(path)
-        except Exception:
-            pass
-        try:
-            return self._half_decode(path)
-        except Exception as exc:
-            raise RuntimeError(f"无法读取 RAW 预览: {path.name}") from exc
+        suffix = path.suffix.lower()
+        if suffix in RAW_SUFFIXES:
+            try:
+                return self._extract_thumb(path)
+            except Exception:
+                pass
+            try:
+                return self._half_decode(path)
+            except Exception as exc:
+                raise RuntimeError(f"无法读取 RAW 预览: {path.name}") from exc
+        else:
+            try:
+                with Image.open(path) as img:
+                    return np.asarray(img.convert("RGB"))
+            except Exception as exc:
+                raise RuntimeError(f"无法读取图像文件: {path.name}") from exc
 
     @staticmethod
     def _extract_thumb(path: Path) -> np.ndarray:
@@ -542,12 +576,7 @@ class BurstFilter:
       result = BurstFilter().run(Path("/path/to/nef/folder"))
     """
 
-    _RAW_SUFFIXES = {
-        ".nef", ".NEF",   # Nikon
-        ".arw", ".ARW",   # Sony
-        ".cr3", ".CR3",   # Canon
-        ".raf", ".RAF",   # Fuji
-    }
+    _RAW_SUFFIXES = {s for s in SUPPORTED_PHOTO_SUFFIXES} | {s.upper() for s in SUPPORTED_PHOTO_SUFFIXES}
 
     def __init__(
         self,
@@ -595,13 +624,13 @@ class BurstFilter:
 
     def run(self, input_dir: Path) -> BurstFilterResult:
         result = BurstFilterResult()
-        nef_files = self._scan_raw(input_dir)
-        result.total = len(nef_files)
-        if not nef_files:
+        photo_files = self._scan_raw(input_dir)
+        result.total = len(photo_files)
+        if not photo_files:
             return result
 
-        self._notify(f"扫描到 {result.total} 张 RAW 文件，正在分析连拍组…")
-        groups = self._grouper.group(nef_files)
+        self._notify(f"扫描到 {result.total} 张照片，正在分析连拍组…")
+        groups = self._grouper.group(photo_files)
 
         burst_groups = [g for g in groups if len(g) > 1]
         result.skipped_single = sum(1 for g in groups if len(g) == 1)
@@ -626,8 +655,11 @@ class BurstFilter:
     def _scan_raw(self, input_dir: Path) -> list[Path]:
         return sorted(
             p for p in input_dir.iterdir()
-            if p.is_file() and p.suffix in self._RAW_SUFFIXES
+            if p.is_file() and p.suffix.lower() in SUPPORTED_PHOTO_SUFFIXES
         )
+
+    def _scan_photos(self, input_dir: Path) -> list[Path]:
+        return self._scan_raw(input_dir)
 
     def _process_group(
         self, group: list[Path], review_dir: Path

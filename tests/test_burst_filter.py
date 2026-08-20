@@ -280,3 +280,26 @@ class TestBurstFilter:
 
         assert result.review_dir == nef_dir / "审查_连拍淘汰"
         assert result.review_dir.exists()
+
+    def test_multi_format_scanning(self, tmp_path: Path):
+        """测试扫描支持 RAW (NEF/ARW/CR3/RAF) 及 JPEG, HIF, JXL 等格式。"""
+        img_dir = tmp_path / "mixed"
+        img_dir.mkdir()
+        
+        # 创建多种格式的假文件
+        for name in ["a.NEF", "b.jpg", "c.JPEG", "d.hif", "e.jxl", "f.cr3", "g.png"]:
+            (img_dir / name).write_bytes(b"\x00" * 16)
+        # 创建不支持的格式
+        (img_dir / "ignore.txt").write_text("hello")
+        (img_dir / "ignore.mp4").write_bytes(b"\x00" * 16)
+
+        flt = BurstFilter()
+        photos = flt._scan_photos(img_dir)
+        assert len(photos) == 7
+        names = {p.name for p in photos}
+        assert "a.NEF" in names
+        assert "b.jpg" in names
+        assert "d.hif" in names
+        assert "e.jxl" in names
+        assert "ignore.txt" not in names
+        assert "ignore.mp4" not in names
