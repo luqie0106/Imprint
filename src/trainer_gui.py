@@ -1,11 +1,12 @@
 """
 trainer_gui.py — 个人审美偏好训练器与 ONNX 自动熔铸
-支持内置 PyTorch 训练与通用 Conda / Python 环境智能探测调度
+支持 Python 3.9 ~ 3.13 广泛版本、Conda 环境智能探测与依赖一键自动安装
 """
 
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -46,104 +47,9 @@ _BORDER  = "#E2E8F0"
 _FAM = "SF Pro Text" if sys.platform == "darwin" else "Segoe UI"
 _FAM_TITLE = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
 
-# ── 动态探测 PyTorch 与 Transformers ─────────────────────────────────────────
-try:
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import Dataset, DataLoader
-    import rawpy
-    from PIL import Image
-    import numpy as np
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-
-try:
-    from transformers import CLIPProcessor, CLIPModel
-    CLIP_AVAILABLE = True
-except ImportError:
-    CLIP_AVAILABLE = False
-
-_ALL_AVAILABLE = TORCH_AVAILABLE and CLIP_AVAILABLE
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 数据集与模型逻辑 (仅在依赖齐全时可用)
-# ══════════════════════════════════════════════════════════════════════════════
-
-if _ALL_AVAILABLE:
-    def _extract_preview(path: Path) -> Image.Image:
-        try:
-            with rawpy.imread(str(path)) as raw:
-                thumb = raw.extract_thumb()
-            if thumb.format == rawpy.ThumbFormat.JPEG:
-                img = Image.open(io.BytesIO(thumb.data))
-            else:
-                img = Image.fromarray(thumb.data)
-            return img.convert("RGB")
-        except Exception:
-            pass
-        with rawpy.imread(str(path)) as raw:
-            arr = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
-        return Image.fromarray(arr).convert("RGB")
-
-    _RAW_GLOB_PATTERNS = ["*.[nN][eE][fF]", "*.[aA][rR][wW]",
-                          "*.[cC][rR]3", "*.[rR][aA][fF]"]
-
-    class RawAestheticDataset(Dataset):
-        def __init__(self, root_dir: Path, clip_processor, clip_model, device):
-            self.samples: list[tuple[Path, int]] = []
-            self._processor = clip_processor
-            self._clip = clip_model
-            self._device = device
-
-            for label, subdir in ((1, "like"), (0, "dislike")):
-                d = root_dir / subdir
-                if not d.exists():
-                    continue
-                for pat in _RAW_GLOB_PATTERNS:
-                    for p in d.glob(pat):
-                        self.samples.append((p, label))
-
-        def __len__(self):
-            return len(self.samples)
-
-        def __getitem__(self, idx):
-            path, label = self.samples[idx]
-            try:
-                img = _extract_preview(path)
-            except Exception:
-                img = Image.new("RGB", (224, 224), (0, 0, 0))
-
-            inputs = self._processor(images=img, return_tensors="pt", padding=True)
-            inputs = {k: v.squeeze(0) for k, v in inputs.items()}
-            return inputs, label
-
-    def collate_fn(batch):
-        inputs_list, labels = zip(*batch)
-        collated = {
-            k: torch.stack([d[k] for d in inputs_list])
-            for k in inputs_list[0]
-        }
-        return collated, torch.tensor(labels, dtype=torch.long)
-
-    class AestheticMLP(nn.Module):
-        def __init__(self, input_dim: int = 512):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, 256),
-                nn.ReLU(),
-                nn.Dropout(0.3),
-                nn.Linear(256, 2),
-            )
-
-        def forward(self, x):
-            return self.net(x)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 通用环境自动发现逻辑（不硬编码环境名称）
+# 通用环境自动发现与依赖探针逻辑（支持 Python 3.9 ~ 3.13）
 # ══════════════════════════════════════════════════════════════════════════════
 
 def discover_python_environments() -> list[str]:
@@ -164,9 +70,13 @@ def discover_python_environments() -> list[str]:
             seen.add(str(exe))
             found.append(str(exe))
 
+    # 1. 如果当前不是打包 exe，优先把当前正在运行的 Python 加入首位
+    if not getattr(sys, 'frozen', False) and sys.executable:
+        _add_env(Path(sys.executable))
+
     home = Path.home()
 
-    # 1. 解析 Conda 全局环境记录列表 (~/.conda/environments.txt)
+    # 2. 解析 Conda 全局环境记录列表 (~/.conda/environments.txt)
     env_txt = home / ".conda" / "environments.txt"
     if env_txt.exists():
         try:
@@ -177,7 +87,7 @@ def discover_python_environments() -> list[str]:
         except Exception:
             pass
 
-    # 2. 遍历常见 Conda 安装根目录下的 envs/ 文件夹中的所有子环境
+    # 3. 遍历常见 Conda 安装根目录下的 envs/ 文件夹中的所有子环境
     conda_bases = [
         home / "anaconda3",
         home / "miniconda3",
@@ -207,13 +117,13 @@ def discover_python_environments() -> list[str]:
                 except Exception:
                     pass
 
-    # 3. 系统 PATH 中的 python
+    # 4. 系统 PATH 中的 python
     for cmd in ["python3", "python"]:
         w = shutil.which(cmd)
         if w:
             _add_env(Path(w))
 
-    # 4. 排序：优先排查带有 torch/transformers 依赖的环境置顶
+    # 5. 排序：优先排查带有 torch/transformers 依赖的环境置顶
     def _rank_score(p_str: str) -> int:
         score = 0
         p = Path(p_str)
@@ -225,12 +135,54 @@ def discover_python_environments() -> list[str]:
         if any(c.exists() for c in sp_candidates):
             score += 20
         low = p_str.lower()
-        if "photo" in low or "torch" in low or "ai" in low or "py3" in low:
+        if "torch" in low or "ai" in low or "photo" in low or "py3" in low:
             score += 5
         return score
 
     found.sort(key=_rank_score, reverse=True)
     return found
+
+
+def probe_python_environment(py_bin: str) -> dict:
+    """
+    轻量快速探针：检测指定 Python 环境的版本及缺少哪些关键训练依赖。
+    返回格式：{"version": "3.11.9", "major_minor": "3.11", "missing": ["torch", ...], "error": None}
+    """
+    if not py_bin or not Path(py_bin).exists():
+        return {"error": "路径不存在"}
+
+    code = """
+import sys, json
+info = {
+    "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+    "major": sys.version_info.major,
+    "minor": sys.version_info.minor,
+    "major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
+    "error": None,
+}
+missing = []
+for pkg, imp in [("torch", "torch"), ("transformers", "transformers"), ("rawpy", "rawpy"), ("Pillow", "PIL"), ("onnx", "onnx")]:
+    try:
+        __import__(imp)
+    except ImportError:
+        missing.append(pkg)
+info["missing"] = missing
+print(json.dumps(info))
+"""
+    try:
+        res = subprocess.run(
+            [py_bin, "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=4,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout.strip())
+        else:
+            return {"error": res.stderr.strip() or "探测失败"}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -294,7 +246,7 @@ class TrainerGUI:
         if self.is_standalone:
             self.root.title("个人审美偏好训练器")
             self.root.configure(bg=_BG)
-            self.root.geometry("740x600")
+            self.root.geometry("760x600")
             self.root.minsize(700, 520)
 
         self.dataset_dir_var = tk.StringVar()
@@ -302,48 +254,55 @@ class TrainerGUI:
         self.auto_onnx_var = tk.BooleanVar(value=True)
         self.external_python_var = tk.StringVar()
         self._running = False
+        self._probing = False
 
         self._build_ui()
         self._apply_style()
+
+        # 启动后刷新环境列表
+        self.root.after(100, self._refresh_python_envs)
 
     def _build_ui(self):
         container = tk.Frame(self.root, bg=_BG)
         container.pack(fill="both", expand=True)
 
         if self.is_standalone:
-            hdr = tk.Frame(container, bg=_BG, pady=12)
-            hdr.pack(fill="x", padx=24)
+            hdr = tk.Frame(container, bg=_BG, pady=10)
+            hdr.pack(fill="x", padx=20)
             tk.Label(hdr, text="🧠 审美偏好模型训练", bg=_BG, fg=_TEXT, font=(_FAM_TITLE, 20, "bold")).pack(anchor="w")
-            tk.Label(hdr, text="微调轻量 MLP 分类头，训练完成后自动导出 ONNX 加速模型",
+            tk.Label(hdr, text="支持 Python 3.9 ~ 3.13 及 Conda 环境 · 训练完成后自动导出极速 ONNX 模型",
                      bg=_BG, fg=_TEXT_DIM, font=(_FAM, 11)).pack(anchor="w", pady=(2, 0))
-            tk.Frame(container, bg=_BORDER, height=1).pack(fill="x", padx=24)
+            tk.Frame(container, bg=_BORDER, height=1).pack(fill="x", padx=20)
 
         body = tk.Frame(container, bg=_BG)
-        body.pack(fill="both", expand=True, padx=24 if self.is_standalone else 12, pady=10)
+        body.pack(fill="both", expand=True, padx=20 if self.is_standalone else 12, pady=8)
 
-        # ── 1. 外部环境配置卡片 (仅当打包环境未内置 Torch 时展示) ──
-        if not _ALL_AVAILABLE:
-            env_card = _card(body)
-            env_card.pack(fill="x", pady=(0, 8))
-            ei = tk.Frame(env_card, bg=_SURFACE, padx=14, pady=8)
-            ei.pack(fill="x")
+        # ── 1. Python 环境选择卡片（全场景展示）──
+        env_card = _card(body)
+        env_card.pack(fill="x", pady=(0, 8))
+        ei = tk.Frame(env_card, bg=_SURFACE, padx=14, pady=8)
+        ei.pack(fill="x")
 
-            tk.Label(ei, text="💡 免安装版已内置 ONNX 极速推理。若需训练微调，请选择电脑上的 Python/Conda 环境：",
-                     bg=_SURFACE, fg=_ACCENT, font=(_FAM, 10, "bold")).pack(anchor="w")
+        env_header_row = tk.Frame(ei, bg=_SURFACE)
+        env_header_row.pack(fill="x")
+        tk.Label(env_header_row, text="🐍 Python 训练环境", bg=_SURFACE, fg=_TEXT,
+                 font=(_FAM, 11, "bold")).pack(side="left")
+        self.env_status_lbl = tk.Label(env_header_row, text="🔍 检测中...", bg=_SURFACE, fg=_TEXT_DIM, font=(_FAM, 10))
+        self.env_status_lbl.pack(side="left", padx=(10, 0))
 
-            erow = tk.Frame(ei, bg=_SURFACE)
-            erow.pack(fill="x", pady=(4, 0))
+        erow = tk.Frame(ei, bg=_SURFACE)
+        erow.pack(fill="x", pady=(4, 0))
 
-            detected_envs = discover_python_environments()
-            if detected_envs and not self.external_python_var.get():
-                self.external_python_var.set(detected_envs[0])
+        self.python_combo = ttk.Combobox(
+            erow, textvariable=self.external_python_var,
+            font=(_FAM, 10), state="normal",
+        )
+        self.python_combo.pack(side="left", fill="x", expand=True, ipady=2, padx=(0, 8))
+        self.python_combo.bind("<<ComboboxSelected>>", lambda e: self._on_python_selected())
+        self.python_combo.bind("<FocusOut>", lambda e: self._on_python_selected())
 
-            self.python_combo = ttk.Combobox(
-                erow, textvariable=self.external_python_var,
-                values=detected_envs, font=(_FAM, 10),
-            )
-            self.python_combo.pack(side="left", fill="x", expand=True, ipady=2, padx=(0, 8))
-            _pill_button(erow, "浏览 Python", self._pick_python).pack(side="left")
+        _pill_button(erow, "浏览 Python", self._pick_python).pack(side="left", padx=(0, 6))
+        _pill_button(erow, "🔄 刷新", self._refresh_python_envs).pack(side="left")
 
         # ── 2. 数据集选择卡片 ──
         dc = _card(body)
@@ -357,7 +316,7 @@ class TrainerGUI:
         _entry(row, self.dataset_dir_var).pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 8))
         _pill_button(row, "选择目录", self._pick_dir).pack(side="left")
 
-        # ── 3. 参数卡片 ──
+        # ── 3. 参数配置卡片 ──
         pc = _card(body)
         pc.pack(fill="x", pady=(0, 8))
         pi = tk.Frame(pc, bg=_SURFACE, padx=14, pady=8)
@@ -402,13 +361,49 @@ class TrainerGUI:
         except Exception:
             pass
 
+    def _refresh_python_envs(self):
+        """刷新环境列表并自动探针"""
+        envs = discover_python_environments()
+        self.python_combo["values"] = envs
+        if envs and not self.external_python_var.get():
+            self.external_python_var.set(envs[0])
+        self._on_python_selected()
+
+    def _on_python_selected(self):
+        """异步探针当前选中的 Python 环境"""
+        py_bin = self.external_python_var.get().strip()
+        if not py_bin:
+            self.env_status_lbl.configure(text="（未指定 Python 环境）", fg=_TEXT_DIM)
+            return
+
+        def _task():
+            info = probe_python_environment(py_bin)
+            if info.get("error"):
+                self.root.after(0, lambda: self.env_status_lbl.configure(
+                    text=f"⚠️ 环境异常: {info['error']}", fg=_ERROR
+                ))
+            else:
+                ver = info.get("version", "")
+                missing = info.get("missing", [])
+                if not missing:
+                    self.root.after(0, lambda: self.env_status_lbl.configure(
+                        text=f"✅ Python {ver} · torch, transformers 依赖齐全", fg=_SUCCESS
+                    ))
+                else:
+                    self.root.after(0, lambda: self.env_status_lbl.configure(
+                        text=f"🟡 Python {ver} · 缺少: {', '.join(missing)} (点击训练可一键安装)", fg=_WARNING
+                    ))
+
+        threading.Thread(target=_task, daemon=True).start()
+
     def _pick_python(self):
         f = filedialog.askopenfilename(
-            title="选择 Python 可执行文件",
+            title="选择 Python 解释器",
             filetypes=[("Python", "python.exe" if sys.platform == "win32" else "python*"), ("All Files", "*.*")]
         )
         if f:
             self.external_python_var.set(f)
+            self._on_python_selected()
 
     def _pick_dir(self):
         d = filedialog.askdirectory(title="选择数据集根目录")
@@ -425,6 +420,11 @@ class TrainerGUI:
 
     def _on_run(self):
         if self._running:
+            return
+
+        py_bin = self.external_python_var.get().strip()
+        if not py_bin or not Path(py_bin).exists():
+            messagebox.showerror("环境错误", "请先选择一个有效的 Python 解释器路径。")
             return
 
         dataset_path = Path(self.dataset_dir_var.get().strip())
@@ -455,32 +455,100 @@ class TrainerGUI:
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
 
-        if _ALL_AVAILABLE:
-            self._log(f"🚀 初始化训练任务，目标 Epoch: {epochs}...")
-            self._log(f"📁 数据集路径: {dataset_path}")
-            threading.Thread(
-                target=self._train_task_inprocess,
-                args=(dataset_path, epochs, self.auto_onnx_var.get()),
-                daemon=True,
-            ).start()
-        else:
-            py_bin = self.external_python_var.get().strip()
-            if not py_bin or not Path(py_bin).exists():
-                messagebox.showerror("环境错误", "未找到有效的外部 Python 解释器。请在下拉列表中选择或点击“浏览 Python”指定你的 Conda / Python 环境。")
-                self._finish_run()
+        # 异步探针并处理依赖安装
+        threading.Thread(
+            target=self._check_and_start_training,
+            args=(py_bin, dataset_path, epochs, self.auto_onnx_var.get()),
+            daemon=True,
+        ).start()
+
+    def _check_and_start_training(self, py_bin: str, data_dir: Path, epochs: int, auto_onnx: bool):
+        self.root.after(0, lambda: self.status_lbl.configure(text="正在检测运行环境…"))
+        info = probe_python_environment(py_bin)
+
+        if info.get("error"):
+            self.root.after(0, self._log, f"❌ Python 环境检测失败: {info['error']}")
+            self.root.after(0, lambda: messagebox.showerror("环境错误", f"无法启动指定的 Python 解释器:\n{info['error']}"))
+            self.root.after(0, self._finish_run)
+            return
+
+        major = info.get("major", 0)
+        minor = info.get("minor", 0)
+        ver_str = info.get("version", "未知")
+
+        # 支持 Python 3.9 ~ 3.13
+        if major < 3 or (major == 3 and minor < 9):
+            self.root.after(0, lambda: messagebox.showerror(
+                "Python 版本过低",
+                f"当前检测到的 Python 版本为 {ver_str}。\n模型训练建议使用 Python 3.9 ~ 3.13 (如 Python 3.10、3.11 或 3.12)。\n请在上方切换更高级别的 Python 环境。"
+            ))
+            self.root.after(0, self._finish_run)
+            return
+
+        missing = info.get("missing", [])
+        if missing:
+            missing_str = ", ".join(missing)
+            # 弹窗询问用户是否自动安装
+            confirm = messagebox.askyesno(
+                "需要安装训练依赖",
+                f"检测到所选 Python 环境 (Python {ver_str}) 缺少以下依赖库：\n\n"
+                f"  • {missing_str}\n\n"
+                f"是否立即为您自动执行 pip 安装？\n"
+                f"（将使用国内镜像源高速下载安装，安装完毕后自动开始训练）"
+            )
+            if not confirm:
+                self.root.after(0, self._log, "ℹ️ 用户取消了依赖安装，训练已终止。")
+                self.root.after(0, self._finish_run)
                 return
 
-            self._log(f"🚀 调用外部 Python 环境进行训练: {py_bin}")
-            self._log(f"📁 数据集路径: {dataset_path}")
-            threading.Thread(
-                target=self._train_task_external,
-                args=(py_bin, dataset_path, epochs, self.auto_onnx_var.get()),
-                daemon=True,
-            ).start()
+            # 执行 pip 安装
+            self.root.after(0, lambda: self.status_lbl.configure(text="正在安装依赖…"))
+            self.root.after(0, self._log, f"📦 开始为 Python {ver_str} 安装依赖: {missing_str} ...")
+
+            pkgs_to_install = []
+            for m in missing:
+                if m == "Pillow":
+                    pkgs_to_install.append("Pillow")
+                elif m == "onnx":
+                    pkgs_to_install.extend(["onnx", "onnxscript"])
+                else:
+                    pkgs_to_install.append(m)
+
+            install_cmd = [
+                py_bin, "-m", "pip", "install",
+                *pkgs_to_install,
+                "-i", "https://pypi.tuna.tsinghua.edu.cn/simple",
+            ]
+
+            proc = subprocess.Popen(
+                install_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in iter(proc.stdout.readline, ''):
+                l = line.strip()
+                if l:
+                    self.root.after(0, self._log, f"  [pip] {l}")
+            proc.stdout.close()
+            ret = proc.wait()
+
+            if ret != 0:
+                self.root.after(0, self._log, "❌ 依赖安装失败，请检查网络连接或手动执行 pip install。")
+                self.root.after(0, lambda: messagebox.showerror("安装失败", "依赖自动安装失败，请查看日志详情。"))
+                self.root.after(0, self._finish_run)
+                return
+
+            self.root.after(0, self._log, "✅ 依赖库安装成功！即将启动训练...\n")
+            self.root.after(0, self._on_python_selected)
+
+        # 依赖就绪，开始训练
+        self._train_task_external(py_bin, data_dir, epochs, auto_onnx)
 
     def _train_task_external(self, py_bin: str, data_dir: Path, epochs: int, auto_onnx: bool):
         try:
-            self.root.after(0, lambda: self.status_lbl.configure(text="正在启动外部训练进程…"))
+            self.root.after(0, lambda: self.status_lbl.configure(text="正在启动训练进程…"))
             script = f"""
 import sys
 from pathlib import Path
@@ -502,7 +570,7 @@ except ImportError as err:
 device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if sys.platform == "darwin" and torch.backends.mps.is_available() else "cpu"))
 print(f"💻 计算加速设备: {{device}}", flush=True)
 
-print("正在加载 CLIP 视觉主干...", flush=True)
+print("正在加载 CLIP 视觉主干 (openai/clip-vit-base-patch32)...", flush=True)
 clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device).eval()
 for p in clip_model.parameters(): p.requires_grad_(False)
 clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
@@ -619,114 +687,6 @@ if {auto_onnx}:
         except Exception as exc:
             self.root.after(0, self._log, f"❌ 启动失败: {exc}")
             self.root.after(0, lambda: self.status_lbl.configure(text="执行出错"))
-        finally:
-            self.root.after(0, self._finish_run)
-
-    def _train_task_inprocess(self, data_dir: Path, epochs: int, auto_onnx: bool):
-        try:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            if sys.platform == "darwin" and torch.backends.mps.is_available():
-                device = torch.device("mps")
-            self.root.after(0, self._log, f"💻 计算加速设备: {device}")
-
-            clip_source = get_clip_model_path()
-            if not is_clip_model_downloaded():
-                self.root.after(0, self._log, "ℹ️ 检测到本地尚未下载完整 CLIP 视觉主干，将自动下载至当前程序 models/ 目录...")
-                self.root.after(0, lambda: self.status_lbl.configure(text="正在下载基础模型…"))
-
-                def _dl_cb(msg: str, pct: float):
-                    self.root.after(0, self._log, f"  [下载进度 {pct*100:.0f}%] {msg}")
-                    self.root.after(0, lambda v=int(pct * 100): self.progress.configure(value=v))
-
-                download_clip_model(use_mirror=True, progress_callback=_dl_cb)
-                clip_source = get_clip_model_path()
-
-            self.root.after(0, self._log, f"正在加载 CLIP 视觉主干 ({clip_source}) …")
-            clip_model = CLIPModel.from_pretrained(clip_source)
-            clip_model.to(device).eval()
-            for p in clip_model.parameters():
-                p.requires_grad_(False)
-            clip_processor = CLIPProcessor.from_pretrained(clip_source)
-            self.root.after(0, self._log, "✅ CLIP 特征提取器加载完成。")
-
-            self.root.after(0, self._log, "正在扫描 RAW 文件并提取预览…")
-            dataset = RawAestheticDataset(data_dir, clip_processor, clip_model, device)
-            if len(dataset) == 0:
-                self.root.after(0, self._log, "❌ like/dislike 文件夹中未找到任何有效 RAW 文件！")
-                self.root.after(0, self._finish_run)
-                return
-            self.root.after(0, self._log, f"✅ 成功加载 {len(dataset)} 张样本照片。")
-            dataloader = DataLoader(dataset, batch_size=8, shuffle=True,
-                                    num_workers=0, collate_fn=collate_fn)
-
-            mlp = AestheticMLP(input_dim=512).to(device)
-            criterion = nn.CrossEntropyLoss()
-            optimizer = optim.Adam(mlp.parameters(), lr=1e-3)
-
-            self.root.after(0, lambda: self.status_lbl.configure(text="正在训练…"))
-            for epoch in range(epochs):
-                mlp.train()
-                running_loss, correct, total = 0.0, 0, 0
-
-                for batch_inputs, labels in dataloader:
-                    batch_inputs = {k: v.to(device) for k, v in batch_inputs.items()}
-                    labels = labels.to(device)
-
-                    with torch.no_grad():
-                        vision_out = clip_model.vision_model(
-                            pixel_values=batch_inputs['pixel_values']
-                        )
-                        pooled = vision_out.pooler_output
-                        features = clip_model.visual_projection(pooled)
-                        features = features / features.norm(dim=-1, keepdim=True)
-
-                    optimizer.zero_grad()
-                    outputs = mlp(features)
-                    loss = criterion(outputs, labels)
-                    loss.backward()
-                    optimizer.step()
-
-                    running_loss += loss.item()
-                    _, predicted = torch.max(outputs.data, 1)
-                    total += labels.size(0)
-                    correct += (predicted == labels).sum().item()
-
-                epoch_loss = running_loss / max(1, len(dataloader))
-                epoch_acc = 100 * correct / max(1, total)
-                msg = f"  Epoch [{epoch+1:02d}/{epochs:02d}]  Loss: {epoch_loss:.4f}  Acc: {epoch_acc:.1f}%"
-                self.root.after(0, self._log, msg)
-                pv = int(100 * (epoch + 1) / epochs)
-                self.root.after(0, lambda v=pv: self.progress.configure(value=v))
-
-            save_path = PROJECT_ROOT / "aesthetic_mlp.pth"
-            torch.save(mlp.state_dict(), save_path)
-            self.root.after(0, self._log, f"\n💾 MLP 权重已保存至: {save_path.name}")
-
-            if auto_onnx:
-                self.root.after(0, lambda: self.status_lbl.configure(text="正在熔铸 ONNX…"))
-                self.root.after(0, self._log, "\n⚡ 开始自动熔铸 ONNX 模型...")
-
-                def _onnx_cb(m: str):
-                    self.root.after(0, self._log, f"  {m}")
-
-                onnx_out = export_to_onnx(
-                    project_root=PROJECT_ROOT,
-                    mlp_path=save_path,
-                    clip_source=clip_source,
-                    progress_callback=_onnx_cb,
-                )
-                self.root.after(0, self._log, f"🎉 ONNX 模型已生成: {onnx_out.name}，连拍筛选将自动启用极速加速！")
-
-            self.root.after(0, lambda: self.status_lbl.configure(text="训练完成"))
-            if self.on_model_updated:
-                self.root.after(0, self.on_model_updated)
-
-            messagebox.showinfo("训练成功", "个人偏好模型训练已完成！" + ("\n已自动熔铸 ONNX 加速模型。" if auto_onnx else ""))
-
-        except Exception as exc:
-            self.root.after(0, self._log, f"\n❌ 训练出错: {exc}")
-            self.root.after(0, lambda: self.status_lbl.configure(text="训练失败"))
-            messagebox.showerror("训练出错", str(exc))
         finally:
             self.root.after(0, self._finish_run)
 
