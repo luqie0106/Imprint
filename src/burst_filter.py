@@ -460,9 +460,16 @@ class AestheticScorer:
                 
                 self._session = ort.InferenceSession(str(onnx_path), providers=active_providers)
                 self.engine = "onnx"
-                self.model_name = "官方标准通用模型" if "standard" in onnx_path.name else "个人专属训练模型"
+                if "l14" in onnx_path.name.lower():
+                    self.model_name = "Aesthetic 3 官方专业大模型 (ViT-L/14)" if "standard" in onnx_path.name else "个人专属训练模型 (ViT-L/14)"
+                elif "standard" in onnx_path.name:
+                    self.model_name = "官方标准通用模型 (ViT-B/32)"
+                else:
+                    self.model_name = "个人专属训练模型 (ViT-B/32)"
                 self.available = True
                 return
+
+
             except Exception as exc:
                 warnings.warn(f"无法加载 ONNX 模型，尝试降级: {exc}")
 

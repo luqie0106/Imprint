@@ -110,11 +110,7 @@ def _ensure_icons():
 
 
 
-try:
-    _ensure_icons()
-except Exception:
-    pass
-
+CARD_STYLE = f"background-color: {SURFACE}; border: 1px solid {BORDER}; border-radius: 14px;"
 
 # ── 全局 QSS 样式表 ───────────────────────────────────────────────────────────
 APP_STYLE = f"""
@@ -124,11 +120,12 @@ QMainWindow, QWidget#centralWidget {{
 }}
 
 /* ── 现代悬浮卡片 ── */
-QFrame[class="CardFrame"] {{
+QFrame[class="CardFrame"], QFrame#cardFrame {{
     background-color: {SURFACE};
     border: 1px solid {BORDER};
     border-radius: 14px;
 }}
+
 
 /* ── 标题与标签 ── */
 QLabel {{
@@ -256,7 +253,7 @@ QPushButton {{
     outline: none;
 }}
 
-QPushButton[class="PrimaryBtn"] {{
+QPushButton[class="PrimaryBtn"], QPushButton#primaryBtn {{
     background-color: {ACCENT};
     color: #FFFFFF;
     border: 1px solid {ACCENT};
@@ -264,21 +261,21 @@ QPushButton[class="PrimaryBtn"] {{
     min-height: 28px;
     padding: 0 18px;
 }}
-QPushButton[class="PrimaryBtn"]:hover {{
+QPushButton[class="PrimaryBtn"]:hover, QPushButton#primaryBtn:hover {{
     background-color: {ACCENT_HOVER};
     border-color: {ACCENT_HOVER};
 }}
-QPushButton[class="PrimaryBtn"]:pressed {{
+QPushButton[class="PrimaryBtn"]:pressed, QPushButton#primaryBtn:pressed {{
     background-color: {ACCENT_PRESS};
     border-color: {ACCENT_PRESS};
 }}
-QPushButton[class="PrimaryBtn"]:disabled {{
+QPushButton[class="PrimaryBtn"]:disabled, QPushButton#primaryBtn:disabled {{
     background-color: {ACCENT_DIS};
     border-color: {ACCENT_DIS};
     color: #FFFFFF;
 }}
 
-QPushButton[class="SecondaryBtn"] {{
+QPushButton[class="SecondaryBtn"], QPushButton#secondaryBtn {{
     background-color: {GRAY_BG};
     color: {TEXT};
     border: 1px solid {BORDER};
@@ -286,15 +283,15 @@ QPushButton[class="SecondaryBtn"] {{
     min-height: 28px;
     padding: 0 16px;
 }}
-QPushButton[class="SecondaryBtn"]:hover {{
+QPushButton[class="SecondaryBtn"]:hover, QPushButton#secondaryBtn:hover {{
     background-color: #DFDFE2;
     border-color: #D0D0D5;
 }}
-QPushButton[class="SecondaryBtn"]:pressed {{
+QPushButton[class="SecondaryBtn"]:pressed, QPushButton#secondaryBtn:pressed {{
     background-color: #D5D5DA;
     border-color: #C5C5CA;
 }}
-QPushButton[class="SecondaryBtn"]:disabled {{
+QPushButton[class="SecondaryBtn"]:disabled, QPushButton#secondaryBtn:disabled {{
     background-color: #F8F8FA;
     color: {TEXT_TERT};
     border-color: #EAEAEA;

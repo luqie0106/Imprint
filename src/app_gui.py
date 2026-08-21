@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QCheckBox, QRadioButton, QProgressBar,
-    QStackedWidget, QButtonGroup, QMessageBox
+    QStackedWidget, QButtonGroup, QMessageBox, QScrollArea
 )
 
 # ── 确保 src 在 sys.path 上 ───────────────────────────────────────────────────
@@ -30,20 +30,28 @@ from model_manager import (
     PROJECT_ROOT,
     MODELS_DIR,
     CLIP_MODEL_DIR,
+    CLIP_L14_MODEL_DIR,
     MLP_WEIGHTS_PATH,
+    MLP_L14_WEIGHTS_PATH,
     STANDARD_ONNX_PATH,
+    STANDARD_L14_ONNX_PATH,
     CUSTOM_ONNX_PATH,
+    CUSTOM_L14_ONNX_PATH,
     check_all_models,
     get_active_model_mode,
     set_active_model_mode,
     download_clip_model,
+    download_clip_l14_model,
+    fuse_standard_l14_onnx,
     is_clip_model_downloaded,
+    is_clip_l14_model_downloaded,
     is_clip_in_hf_cache,
+    is_clip_l14_in_hf_cache,
     import_from_hf_cache,
+    import_from_hf_cache_l14,
 )
 from onnx_exporter import export_to_onnx, TORCH_EXPORT_AVAILABLE
 from qt_theme import APP_STYLE, GREEN_FG, AMBER_FG, TEXT_TERT, TEXT_SEC, FAM_TITLE
-
 
 
 class DownloadWorker(QThread):
@@ -63,11 +71,40 @@ class DownloadWorker(QThread):
                 cancel_event=self.cancel_event,
             )
             if success:
-                self.done_sig.emit(True, "CLIP 基础视觉模型已成功就绪并保存在 ./models/clip-vit-base-patch32 目录！")
+                self.done_sig.emit(True, "CLIP ViT-B/32 基础视觉模型已成功就绪！")
             else:
                 self.done_sig.emit(False, "模型下载未完成。")
         except Exception as exc:
             self.done_sig.emit(False, f"下载出错: {exc}")
+
+
+class DownloadL14Worker(QThread):
+    progress_sig = Signal(str, float)
+    done_sig = Signal(bool, str)
+
+    def __init__(self, use_mirror: bool):
+        super().__init__()
+        self.use_mirror = use_mirror
+        self.cancel_event = threading.Event()
+
+    def run(self):
+        try:
+            self.progress_sig.emit("正在准备下载 CLIP ViT-L/14 (Aesthetic 3) 大模型...", 0.05)
+            success = download_clip_l14_model(
+                use_mirror=self.use_mirror,
+                progress_callback=lambda msg, pct: self.progress_sig.emit(msg, pct * 0.7),
+                cancel_event=self.cancel_event,
+            )
+            if not success:
+                self.done_sig.emit(False, "ViT-L/14 大模型下载未完成。")
+                return
+
+            self.progress_sig.emit("正在下载官方 ViT-L/14 美学权重并熔铸 ONNX...", 0.8)
+            fuse_standard_l14_onnx(progress_callback=lambda msg: self.progress_sig.emit(msg, 0.9))
+            self.progress_sig.emit("✅ Aesthetic 3 专业大模型已成功熔铸就绪！", 1.0)
+            self.done_sig.emit(True, "Aesthetic 3 (ViT-L/14) 专业大模型已成功就绪并熔铸为 standard_aesthetic_l14_model.onnx！")
+        except Exception as exc:
+            self.done_sig.emit(False, f"下载或熔铸出错: {exc}")
 
 
 class ExportWorker(QThread):
@@ -87,21 +124,22 @@ class MainAppGUI(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Photo Sort — 智能连拍优选与个人审美系统")
-        self.resize(840, 640)
-        self.setMinimumSize(760, 560)
-
+        self.resize(860, 660)
+        self.setMinimumSize(780, 560)
 
         icon_path = _SRC_DIR / "assets" / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QtGui.QIcon(str(icon_path)))
 
         self._download_worker: DownloadWorker | None = None
+        self._download_l14_worker: DownloadL14Worker | None = None
         self._export_worker: ExportWorker | None = None
 
         self._build_ui()
         self._switch_tab(0)
 
         QtCore.QTimer.singleShot(300, self._check_startup_models)
+
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -166,14 +204,23 @@ class MainAppGUI(QMainWindow):
         main_layout.addWidget(self.stack, stretch=1)
 
     def _build_model_manager_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 8, 0, 8)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 4, 0, 16)
         layout.setSpacing(12)
 
         # ── 卡片 1：美学评分模型选择与管理 ──
         c1 = QFrame()
-        c1.setProperty("class", "CardFrame")
+        c1.setObjectName("cardFrame1")
+        c1.setStyleSheet("#cardFrame1 { background-color: #FFFFFF; border: 1px solid #E5E5EA; border-radius: 14px; }")
         l1 = QVBoxLayout(c1)
         l1.setContentsMargins(18, 16, 18, 16)
         l1.setSpacing(10)
@@ -189,13 +236,13 @@ class MainAppGUI(QMainWindow):
 
         self.model_mode_group = QButtonGroup(self)
 
-        # ── 选项 1：官方标准通用模型 ──
-        self.radio_std = QRadioButton("🌟  官方标准通用模型 (Standard Universal Model)")
+        # ── 选项 1：官方标准通用模型 (ViT-B/32) ──
+        self.radio_std = QRadioButton("🌟  官方标准通用模型 (ViT-B/32 · 极速平衡)")
         self.radio_std.setStyleSheet("font-weight: bold; font-size: 13px;")
         self.model_mode_group.addButton(self.radio_std, 0)
         l1.addWidget(self.radio_std)
 
-        std_desc = QLabel("• 官方推荐 · 全品类平衡：基于 LAION-Aesthetics / AVA 25万+ 张专业摄影数据集预训练，对人像、风光、街拍、生态等全题材中立公允打分。")
+        std_desc = QLabel("• 官方推荐 · 全品类平衡：基于 LAION-Aesthetics / AVA 25万+ 张专业摄影数据集预训练，轻量极速，对人像、风光、街拍、生态等全题材中立公允打分。")
         std_desc.setStyleSheet("color: #636366; font-size: 12px; margin-left: 26px;")
         std_desc.setWordWrap(True)
         l1.addWidget(std_desc)
@@ -205,16 +252,38 @@ class MainAppGUI(QMainWindow):
         self.std_status_label.setWordWrap(True)
         l1.addWidget(self.std_status_label)
 
-        # 分割线
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("background-color: #E5E5EA; max-height: 1px; margin: 4px 0px;")
-        l1.addWidget(sep)
+        # 分割线 1
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.HLine)
+        sep1.setStyleSheet("background-color: #E5E5EA; max-height: 1px; margin: 4px 0px;")
+        l1.addWidget(sep1)
 
-        # ── 选项 2：个人专属训练模型 ──
+        # ── 选项 2：Aesthetic 3 官方专业大模型 (ViT-L/14) ──
+        self.radio_l14 = QRadioButton("💎  Aesthetic 3 官方专业大模型 (ViT-L/14 · 高精画质)")
+        self.radio_l14.setStyleSheet("font-weight: bold; font-size: 13px;")
+        self.model_mode_group.addButton(self.radio_l14, 1)
+        l1.addWidget(self.radio_l14)
+
+        l14_desc = QLabel("• 官方权威 · 细腻审美：基于 LAION ViT-L/14 768维大模型底座，构图、色彩、焦点与光影审美判断更细腻深入。")
+        l14_desc.setStyleSheet("color: #636366; font-size: 12px; margin-left: 26px;")
+        l14_desc.setWordWrap(True)
+        l1.addWidget(l14_desc)
+
+        self.l14_status_label = QLabel("")
+        self.l14_status_label.setStyleSheet("font-size: 12px; font-weight: bold; margin-left: 26px; margin-bottom: 6px;")
+        self.l14_status_label.setWordWrap(True)
+        l1.addWidget(self.l14_status_label)
+
+        # 分割线 2
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setStyleSheet("background-color: #E5E5EA; max-height: 1px; margin: 4px 0px;")
+        l1.addWidget(sep2)
+
+        # ── 选项 3：个人专属训练模型 ──
         self.radio_custom = QRadioButton("🧠  个人专属训练模型 (Custom Trained Model)")
         self.radio_custom.setStyleSheet("font-weight: bold; font-size: 13px;")
-        self.model_mode_group.addButton(self.radio_custom, 1)
+        self.model_mode_group.addButton(self.radio_custom, 2)
         l1.addWidget(self.radio_custom)
 
         custom_desc = QLabel("• 个性化专属 · 审美微调：使用您在【偏好训练】中用自己的照片微调熔铸的模型，完全契合您的个人构图与色彩偏好。")
@@ -232,79 +301,139 @@ class MainAppGUI(QMainWindow):
         r_custom_btns.setSpacing(10)
 
         to_trainer_btn = QPushButton("🎯  前往偏好训练")
+        to_trainer_btn.setObjectName("secondaryBtn")
         to_trainer_btn.setProperty("class", "SecondaryBtn")
         to_trainer_btn.clicked.connect(lambda: self._switch_tab(1))
         r_custom_btns.addWidget(to_trainer_btn)
 
         self.export_onnx_btn = QPushButton("⚡  从当前权重重新熔铸 ONNX")
+        self.export_onnx_btn.setObjectName("primaryBtn")
         self.export_onnx_btn.setProperty("class", "PrimaryBtn")
+        self.export_onnx_btn.setStyleSheet("QPushButton { background-color: #0071E3; color: #FFFFFF; border: 1px solid #0071E3; border-radius: 15px; min-height: 28px; padding: 0 18px; font-weight: bold; } QPushButton:hover { background-color: #0077ED; } QPushButton:disabled { background-color: #D1D1D6; border-color: #D1D1D6; color: #FFFFFF; }")
         self.export_onnx_btn.clicked.connect(self._on_manual_export_onnx)
         r_custom_btns.addWidget(self.export_onnx_btn)
         r_custom_btns.addStretch()
         l1.addLayout(r_custom_btns)
 
         self.radio_std.toggled.connect(self._on_model_mode_toggled)
+        self.radio_l14.toggled.connect(self._on_model_mode_toggled)
         self.radio_custom.toggled.connect(self._on_model_mode_toggled)
 
         layout.addWidget(c1)
 
-        # ── 卡片 2：CLIP 基础视觉底座 ──
+        # ── 卡片 2：Aesthetic 3 / CLIP ViT-L/14 专业大模型底座 ──
         c2 = QFrame()
-        c2.setProperty("class", "CardFrame")
+        c2.setObjectName("cardFrame2")
+        c2.setStyleSheet("#cardFrame2 { background-color: #FFFFFF; border: 1px solid #E5E5EA; border-radius: 14px; }")
         l2 = QVBoxLayout(c2)
         l2.setContentsMargins(18, 16, 18, 16)
         l2.setSpacing(10)
 
-        t2 = QLabel("📦  基础视觉主干底座 (CLIP ViT-B/32)")
+        t2 = QLabel("💎  Aesthetic 3 专业大模型底座 (CLIP ViT-L/14)")
         t2.setProperty("class", "CardTitle")
         l2.addWidget(t2)
 
-        desc2 = QLabel("用于提取照片的多维视觉特征。训练个人模型时需要此底座支持；标准通用 ONNX 模型已内置此特征提取能力。")
+        desc2 = QLabel("提供 768 维高精度多模态特征提取。下载后可直接生成并启用 Aesthetic 3 官方标准 ONNX 模型，并支持微调专属模型。")
         desc2.setProperty("class", "SecondaryLabel")
         desc2.setWordWrap(True)
         l2.addWidget(desc2)
 
+        self.clip_l14_status_label = QLabel("")
+        self.clip_l14_status_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self.clip_l14_status_label.setWordWrap(True)
+        l2.addWidget(self.clip_l14_status_label)
+
+        r_l14 = QHBoxLayout()
+        r_l14.setSpacing(12)
+        self.dl_l14_btn = QPushButton("⬇️  一键下载并熔铸 Aesthetic 3 大模型")
+        self.dl_l14_btn.setObjectName("secondaryBtn")
+        self.dl_l14_btn.setProperty("class", "SecondaryBtn")
+        self.dl_l14_btn.clicked.connect(self._start_download_clip_l14)
+        r_l14.addWidget(self.dl_l14_btn)
+
+        self.use_l14_mirror_cb = QCheckBox("使用国内加速镜像 (hf-mirror.com)")
+        self.use_l14_mirror_cb.setChecked(True)
+        r_l14.addWidget(self.use_l14_mirror_cb)
+        r_l14.addStretch()
+        l2.addLayout(r_l14)
+
+        self.dl_l14_progress = QProgressBar()
+        self.dl_l14_progress.setRange(0, 100)
+        self.dl_l14_progress.setValue(0)
+        self.dl_l14_progress.setVisible(False)
+        l2.addWidget(self.dl_l14_progress)
+
+        self.dl_l14_status_lbl = QLabel("")
+        self.dl_l14_status_lbl.setProperty("class", "SecondaryLabel")
+        self.dl_l14_status_lbl.setVisible(False)
+        l2.addWidget(self.dl_l14_status_lbl)
+
+        layout.addWidget(c2)
+
+        # ── 卡片 3：CLIP ViT-B/32 基础视觉底座 ──
+        c3 = QFrame()
+        c3.setObjectName("cardFrame3")
+        c3.setStyleSheet("#cardFrame3 { background-color: #FFFFFF; border: 1px solid #E5E5EA; border-radius: 14px; }")
+
+        l3 = QVBoxLayout(c3)
+        l3.setContentsMargins(18, 16, 18, 16)
+        l3.setSpacing(10)
+
+        t3 = QLabel("📦  基础视觉主干底座 (CLIP ViT-B/32)")
+        t3.setProperty("class", "CardTitle")
+        l3.addWidget(t3)
+
+        desc3 = QLabel("用于提取 512 维轻量视觉特征。训练个人标准模型时需要此底座支持；标准通用 ONNX 模型已内置此特征提取能力。")
+        desc3.setProperty("class", "SecondaryLabel")
+        desc3.setWordWrap(True)
+        l3.addWidget(desc3)
+
         self.clip_status_label = QLabel("")
         self.clip_status_label.setStyleSheet("font-weight: bold; font-size: 12px;")
         self.clip_status_label.setWordWrap(True)
-        l2.addWidget(self.clip_status_label)
+        l3.addWidget(self.clip_status_label)
 
-        r2 = QHBoxLayout()
-        r2.setSpacing(12)
+        r3 = QHBoxLayout()
+        r3.setSpacing(12)
         self.dl_clip_btn = QPushButton("⬇️  下载/补全到本地")
+        self.dl_clip_btn.setObjectName("secondaryBtn")
         self.dl_clip_btn.setProperty("class", "SecondaryBtn")
         self.dl_clip_btn.clicked.connect(self._start_download_clip)
-        r2.addWidget(self.dl_clip_btn)
+
+        r3.addWidget(self.dl_clip_btn)
 
         self.use_mirror_cb = QCheckBox("使用国内加速镜像 (hf-mirror.com)")
         self.use_mirror_cb.setChecked(True)
-        r2.addWidget(self.use_mirror_cb)
-        r2.addStretch()
-        l2.addLayout(r2)
+        r3.addWidget(self.use_mirror_cb)
+        r3.addStretch()
+        l3.addLayout(r3)
 
         self.dl_progress = QProgressBar()
         self.dl_progress.setRange(0, 100)
         self.dl_progress.setValue(0)
         self.dl_progress.setVisible(False)
-        l2.addWidget(self.dl_progress)
+        l3.addWidget(self.dl_progress)
 
         self.dl_status_lbl = QLabel("")
         self.dl_status_lbl.setProperty("class", "SecondaryLabel")
         self.dl_status_lbl.setVisible(False)
-        l2.addWidget(self.dl_status_lbl)
+        l3.addWidget(self.dl_status_lbl)
 
-        layout.addWidget(c2)
+        layout.addWidget(c3)
         layout.addStretch()
 
+        scroll.setWidget(content)
         self.refresh_model_mgr_ui()
-        return widget
+        return scroll
 
 
     def _on_model_mode_toggled(self) -> None:
         if self.radio_custom.isChecked():
             set_active_model_mode("custom")
+        elif self.radio_l14.isChecked():
+            set_active_model_mode("standard_l14")
         else:
-            set_active_model_mode("standard")
+            set_active_model_mode("standard_b32")
         self._on_model_updated()
 
     def _switch_tab(self, idx: int) -> None:
@@ -327,44 +456,79 @@ class MainAppGUI(QMainWindow):
 
         # 0. 单选状态同步
         active_mode = get_active_model_mode()
-        if active_mode == "custom":
+        if active_mode in ("custom", "custom_b32", "custom_l14"):
             self.radio_custom.blockSignals(True)
             self.radio_custom.setChecked(True)
             self.radio_custom.blockSignals(False)
+        elif active_mode in ("standard_l14",):
+            self.radio_l14.blockSignals(True)
+            self.radio_l14.setChecked(True)
+            self.radio_l14.blockSignals(False)
         else:
             self.radio_std.blockSignals(True)
             self.radio_std.setChecked(True)
             self.radio_std.blockSignals(False)
 
-        # 1. 官方标准模型状态
+        # 1. 官方标准通用模型 (ViT-B/32)
         if status.standard_onnx_ready:
             p = Path(status.standard_onnx_path)
             self.std_status_label.setText(f"🟢 状态：已就绪 (文件: {p.name}, 大小: {status.standard_onnx_size_mb:.1f} MB · ONNX 极速加速)")
-            self.std_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold; margin-left: 24px;")
+            self.std_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold; margin-left: 26px;")
         else:
             self.std_status_label.setText("⚪ 状态：未找到标准通用模型文件")
-            self.std_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold; margin-left: 24px;")
+            self.std_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold; margin-left: 26px;")
 
-        # 2. 个人专属模型状态
-        if status.custom_onnx_ready:
-            p = Path(status.custom_onnx_path)
-            self.custom_status_label.setText(f"🟢 状态：已就绪 (文件: {p.name}, 大小: {status.custom_onnx_size_mb:.1f} MB · ONNX 极速加速)")
-            self.custom_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold; margin-left: 24px;")
+        # 2. Aesthetic 3 官方专业大模型 (ViT-L/14)
+        if status.standard_l14_onnx_ready:
+            p = Path(status.standard_l14_onnx_path)
+            self.l14_status_label.setText(f"🟢 状态：已就绪 (文件: {p.name}, 大小: {status.standard_l14_onnx_size_mb:.1f} MB · ONNX 极速加速)")
+            self.l14_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold; margin-left: 26px;")
+        else:
+            self.l14_status_label.setText("⚪ 状态：未就绪 (可点击下方卡片“一键下载并熔铸 Aesthetic 3 大模型”)")
+            self.l14_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold; margin-left: 26px;")
+
+        # 3. 个人专属模型状态
+        if status.custom_onnx_ready or status.custom_l14_onnx_ready:
+            ready_models = []
+            if status.custom_onnx_ready:
+                ready_models.append(f"ViT-B/32 ({status.custom_onnx_size_mb:.1f} MB)")
+            if status.custom_l14_onnx_ready:
+                ready_models.append(f"ViT-L/14 ({status.custom_l14_onnx_size_mb:.1f} MB)")
+            self.custom_status_label.setText(f"🟢 状态：已就绪 (已熔铸: {', '.join(ready_models)} · ONNX 极速加速)")
+            self.custom_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold; margin-left: 26px;")
             self.export_onnx_btn.setText("⚡  重新熔铸 ONNX")
             self.export_onnx_btn.setEnabled(True)
-        elif status.mlp_ready:
-            p = Path(status.mlp_path)
-            size_kb = p.stat().st_size / 1024 if p.exists() else 0
-            self.custom_status_label.setText(f"🟡 状态：已有权重未熔铸 (文件: {p.name}, {size_kb:.1f} KB，建议点击下方按钮一键熔铸 ONNX)")
-            self.custom_status_label.setStyleSheet(f"color: {AMBER_FG}; font-weight: bold; margin-left: 24px;")
+        elif status.mlp_ready or status.mlp_l14_ready:
+            ready_pths = []
+            if status.mlp_ready:
+                ready_pths.append("ViT-B/32")
+            if status.mlp_l14_ready:
+                ready_pths.append("ViT-L/14")
+            self.custom_status_label.setText(f"🟡 状态：已有权重未熔铸 ({', '.join(ready_pths)}，建议点击下方按钮一键熔铸 ONNX)")
+            self.custom_status_label.setStyleSheet(f"color: {AMBER_FG}; font-weight: bold; margin-left: 26px;")
             self.export_onnx_btn.setText("⚡  一键熔铸为 ONNX 模型")
             self.export_onnx_btn.setEnabled(True)
         else:
             self.custom_status_label.setText("⚪ 状态：未训练 (暂无个性化模型，可前往“偏好训练”导入照片训练)")
-            self.custom_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold; margin-left: 24px;")
+            self.custom_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold; margin-left: 26px;")
             self.export_onnx_btn.setEnabled(False)
 
-        # 3. CLIP 底座状态
+        # 4. Aesthetic 3 (CLIP ViT-L/14) 底座状态
+        if status.clip_l14_location == "local":
+            size_mb = sum(f.stat().st_size for f in CLIP_L14_MODEL_DIR.glob("**/*") if f.is_file()) / (1024 * 1024)
+            self.clip_l14_status_label.setText(f"✅ 已就绪 (项目本地: models/clip-vit-large-patch14, 共 {size_mb:.1f} MB)")
+            self.clip_l14_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
+            self.dl_l14_btn.setText("🔄  重新校验 / 重新熔铸 ONNX")
+        elif status.clip_l14_location == "hf_cache":
+            self.clip_l14_status_label.setText("✅ 已在系统 HuggingFace 缓存中就绪 (可直接离线秒级导入并熔铸)")
+            self.clip_l14_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
+            self.dl_l14_btn.setText("📥  秒级导入并熔铸 Aesthetic 3 ONNX")
+        else:
+            self.clip_l14_status_label.setText("⚪ 未下载 (点击下方按钮一键下载并自动熔铸)")
+            self.clip_l14_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold;")
+            self.dl_l14_btn.setText("⬇️  一键下载并熔铸 Aesthetic 3 大模型")
+
+        # 5. CLIP ViT-B/32 底座状态
         if status.clip_location == "local":
             size_mb = sum(f.stat().st_size for f in CLIP_MODEL_DIR.glob("**/*") if f.is_file()) / (1024 * 1024)
             self.clip_status_label.setText(f"✅ 已就绪 (项目本地: models/clip-vit-base-patch32, 共 {size_mb:.1f} MB)")
@@ -380,9 +544,8 @@ class MainAppGUI(QMainWindow):
             self.dl_clip_btn.setText("⬇️  一键下载至本地 models/ 目录")
 
     def _check_startup_models(self) -> None:
-
         status = check_all_models()
-        if not status.clip_ready and not status.onnx_ready:
+        if not status.clip_ready and not status.onnx_ready and not status.standard_onnx_ready:
             ret = QMessageBox.question(
                 self, "检测到未下载基础模型",
                 "欢迎使用 Photo Sort！\n\n检测到尚未下载 CLIP 基础视觉模型。\n"
@@ -393,6 +556,36 @@ class MainAppGUI(QMainWindow):
             if ret == QMessageBox.Yes:
                 self._switch_tab(2)
                 self._start_download_clip()
+
+    def _start_download_clip_l14(self) -> None:
+        if self._download_l14_worker and self._download_l14_worker.isRunning():
+            return
+
+        self.dl_l14_btn.setEnabled(False)
+        self.dl_l14_progress.setVisible(True)
+        self.dl_l14_progress.setValue(0)
+        self.dl_l14_status_lbl.setVisible(True)
+        self.dl_l14_status_lbl.setText("正在准备下载/同步 Aesthetic 3 大模型...")
+
+        self._download_l14_worker = DownloadL14Worker(use_mirror=self.use_l14_mirror_cb.isChecked())
+        self._download_l14_worker.progress_sig.connect(self._on_dl_l14_progress)
+        self._download_l14_worker.done_sig.connect(self._on_dl_l14_done)
+        self._download_l14_worker.start()
+
+    def _on_dl_l14_progress(self, msg: str, pct: float) -> None:
+        self.dl_l14_status_lbl.setText(msg)
+        self.dl_l14_progress.setValue(int(pct * 100))
+
+    def _on_dl_l14_done(self, success: bool, msg: str) -> None:
+        self.dl_l14_btn.setEnabled(True)
+        self.dl_l14_progress.setVisible(False)
+        self.dl_l14_status_lbl.setVisible(False)
+        self._on_model_updated()
+
+        if success:
+            QMessageBox.information(self, "就绪完成", msg)
+        else:
+            QMessageBox.critical(self, "操作失败", msg)
 
     def _start_download_clip(self) -> None:
         if self._download_worker and self._download_worker.isRunning():
@@ -425,8 +618,8 @@ class MainAppGUI(QMainWindow):
             QMessageBox.critical(self, "下载失败", msg)
 
     def _on_manual_export_onnx(self) -> None:
-        if not MLP_WEIGHTS_PATH.exists() and not (BUNDLE_ROOT / "aesthetic_mlp.pth").exists():
-            QMessageBox.warning(self, "无法导出", "未找到 aesthetic_mlp.pth 权重文件，请先进行偏好训练。")
+        if not MLP_WEIGHTS_PATH.exists() and not MLP_L14_WEIGHTS_PATH.exists() and not (BUNDLE_ROOT / "aesthetic_mlp.pth").exists():
+            QMessageBox.warning(self, "无法导出", "未找到 personal aesthetic_mlp.pth 权重文件，请先进行偏好训练。")
             return
 
         if not TORCH_EXPORT_AVAILABLE:
@@ -445,6 +638,7 @@ class MainAppGUI(QMainWindow):
             QMessageBox.information(self, "熔铸成功", msg)
         else:
             QMessageBox.critical(self, "导出失败", msg)
+
 
 
 def launch_main_gui() -> None:

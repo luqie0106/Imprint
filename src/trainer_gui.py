@@ -175,12 +175,14 @@ class TrainWorker(QThread):
     done_sig = Signal(bool, str)
     need_install_sig = Signal(str, list, str)
 
-    def __init__(self, py_bin: str, data_dir: Path, epochs: int, auto_onnx: bool):
+    def __init__(self, py_bin: str, data_dir: Path, epochs: int, auto_onnx: bool, backbone_type: str = "b32"):
         super().__init__()
         self.py_bin = py_bin
         self.data_dir = data_dir
         self.epochs = epochs
         self.auto_onnx = auto_onnx
+        self.backbone_type = backbone_type
+
 
     def run(self):
         info = probe_python_environment(self.py_bin)
@@ -198,7 +200,6 @@ class TrainWorker(QThread):
 
         missing = info.get("missing", [])
         if missing:
-            # 需要在主线程弹窗确认
             self.need_install_sig.emit(self.py_bin, missing, ver_str)
             return
 
@@ -209,12 +210,22 @@ class TrainWorker(QThread):
 
     def _execute_training(self):
         try:
-            self.log_sig.emit("🚀 启动审美偏好训练进程...")
+            self.log_sig.emit("🚀 启动审美偏好微调训练进程...")
+            repo_id = "openai/clip-vit-base-patch32" if self.backbone_type == "b32" else "openai/clip-vit-large-patch14"
+            dim = 512 if self.backbone_type == "b32" else 768
+            pth_name = "aesthetic_mlp.pth" if self.backbone_type == "b32" else "aesthetic_mlp_l14.pth"
+            onnx_name = "custom_aesthetic_model.onnx" if self.backbone_type == "b32" else "custom_aesthetic_l14_model.onnx"
+            backbone_desc = "CLIP ViT-B/32 (标准极速 · 512维)" if self.backbone_type == "b32" else "CLIP ViT-L/14 / Aesthetic 3 (专业高精 · 768维)"
+
             script = f"""
 import sys
 from pathlib import Path
 data_dir = Path(r"{self.data_dir}")
 epochs = {self.epochs}
+backbone_repo = "{repo_id}"
+feat_dim = {dim}
+pth_filename = "{pth_name}"
+onnx_filename = "{onnx_name}"
 
 try:
     import torch
@@ -229,12 +240,23 @@ except ImportError as err:
     sys.exit(1)
 
 device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if sys.platform == "darwin" and torch.backends.mps.is_available() else "cpu"))
-print(f"💻 计算加速设备: {{device}}", flush=True)
+if device.type == 'cuda':
+    dev_title = f"NVIDIA CUDA 显卡硬件加速 ({{torch.cuda.get_device_name(0)}})"
+elif device.type == 'mps':
+    dev_title = "Apple Silicon Metal 显卡硬件加速 (MPS)"
+else:
+    dev_title = "CPU 多核心并行计算"
 
-print("正在加载 CLIP 视觉主干 (openai/clip-vit-base-patch32)...", flush=True)
-clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device).eval()
+print(f"⚡ 深度学习加速设备: {{dev_title}}", flush=True)
+print(f"📦 正在加载视觉主干底座: {backbone_desc} ...", flush=True)
+
+models_local = Path(r"{PROJECT_ROOT}") / "models"
+local_clip_dir = models_local / ("clip-vit-base-patch32" if feat_dim == 512 else "clip-vit-large-patch14")
+clip_src = str(local_clip_dir) if local_clip_dir.exists() and (local_clip_dir / "config.json").exists() else backbone_repo
+
+clip_model = CLIPModel.from_pretrained(clip_src).to(device).eval()
 for p in clip_model.parameters(): p.requires_grad_(False)
-clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+clip_processor = CLIPProcessor.from_pretrained(clip_src)
 
 try:
     import pillow_heif
@@ -247,23 +269,15 @@ try:
 except Exception:
     pass
 
-RAW_SUFFIXES = {
-    ".nef", ".nrw",
-    ".arw", ".srf", ".sr2",
-    ".cr2", ".cr3", ".crw",
-    ".rw2", ".raw",
-    ".dng",
-    ".raf",
-    ".orf", ".ori",
-    ".pef", ".ptx",
+RAW_SUFFIXES = {{
+    ".nef", ".nrw", ".arw", ".srf", ".sr2", ".cr2", ".cr3", ".crw",
+    ".rw2", ".raw", ".dng", ".raf", ".orf", ".ori", ".pef", ".ptx",
     ".3fr", ".fff", ".iiq", ".srw", ".x3f", ".mrw", ".gpr", ".erf", ".mef", ".mos",
-}
-STANDARD_SUFFIXES = {
+}}
+STANDARD_SUFFIXES = {{
     ".jpg", ".jpeg", ".jpe", ".jxl", ".hif", ".heif", ".heic", ".png", ".webp", ".tiff", ".tif", ".bmp"
-}
+}}
 ALL_PHOTO_SUFFIXES = RAW_SUFFIXES | STANDARD_SUFFIXES
-
-
 
 class RawDataset:
     def __init__(self, root):
@@ -302,17 +316,18 @@ def collate_fn(batch):
     return {{k: torch.stack([d[k] for d in inputs_list]) for k in inputs_list[0]}}, torch.tensor(labels, dtype=torch.long)
 
 dataset = RawDataset(data_dir)
-print(f"✅ 成功扫描到 {{len(dataset)}} 张照片", flush=True)
+print(f"✅ 成功扫描到 {{len(dataset)}} 张标注样本照片", flush=True)
 if len(dataset) == 0:
     print("❌ 数据集为空，请检查 like/dislike 目录", flush=True)
     sys.exit(1)
 
-dataloader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=collate_fn)
-mlp = nn.Sequential(nn.Linear(512, 256), nn.ReLU(), nn.Dropout(0.3), nn.Linear(256, 2)).to(device)
+batch_sz = 16 if device.type in ('cuda', 'mps') else 8
+dataloader = DataLoader(dataset, batch_size=batch_sz, shuffle=True, collate_fn=collate_fn)
+mlp = nn.Sequential(nn.Linear(feat_dim, 256), nn.ReLU(), nn.Dropout(0.3), nn.Linear(256, 2)).to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(mlp.parameters(), lr=1e-3)
 
-print("正在训练中...", flush=True)
+print("🎯 正在执行特征提取与微调训练...", flush=True)
 for ep in range(epochs):
     mlp.train()
     running_loss, correct, total = 0.0, 0, 0
@@ -320,8 +335,8 @@ for ep in range(epochs):
         b_in = {{k: v.to(device) for k, v in b_in.items()}}
         labels = labels.to(device)
         with torch.no_grad():
-            vout = clip_model.vision_model(pixel_values=b_in['pixel_values'])
-            feat = clip_model.visual_projection(vout.pooler_output)
+            vout = clip_model.vision_model(pixel_values=b_in['pixel_values'], return_dict=False)
+            feat = clip_model.visual_projection(vout[1])
             feat = feat / feat.norm(dim=-1, keepdim=True)
         optimizer.zero_grad()
         out = mlp(feat)
@@ -336,12 +351,12 @@ for ep in range(epochs):
 
 save_dir = Path(r"{PROJECT_ROOT}") / "models"
 save_dir.mkdir(parents=True, exist_ok=True)
-save_path = save_dir / "aesthetic_mlp.pth"
+save_path = save_dir / pth_filename
 torch.save(mlp.state_dict(), save_path)
-print(f"💾 权重已保存至 models/: {{save_path.name}}", flush=True)
+print(f"💾 专属模型头权重已保存至: models/{{save_path.name}}", flush=True)
 
 if {self.auto_onnx}:
-    print("⚡ 正在导出 ONNX 极速加速模型...", flush=True)
+    print(f"⚡ 正在将专属模型头与视觉底座熔铸为 ONNX 硬件加速模型 ({{onnx_filename}})...", flush=True)
     class Combined(nn.Module):
         def __init__(self, clip, mlp):
             super().__init__()
@@ -353,15 +368,25 @@ if {self.auto_onnx}:
             feat = feat / feat.norm(dim=-1, keepdim=True)
             return torch.softmax(self.mlp(feat), dim=1)[:, 1]
     comb = Combined(clip_model, mlp).eval()
-    onnx_path = save_dir / "custom_aesthetic_model.onnx"
-    torch.onnx.export(comb, (torch.randn(1, 3, 224, 224).to(device),), str(onnx_path), opset_version=14, input_names=["pixel_values"], output_names=["like_prob"], dynamic_axes={{"pixel_values": {{0: "batch_size"}}, "like_prob": {{0: "batch_size"}}}}, dynamo=False)
-    legacy_onnx = Path(r"{PROJECT_ROOT}") / "photo_sort_model.onnx"
-    try:
-        import shutil
-        shutil.copy2(str(onnx_path), str(legacy_onnx))
-    except Exception:
-        pass
-    print("🎉 ONNX 模型生成完毕！已保存至 models/custom_aesthetic_model.onnx", flush=True)
+    onnx_path = save_dir / onnx_filename
+    torch.onnx.export(
+        comb,
+        (torch.randn(1, 3, 224, 224).to(device),),
+        str(onnx_path),
+        opset_version=14,
+        input_names=["pixel_values"],
+        output_names=["like_prob"],
+        dynamic_axes={{"pixel_values": {{0: "batch_size"}}, "like_prob": {{0: "batch_size"}}}},
+        dynamo=False,
+    )
+    if feat_dim == 512:
+        legacy_onnx = Path(r"{PROJECT_ROOT}") / "photo_sort_model.onnx"
+        try:
+            import shutil
+            shutil.copy2(str(onnx_path), str(legacy_onnx))
+        except Exception:
+            pass
+    print(f"🎉 ONNX 模型熔铸完毕！文件已就绪: models/{{onnx_filename}} ({{onnx_path.stat().st_size/(1024*1024):.1f}} MB)", flush=True)
 
 """
             proc = subprocess.Popen(
@@ -385,9 +410,9 @@ if {self.auto_onnx}:
             ret = proc.wait()
 
             if ret == 0:
-                self.done_sig.emit(True, "专属审美偏好模型训练已完成！\nONNX 模型已保存在当前程序目录下，连拍筛选即刻生效！")
+                self.done_sig.emit(True, "🎉 专属审美偏好模型微调与 ONNX 熔铸成功！\n模型已保存在 models/ 目录下，连拍优选中可即刻选用！")
             else:
-                self.done_sig.emit(False, "训练进程返回了异常退出码，请查看日志详情。")
+                self.done_sig.emit(False, "训练进程返回了异常退出码，请查看下方日志详情。")
         except Exception as exc:
             self.done_sig.emit(False, f"执行出错: {exc}")
 
@@ -397,6 +422,7 @@ if {self.auto_onnx}:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TrainerGUI(QWidget):
+
     """个人审美偏好训练器 (PySide6 现代全圆角矢量界面)"""
 
     def __init__(self, on_model_updated: Callable[[], None] | None = None, parent: QWidget | None = None):
@@ -408,12 +434,26 @@ class TrainerGUI(QWidget):
         self._build_ui()
         QtCore.QTimer.singleShot(100, self._refresh_python_envs)
 
+    def _detect_gpu_device(self) -> tuple[str, str]:
+        """检测当前机器的深度学习硬件加速环境"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                name = torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else "CUDA"
+                return "cuda", f"⚡ 硬件显卡加速：NVIDIA CUDA ({name})"
+            if sys.platform == "darwin" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps", "⚡ 硬件显卡加速：Apple Silicon Metal (MPS)"
+        except Exception:
+            pass
+        return "cpu", "⚡ 计算设备：CPU 多核心并行"
+
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 10, 0, 10)
         main_layout.setSpacing(10)
 
-        # ── 1. Python 环境选择卡片 ──
+
+        # ── 1. Python 环境与 GPU 加速卡片 ──
         env_card = QFrame()
         env_card.setProperty("class", "CardFrame")
         e_layout = QVBoxLayout(env_card)
@@ -421,15 +461,22 @@ class TrainerGUI(QWidget):
         e_layout.setSpacing(8)
 
         env_header = QHBoxLayout()
-        t1 = QLabel("Python 训练环境")
+        t1 = QLabel("Python 训练环境与计算设备")
         t1.setProperty("class", "CardTitle")
         env_header.addWidget(t1)
+
+        # 硬件加速徽章
+        gpu_type, gpu_text = self._detect_gpu_device()
+        self.gpu_badge = QLabel(f" {gpu_text} ")
+        self.gpu_badge.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {GREEN_FG}; background-color: #E8F8EE; border: 1px solid #B8ECC7; border-radius: 4px; padding: 2px 6px;")
+        env_header.addWidget(self.gpu_badge)
 
         self.env_status_lbl = QLabel("🔍 检测中...")
         self.env_status_lbl.setProperty("class", "SecondaryLabel")
         env_header.addWidget(self.env_status_lbl)
         env_header.addStretch()
         e_layout.addLayout(env_header)
+
 
         erow = QHBoxLayout()
         erow.setSpacing(8)
@@ -481,24 +528,42 @@ class TrainerGUI(QWidget):
         # ── 3. 参数配置卡片 ──
         param_card = QFrame()
         param_card.setProperty("class", "CardFrame")
-        p_layout = QHBoxLayout(param_card)
+        p_layout = QVBoxLayout(param_card)
         p_layout.setContentsMargins(16, 12, 16, 12)
-        p_layout.setSpacing(16)
+        p_layout.setSpacing(10)
 
+        # 视觉底座下拉选择
+        p_row1 = QHBoxLayout()
+        p_row1.setSpacing(12)
+        bb_lbl = QLabel("训练视觉底座:")
+        bb_lbl.setProperty("class", "SecondaryLabel")
+        p_row1.addWidget(bb_lbl)
+
+        self.backbone_combo = QComboBox()
+        self.backbone_combo.addItem("⚡  CLIP ViT-B/32 (标准极速底座 · 512 维 · 适合日常微调)", "b32")
+        self.backbone_combo.addItem("💎  CLIP ViT-L/14 / Aesthetic 3 (专业高精底座 · 768 维 · 审美更细腻)", "l14")
+        p_row1.addWidget(self.backbone_combo, stretch=1)
+        p_layout.addLayout(p_row1)
+
+        # 训练轮数与 ONNX 选项
+        p_row2 = QHBoxLayout()
+        p_row2.setSpacing(16)
         ep_lbl = QLabel("训练轮数 (Epochs):")
         ep_lbl.setProperty("class", "SecondaryLabel")
-        p_layout.addWidget(ep_lbl)
+        p_row2.addWidget(ep_lbl)
 
         self.epochs_input = QLineEdit("5")
         self.epochs_input.setFixedWidth(60)
-        p_layout.addWidget(self.epochs_input)
+        p_row2.addWidget(self.epochs_input)
 
         self.auto_onnx_cb = QCheckBox("训练完成后自动熔铸为 ONNX 极速加速模型（推荐）")
         self.auto_onnx_cb.setChecked(True)
-        p_layout.addWidget(self.auto_onnx_cb)
-        p_layout.addStretch()
+        p_row2.addWidget(self.auto_onnx_cb)
+        p_row2.addStretch()
+        p_layout.addLayout(p_row2)
 
         main_layout.addWidget(param_card)
+
 
         # ── 4. 执行行 ──
         br_layout = QHBoxLayout()
@@ -631,7 +696,9 @@ class TrainerGUI(QWidget):
             data_dir=dataset_path,
             epochs=epochs,
             auto_onnx=self.auto_onnx_cb.isChecked(),
+            backbone_type=self.backbone_combo.currentData() or "b32",
         )
+
         self._worker.log_sig.connect(self._append_log)
         self._worker.progress_sig.connect(lambda v: self.progress_bar.setValue(v))
         self._worker.done_sig.connect(self._on_training_done)

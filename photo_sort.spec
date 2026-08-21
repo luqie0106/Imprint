@@ -7,16 +7,21 @@ block_cipher = None
 
 # 收集需要打包的静态资源
 datas = [('src', 'src')]
-if os.path.exists('models/standard_aesthetic_model.onnx'):
-    datas.append(('models/standard_aesthetic_model.onnx', 'models'))
-if os.path.exists('models/custom_aesthetic_model.onnx'):
-    datas.append(('models/custom_aesthetic_model.onnx', 'models'))
-if os.path.exists('models/aesthetic_mlp.pth'):
-    datas.append(('models/aesthetic_mlp.pth', 'models'))
-if os.path.exists('photo_sort_model.onnx'):
-    datas.append(('photo_sort_model.onnx', '.'))
-if os.path.exists('aesthetic_mlp.pth'):
-    datas.append(('aesthetic_mlp.pth', '.'))
+for model_rel in [
+    'models/standard_aesthetic_model.onnx',
+    'models/standard_aesthetic_l14_model.onnx',
+    'models/custom_aesthetic_model.onnx',
+    'models/custom_aesthetic_l14_model.onnx',
+    'models/aesthetic_mlp.pth',
+    'models/aesthetic_mlp_l14.pth',
+    'models/sa_0_4_vit_b_32_linear.pth',
+    'models/sa_0_4_vit_l_14_linear.pth',
+    'photo_sort_model.onnx',
+    'aesthetic_mlp.pth',
+]:
+    if os.path.exists(model_rel):
+        dest_folder = 'models' if model_rel.startswith('models') else '.'
+        datas.append((model_rel, dest_folder))
 
 
 a = Analysis(
@@ -45,13 +50,18 @@ a = Analysis(
         'PIL',
         'PIL.Image',
         'PIL._imaging',
+        'huggingface_hub',
+        'urllib.request',
+        'urllib.error',
+        'urllib.parse',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # 极致精简：排除 PyTorch 训练库以及大量未使用的 Qt6 大型子模块 (如 QML/Quick/3D/Multimedia/WebEngine/Pdf 等)
+    # 极致精简：排除大型训练库（训练时通过 subprocess 调用外部 Conda Python 解释器）
     excludes=[
-        'torch', 'torchvision', 'transformers', 'huggingface_hub', 'safetensors', 'tkinter',
+        'torch', 'torchvision', 'transformers', 'safetensors', 'tkinter',
+
         'PySide6.QtNetwork',
         'PySide6.QtQml',
         'PySide6.QtQuick',

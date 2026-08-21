@@ -47,38 +47,49 @@ class TestModelManager:
         """测试模型选择配置读写持久化"""
         fake_cfg = tmp_path / "config.json"
         with patch("model_manager.CONFIG_FILE_PATH", fake_cfg):
-            assert get_active_model_mode() == "standard"
+            assert get_active_model_mode() == "standard_b32"
+            set_active_model_mode("standard_l14")
+            assert get_active_model_mode() == "standard_l14"
             set_active_model_mode("custom")
             assert get_active_model_mode() == "custom"
             set_active_model_mode("invalid_mode")
-            assert get_active_model_mode() == "standard"
+            assert get_active_model_mode() == "standard_b32"
 
     def test_check_all_models_status(self):
         """测试 check_all_models 返回数据结构正确性"""
         status = check_all_models()
         assert hasattr(status, "clip_ready")
+        assert hasattr(status, "clip_l14_ready")
         assert hasattr(status, "standard_onnx_ready")
+        assert hasattr(status, "standard_l14_onnx_ready")
         assert hasattr(status, "custom_onnx_ready")
+        assert hasattr(status, "custom_l14_onnx_ready")
         assert hasattr(status, "mlp_ready")
+        assert hasattr(status, "mlp_l14_ready")
         assert hasattr(status, "active_mode")
         assert hasattr(status, "is_fully_ready")
         assert isinstance(status.standard_onnx_ready, bool)
-        assert isinstance(status.custom_onnx_ready, bool)
-        assert status.active_mode in ("standard", "custom")
+        assert isinstance(status.standard_l14_onnx_ready, bool)
 
     def test_active_aesthetic_model_routing(self, tmp_path: Path):
         """测试模型激活路由"""
         fake_std = tmp_path / "std.onnx"
+        fake_std_l14 = tmp_path / "std_l14.onnx"
         fake_custom = tmp_path / "custom.onnx"
         fake_std.write_bytes(b"0" * (120 * 1024 * 1024))
+        fake_std_l14.write_bytes(b"0" * (120 * 1024 * 1024))
         fake_custom.write_bytes(b"0" * (120 * 1024 * 1024))
 
         with patch("model_manager.get_resolved_standard_onnx_path", return_value=fake_std), \
+             patch("model_manager.get_resolved_standard_l14_onnx_path", return_value=fake_std_l14), \
              patch("model_manager.get_resolved_custom_onnx_path", return_value=fake_custom):
-            with patch("model_manager.get_active_model_mode", return_value="standard"):
+            with patch("model_manager.get_active_model_mode", return_value="standard_b32"):
                 assert get_active_aesthetic_model_path() == fake_std
+            with patch("model_manager.get_active_model_mode", return_value="standard_l14"):
+                assert get_active_aesthetic_model_path() == fake_std_l14
             with patch("model_manager.get_active_model_mode", return_value="custom"):
                 assert get_active_aesthetic_model_path() == fake_custom
+
 
     def test_is_clip_model_downloaded_with_mock_files(self, tmp_path: Path):
         """模拟本地模型文件存在且尺寸正常"""
