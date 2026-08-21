@@ -41,17 +41,35 @@ except Exception:
 
 # ── 支持的照片扩展名格式集 ───────────────────────────────────────────────────
 RAW_SUFFIXES = {
-    ".nef", ".arw", ".cr3", ".cr2", ".raf", ".dng", ".rw2", ".orf", ".pef"
+    # 尼康 Nikon
+    ".nef", ".nrw",
+    # 索尼 Sony
+    ".arw", ".srf", ".sr2",
+    # 佳能 Canon (CR2 / CR3 / CRW)
+    ".cr2", ".cr3", ".crw",
+    # 松下 / 徕卡 Panasonic / Lumix / Leica (RW2 / RAW)
+    ".rw2", ".raw",
+    # Adobe DNG (通用 RAW / 徕卡 / 大疆无人机 / Apple ProRAW / 理光 / 宾得)
+    ".dng",
+    # 富士 Fujifilm
+    ".raf",
+    # 奥林巴斯 / OM System Olympus
+    ".orf", ".ori",
+    # 宾得 / 理光 Pentax / Ricoh
+    ".pef", ".ptx",
+    # 哈苏 / 飞思 / 三星 / 适马 / 柯达 / 美能达 / GoPro 等
+    ".3fr", ".fff", ".iiq", ".srw", ".x3f", ".mrw", ".gpr", ".erf", ".mef", ".mos",
 }
 
 STANDARD_IMAGE_SUFFIXES = {
     ".jpg", ".jpeg", ".jpe",
     ".jxl",
     ".hif", ".heif", ".heic",
-    ".png", ".webp", ".tiff", ".tif"
+    ".png", ".webp", ".tiff", ".tif", ".bmp"
 }
 
 SUPPORTED_PHOTO_SUFFIXES = RAW_SUFFIXES | STANDARD_IMAGE_SUFFIXES
+
 
 # ── 人脸检测器（加载失败时降级为中心区域锐度）───────────────────────────
 try:
@@ -108,6 +126,46 @@ class ScoredPhoto:
 
 
 @dataclass
+class PhotoShot:
+    """
+    单次快门拍摄的实体对象。
+    若开启了 RAW+JPG / RAW+HIF / XMP 伴生存储，同一个 PhotoShot 会囊括该次快门生成的所有伴生文件，
+    在连拍聚类、打分以及优选移动时均作为同一个整体处理。
+    """
+    primary_path: Path
+    all_paths: list[Path] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.all_paths:
+            self.all_paths = [self.primary_path]
+        elif self.primary_path not in self.all_paths:
+            self.all_paths.insert(0, self.primary_path)
+
+    @property
+    def path(self) -> Path:
+        return self.primary_path
+
+    @property
+    def name(self) -> str:
+        return self.primary_path.name
+
+    @property
+    def stem(self) -> str:
+        return self.primary_path.stem
+
+    def __hash__(self) -> int:
+        return hash(self.primary_path)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, PhotoShot):
+            return self.primary_path == other.primary_path
+        if isinstance(other, Path):
+            return self.primary_path == other
+        return False
+
+
+
+@dataclass
 class BurstFilterResult:
     total: int = 0
     skipped_single: int = 0
@@ -115,6 +173,7 @@ class BurstFilterResult:
     moved: int = 0
     review_dir: Path | None = None
     errors: list[str] = field(default_factory=list)
+
 
 
 # ── 亚秒 EXIF 标签 ────────────────────────────────────────────────────────────
@@ -126,7 +185,7 @@ _SUBSEC_TIME_DIGITIZED_TAG = 37522   # SubSecTimeDigitized
 # ══════════════════════════════════════════════════════════════════════════════
 
 class RawExifReader:
-    """读取拍摄时间（精确到微秒），失败时回退 mtime。适用于所有 RAW 格式。"""
+    """读取拍摄时间（精确到微秒），失败时回退 mtime。适用于各种相机 RAW 格式及通用图像。"""
 
     def read_datetime(self, path: Path) -> datetime:
         try:
@@ -134,34 +193,56 @@ class RawExifReader:
         except Exception:
             return self._from_mtime(path)
 
+    def _parse_exif_from_img(self, img: Image.Image) -> datetime:
+        exif = img.getexif()
+        if not exif:
+            raise ValueError("No EXIF")
+        ifd = exif.get_ifd(_EXIF_IFD_TAG) if hasattr(exif, "get_ifd") else {}
+
+        # 整秒时间
+        raw = ifd.get(_DATETIME_ORIGINAL_TAG) or exif.get(_DATETIME_ORIGINAL_TAG)
+        if not raw:
+            raise ValueError("No DateTimeOriginal")
+        dt = datetime.strptime(str(raw).strip(), _DATETIME_FMT)
+
+        # 亚秒时间（优先 SubSecTimeOriginal，次选 SubSecTimeDigitized）
+        subsec_raw = (
+            ifd.get(_SUBSEC_TIME_ORIGINAL_TAG)
+            or ifd.get(_SUBSEC_TIME_DIGITIZED_TAG)
+            or exif.get(_SUBSEC_TIME_ORIGINAL_TAG)
+            or exif.get(_SUBSEC_TIME_DIGITIZED_TAG)
+        )
+        microseconds = 0
+        if subsec_raw is not None:
+            try:
+                # 字段如 "45" 表示 0.45 秒，左对齐填充到 6 位
+                s = str(subsec_raw).strip()
+                microseconds = int(s[:6].ljust(6, "0"))
+            except (ValueError, TypeError):
+                microseconds = 0
+
+        return dt.replace(microsecond=microseconds)
+
     def _from_exif(self, path: Path) -> datetime:
-        with Image.open(path) as img:
-            exif = img.getexif()
-            ifd  = exif.get_ifd(_EXIF_IFD_TAG) if hasattr(exif, "get_ifd") else {}
+        # 1. 优先使用 Pillow 直接读取 EXIF (适用于 DNG, CR2, NEF, ARW, JPG, PNG 等)
+        try:
+            with Image.open(path) as img:
+                return self._parse_exif_from_img(img)
+        except Exception:
+            pass
 
-            # 整秒时间
-            raw = ifd.get(_DATETIME_ORIGINAL_TAG) or exif.get(_DATETIME_ORIGINAL_TAG)
-            if not raw:
-                raise ValueError("No DateTimeOriginal")
-            dt = datetime.strptime(str(raw).strip(), _DATETIME_FMT)
+        # 2. 如果 Pillow 无法直接解析该 RAW 容器格式 (如 CR3, RW2 等)，尝试从 rawpy 提取内嵌缩略图读取 EXIF
+        if path.suffix.lower() in RAW_SUFFIXES:
+            try:
+                with rawpy.imread(str(path)) as raw:
+                    thumb = raw.extract_thumb()
+                if thumb.format == rawpy.ThumbFormat.JPEG:
+                    with Image.open(BytesIO(thumb.data)) as img:
+                        return self._parse_exif_from_img(img)
+            except Exception:
+                pass
 
-            # 亚秒时间（优先 SubSecTimeOriginal，次选 SubSecTimeDigitized）
-            subsec_raw = (
-                ifd.get(_SUBSEC_TIME_ORIGINAL_TAG)
-                or ifd.get(_SUBSEC_TIME_DIGITIZED_TAG)
-                or exif.get(_SUBSEC_TIME_ORIGINAL_TAG)
-                or exif.get(_SUBSEC_TIME_DIGITIZED_TAG)
-            )
-            microseconds = 0
-            if subsec_raw is not None:
-                try:
-                    # 字段如 "45" 表示 0.45 秒，左对齐填充到 6 位
-                    s = str(subsec_raw).strip()
-                    microseconds = int(s[:6].ljust(6, "0"))
-                except (ValueError, TypeError):
-                    microseconds = 0
-
-            return dt.replace(microsecond=microseconds)
+        raise ValueError(f"No EXIF DateTime found in {path.name}")
 
     @staticmethod
     def _from_mtime(path: Path) -> datetime:
@@ -185,12 +266,20 @@ class RawEvaluator:
     def extract_preview(self, path: Path) -> np.ndarray:
         suffix = path.suffix.lower()
         if suffix in RAW_SUFFIXES:
+            # 1. 优先从 rawpy 提取内嵌 JPEG / BITMAP 缩略图 (耗时极低 ~5-15ms)
             try:
                 return self._extract_thumb(path)
             except Exception:
                 pass
+            # 2. 若无内嵌缩略图或提取失败，尝试 rawpy 半采样解码 (half_decode)
             try:
                 return self._half_decode(path)
+            except Exception:
+                pass
+            # 3. 兜底尝试 Pillow 打开 (如某些特殊 DNG / TIFF 格式)
+            try:
+                with Image.open(path) as img:
+                    return np.asarray(img.convert("RGB"))
             except Exception as exc:
                 raise RuntimeError(f"无法读取 RAW 预览: {path.name}") from exc
         else:
@@ -206,14 +295,17 @@ class RawEvaluator:
             thumb = raw.extract_thumb()
         if thumb.format == rawpy.ThumbFormat.JPEG:
             img = Image.open(BytesIO(thumb.data))
-        else:
+        elif thumb.format == rawpy.ThumbFormat.BITMAP:
             img = Image.fromarray(thumb.data)
+        else:
+            raise ValueError(f"Unknown thumb format: {thumb.format}")
         return np.asarray(img.convert("RGB"))
 
     @staticmethod
     def _half_decode(path: Path) -> np.ndarray:
         with rawpy.imread(str(path)) as raw:
             return raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
+
 
     # ── 人脸优先的锐度计算 ────────────────────────────────────────────────────
 
@@ -475,62 +567,69 @@ class BurstGrouper:
             max_workers = max(1, round((os.cpu_count() or 4) * 0.8))
         self.max_workers = max_workers
 
-    def group(self, nef_files: Sequence[Path]) -> list[list[Path]]:
-        if not nef_files:
+    def group(self, items: Sequence[Path | PhotoShot]) -> list[list[Any]]:
+        if not items:
             return []
 
+        # 统一封装为 PhotoShot
+        shots: list[PhotoShot] = [
+            it if isinstance(it, PhotoShot) else PhotoShot(primary_path=it, all_paths=[it])
+            for it in items
+        ]
+
         # 1. 多线程并发读取时间与提取 dHash
-        def _parse_meta(p: Path) -> tuple[Path, datetime, np.ndarray | None]:
-            return p, self._exif.read_datetime(p), self._safe_dhash(p)
+        def _parse_meta(shot: PhotoShot) -> tuple[PhotoShot, datetime, np.ndarray | None]:
+            p = shot.primary_path
+            return shot, self._exif.read_datetime(p), self._safe_dhash(p)
 
         import concurrent.futures
         import os
         workers = max(1, self.max_workers)
 
-        meta_map: dict[Path, tuple[datetime, np.ndarray | None]] = {}
+        meta_map: dict[PhotoShot, tuple[datetime, np.ndarray | None]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for p, dt, h in executor.map(_parse_meta, nef_files):
-                meta_map[p] = (dt, h)
+            for shot, dt, h in executor.map(_parse_meta, shots):
+                meta_map[shot] = (dt, h)
 
-        timed: list[tuple[datetime, Path]] = sorted(
-            ((meta_map[p][0], p) for p in nef_files),
+        timed: list[tuple[datetime, PhotoShot]] = sorted(
+            ((meta_map[s][0], s) for s in shots),
             key=lambda x: x[0],
         )
 
         # 2. 首帧锚点比对聚类
-        result: list[list[Path]] = []
-        current_group: list[Path] = [timed[0][1]]
+        result: list[list[Any]] = []
+        current_group: list[Any] = [timed[0][1]]
         anchor_hash: np.ndarray | None = meta_map[timed[0][1]][1]
         prev_time = timed[0][0]
 
-        for cur_time, cur_path in timed[1:]:
+        for cur_time, cur_shot in timed[1:]:
             gap = (cur_time - prev_time).total_seconds()
             prev_time = cur_time
 
             # 条件 1：时间超出阈值 → 直接截断
             if gap > self.gap_seconds:
                 result.append(current_group)
-                current_group = [cur_path]
-                anchor_hash = meta_map[cur_path][1]
+                current_group = [cur_shot]
+                anchor_hash = meta_map[cur_shot][1]
                 continue
 
             # 条件 2：与锚点帧比对 dHash 汉明距离
-            cur_hash = meta_map[cur_path][1]
+            cur_hash = meta_map[cur_shot][1]
             if anchor_hash is None or cur_hash is None:
                 # 预览提取失败，保守截断
                 result.append(current_group)
-                current_group = [cur_path]
+                current_group = [cur_shot]
                 anchor_hash = cur_hash
                 continue
 
             dist = self._hamming(anchor_hash, cur_hash)
             if dist <= self.max_hamming_distance:
                 # 同一场景，加入当前子组（锚点保持第一张不变）
-                current_group.append(cur_path)
+                current_group.append(cur_shot)
             else:
                 # 构图/角度变化，截断并以当前帧开启新子组
                 result.append(current_group)
-                current_group = [cur_path]
+                current_group = [cur_shot]
                 anchor_hash = cur_hash
 
         result.append(current_group)
@@ -572,8 +671,8 @@ class BurstGrouper:
 
 class BurstFilter:
     """
-    NEF 连拍优选主控器。
-      result = BurstFilter().run(Path("/path/to/nef/folder"))
+    连拍优选主控器。
+      result = BurstFilter().run(Path("/path/to/folder"))
     """
 
     _RAW_SUFFIXES = {s for s in SUPPORTED_PHOTO_SUFFIXES} | {s.upper() for s in SUPPORTED_PHOTO_SUFFIXES}
@@ -629,11 +728,21 @@ class BurstFilter:
         if not photo_files:
             return result
 
-        self._notify(f"扫描到 {result.total} 张照片，正在分析连拍组…")
-        groups = self._grouper.group(photo_files)
+        # 伴生文件聚合（同一次快门的 RAW+JPG/HIF 等视为同一个 PhotoShot）
+        shots = self._pair_shots(photo_files)
+        paired_count = len(photo_files) - len(shots)
+        if paired_count > 0:
+            self._notify(f"扫描到 {result.total} 个文件（包含 {paired_count} 组 RAW+JPG 伴生照片，已合并为 {len(shots)} 张独立快门照片），正在分析连拍组…")
+        else:
+            self._notify(f"扫描到 {result.total} 张照片，正在分析连拍组…")
+
+        groups = self._grouper.group(shots)
 
         burst_groups = [g for g in groups if len(g) > 1]
-        result.skipped_single = sum(1 for g in groups if len(g) == 1)
+        result.skipped_single = sum(
+            sum(len(item.all_paths) if isinstance(item, PhotoShot) else 1 for item in g)
+            for g in groups if len(g) == 1
+        )
         result.burst_groups = len(burst_groups)
 
         if not burst_groups:
@@ -645,7 +754,7 @@ class BurstFilter:
         result.review_dir = review_dir
 
         for idx, group in enumerate(burst_groups, 1):
-            self._notify(f"处理连拍组 {idx}/{len(burst_groups)}（{len(group)} 张）…")
+            self._notify(f"处理连拍组 {idx}/{len(burst_groups)}（包含 {len(group)} 次连拍拍摄）…")
             moved, errors = self._process_group(group, review_dir)
             result.moved += moved
             result.errors.extend(errors)
@@ -661,100 +770,140 @@ class BurstFilter:
     def _scan_photos(self, input_dir: Path) -> list[Path]:
         return self._scan_raw(input_dir)
 
+    def _pair_shots(self, photo_files: Sequence[Path]) -> list[PhotoShot]:
+        """
+        将同一次快门拍摄的伴生文件（如同名 RAW + JPG / RAW + HIF / XMP 等）聚合成同一个 PhotoShot。
+        优先选择 RAW 文件作为主文件（primary_path）用于打分与预览提取。
+        """
+        from collections import OrderedDict
+        groups: dict[tuple[Path, str], list[Path]] = OrderedDict()
+        for p in sorted(photo_files):
+            key = (p.parent, p.stem.lower())
+            groups.setdefault(key, []).append(p)
+
+        shots: list[PhotoShot] = []
+        for (parent, stem), paths in groups.items():
+            sorted_paths = sorted(
+                paths,
+                key=lambda x: (
+                    0 if x.suffix.lower() in RAW_SUFFIXES else 1,
+                    0 if x.suffix.lower() in STANDARD_IMAGE_SUFFIXES else 1,
+                    x.suffix.lower()
+                )
+            )
+            shots.append(PhotoShot(primary_path=sorted_paths[0], all_paths=sorted_paths))
+        return shots
+
     def _process_group(
-        self, group: list[Path], review_dir: Path
+        self, group: list[Any], review_dir: Path
     ) -> tuple[int, list[str]]:
         """
-        对连拍组内所有照片进行多维度评估，综合加权后保留前 keep_count 张。
+        对连拍组内所有照片实体进行多维度评估，综合加权后保留前 keep_count 张。
+        若某照片包含 RAW+JPG 伴生文件，保留时全部保留在原目录，淘汰时全部移动至审查目录。
 
         各维度权重：
           AI 美学概率   : 0.6
           归一化锐度    : 0.3
           曝光评分      : 0.1
         """
-        # ── 阶段 1：为每张照片提取三个维度的原始分数 ──────────────────────────
         @dataclass
-        class _Photo:
-            path: Path
+        class _EvaluatedShot:
+            shot: PhotoShot
             sharpness: float = 0.0
             exposure: float  = 1.0
             aesthetic: float = 1.0
             failed: bool     = False
+            _norm_sharp: float = 0.0
+            final_score: float = -1.0
 
-        photos: list[_Photo] = []
+            @property
+            def path(self) -> Path:
+                return self.shot.primary_path
+
+        def _to_shot(item: Any) -> PhotoShot:
+            if isinstance(item, PhotoShot):
+                return item
+            return PhotoShot(primary_path=item, all_paths=[item])
+
+        shots: list[PhotoShot] = [_to_shot(item) for item in group]
+        evaluated_list: list[_EvaluatedShot] = []
         errors: list[str] = []
 
-        def _evaluate_photo(path: Path) -> _Photo | tuple[_Photo, str]:
-            p = _Photo(path=path)
+        def _evaluate_shot(shot: PhotoShot) -> _EvaluatedShot | tuple[_EvaluatedShot, str]:
+            es = _EvaluatedShot(shot=shot)
             try:
-                preview = self._scorer.extract_preview(path)
-                p.sharpness = self._scorer.sharpness(preview)
-                p.exposure  = self._scorer.exposure_score(preview)
-                p.aesthetic = self._aesthetic_scorer.score(preview)
-                return p
+                # 优先使用 primary_path（RAW 优先）提取预览与多维度打分
+                preview = self._scorer.extract_preview(shot.primary_path)
+                es.sharpness = self._scorer.sharpness(preview)
+                es.exposure  = self._scorer.exposure_score(preview)
+                es.aesthetic = self._aesthetic_scorer.score(preview)
+                return es
             except Exception as exc:
-                p.failed = True
-                return p, f"{path.name}: {exc}"
+                es.failed = True
+                return es, f"{shot.primary_path.name}: {exc}"
 
         import concurrent.futures
         import os
         workers = max(1, self.max_workers)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for result in executor.map(_evaluate_photo, group):
-                if isinstance(result, tuple):
-                    p, err_msg = result
-                    warnings.warn(f"跳过 {p.path.name}: {err_msg}")
+            for res in executor.map(_evaluate_shot, shots):
+                if isinstance(res, tuple):
+                    es, err_msg = res
+                    warnings.warn(f"跳过 {es.shot.primary_path.name}: {err_msg}")
                     errors.append(err_msg)
-                    photos.append(p)
+                    evaluated_list.append(es)
                 else:
-                    photos.append(result)
+                    evaluated_list.append(res)
 
-        if not photos:
+        if not evaluated_list:
             return 0, errors
 
         # ── 阶段 2：组内归一化锐度（避免绝对值量纲差异主导结果）─────────────
-        valid = [p for p in photos if not p.failed]
+        valid = [es for es in evaluated_list if not es.failed]
         if valid:
-            max_s = max(p.sharpness for p in valid)
-            min_s = min(p.sharpness for p in valid)
+            max_s = max(es.sharpness for es in valid)
+            min_s = min(es.sharpness for es in valid)
             span  = max_s - min_s + 1e-6
-            for p in valid:
-                p._norm_sharp = (p.sharpness - min_s) / span   # type: ignore[attr-defined]
-        for p in photos:
-            if not hasattr(p, '_norm_sharp'):
-                p._norm_sharp = 0.0   # type: ignore[attr-defined]
+            for es in valid:
+                es._norm_sharp = (es.sharpness - min_s) / span
+        for es in evaluated_list:
+            if not hasattr(es, '_norm_sharp'):
+                es._norm_sharp = 0.0
 
         # ── 阶段 3：计算综合得分并排序 ────────────────────────────────────────
-        for p in valid:
-            p.final_score = (                                   # type: ignore[attr-defined]
-                p.aesthetic     * 0.6
-                + p._norm_sharp * 0.3   # type: ignore[attr-defined]
-                + p.exposure    * 0.1
+        for es in valid:
+            es.final_score = (
+                es.aesthetic     * 0.6
+                + es._norm_sharp * 0.3
+                + es.exposure    * 0.1
             )
-        for p in photos:
-            if not hasattr(p, 'final_score'):
-                p.final_score = -1.0    # type: ignore[attr-defined]
+        for es in evaluated_list:
+            if not hasattr(es, 'final_score'):
+                es.final_score = -1.0
 
         keep_n = min(self.keep_count, len(valid))
-        top = sorted(valid, key=lambda x: x.final_score, reverse=True)[:keep_n]  # type: ignore[attr-defined]
-        keep_paths: set[Path] = {p.path for p in top}
+        top = sorted(valid, key=lambda x: x.final_score, reverse=True)[:keep_n]
+        top_shots: set[PhotoShot] = {es.shot for es in top}
 
-        # ── 阶段 4：移动淘汰照片 ──────────────────────────────────────────────
+        # ── 阶段 4：移动淘汰照片（连同 RAW+JPG/HIF 等伴生文件一同移动）─────────
         moved = 0
-        for p in photos:
-            if p.path in keep_paths or p.failed:
+        for es in evaluated_list:
+            if es.shot in top_shots or es.failed:
                 continue
-            try:
-                dest = review_dir / p.path.name
-                if dest.exists():
-                    dest = review_dir / f"{p.path.stem}_dup{p.path.suffix}"
-                shutil.move(str(p.path), str(dest))
-                moved += 1
-            except Exception as exc:
-                msg = f"移动 {p.path.name} 失败: {exc}"
-                warnings.warn(msg)
-                errors.append(msg)
+            for fpath in es.shot.all_paths:
+                if not fpath.exists():
+                    continue
+                try:
+                    dest = review_dir / fpath.name
+                    if dest.exists():
+                        dest = review_dir / f"{fpath.stem}_dup{fpath.suffix}"
+                    shutil.move(str(fpath), str(dest))
+                    moved += 1
+                except Exception as exc:
+                    msg = f"移动 {fpath.name} 失败: {exc}"
+                    warnings.warn(msg)
+                    errors.append(msg)
 
         return moved, errors
 
@@ -763,3 +912,4 @@ class BurstFilter:
             self.progress_callback(message)
         else:
             print(message)
+

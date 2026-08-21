@@ -6,7 +6,7 @@
 [![Formats](https://img.shields.io/badge/Formats-RAW%20%7C%20JPEG%20%7C%20JXL%20%7C%20HIF%2FHEIF-FF6F00)]()
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?logo=apple&logoColor=black)]()
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-18%2F18%20Passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-22%2F22%20Passed-brightgreen)]()
 
 本地连拍照片智能筛选与优选工具。
 
@@ -17,16 +17,18 @@
 ## 主要功能
 
 - **连拍自动分组**：结合 EXIF 亚秒级拍摄时间（$\le 1.5$ 秒）与 dHash 图像感知哈希，自动识别同一连拍序列。长距离追焦移镜时，画面发生明显变化会自动拆分子组；三脚架定机位摆拍不会因时间不同被误合并。
+- **RAW + JPG 伴生双文件智能绑定**：自动识别相机同拍伴生文件（如 `_DSC0001.ARW` + `_DSC0001.JPG`、`IMG_0001.CR2` + `IMG_0001.JPG` 等）并视为单次快门实体。单拍不会被误判为连拍组；连拍优选时优胜快门的 RAW 与 JPG 同时保留，淘汰快门的 RAW 与 JPG 同步移动，绝不拆散。
 - **多维度选优打分**：
   - **清晰度（人脸优先）**：自动检测人脸区域并计算 Laplacian 梯度；无人脸时以画面中心主体区域为主。
   - **曝光评估**：统计直方图高光与暗部，对高光过曝（死白）施加惩罚。
   - **AI 美学与构图打分（可选）**：基于本地 CLIP 视觉特征，量化整体构图与美感。
 - **个人审美偏好微调**：内置轻量训练器，只需提供 `like` 和 `dislike` 两个文件夹，即可在本地训练自己的审美模型，并一键导出为 ONNX 格式调用 NPU / GPU 硬件加速。
 - **全格式支持**：
-  - **相机 RAW**：尼康 (`.NEF`)、索尼 (`.ARW`)、佳能 (`.CR3`/`.CR2`)、富士 (`.RAF`)、DNG 等。
+  - **相机 RAW**：Adobe DNG (`.DNG`，含大疆无人机/徕卡/Apple ProRAW/理光GR/宾得)、佳能 (`.CR2`/`.CR3`/`.CRW`)、松下/徕卡 (`.RW2`/`.RAW`)、尼康 (`.NEF`/`.NRW`)、索尼 (`.ARW`/`.SRF`/`.SR2`)、富士 (`.RAF`)、奥林巴斯 (`.ORF`)、宾得 (`.PEF`) 等。
   - **高效率格式**：索尼/佳能 10-bit `.HIF`、苹果 `.HEIC`/`.HEIF`、JPEG XL (`.JXL`)。
-  - **通用格式**：`.JPG`、`.JPEG`、`.PNG`、`.WebP`。
+  - **通用格式**：`.JPG`、`.JPEG`、`.PNG`、`.WebP`、`.TIFF`、`.BMP`。
 - **安全与非破坏性**：只读取元数据与缩略图，不修改原片，淘汰的照片移动到同目录下的 `审查_连拍淘汰` 文件夹，方便随时人工复查。
+
 
 ---
 
@@ -93,9 +95,9 @@ python main.py --export-onnx
 
 ---
 
-## 编译打包
+## 编译打包与发布
 
-项目使用 PyInstaller 打包，已排除 PyTorch 训练库与未使用的 Qt 模块：
+项目使用 PyInstaller 进行轻量化打包，并由 GitHub Actions Workflow 自动完成双平台安装包与便携版的构建与发布：
 
 ```bash
 # 安装打包依赖
@@ -105,8 +107,15 @@ pip install -r requirements-build.txt
 pyinstaller photo_sort.spec
 ```
 
-- **macOS**：在 `dist/` 生成 `PhotoSort.app`，可通过 GitHub Actions 自动构建 `.dmg`。
-- **Windows**：在 `dist/` 生成 `PhotoSort/` 绿色运行目录，自动压缩为 `.zip`。
+### GitHub Actions 发布的产物说明
+
+| 平台 | 产物文件名 | 类型 | 适用场景 |
+| :--- | :--- | :--- | :--- |
+| **macOS** | `PhotoSort-macOS-Installer.pkg` | **系统原生安装包** | 推荐使用，双击系统向导一键自动安装至 `/Applications` |
+| **macOS** | `PhotoSort-macOS-Portable.dmg` | **磁盘镜像 (便携版)** | 经典 DMG 镜像，内含 App 与 Applications 快捷链接，支持拖拽运行 |
+| **Windows** | `PhotoSort-Windows-Installer.exe` | **向导安装包** | 推荐使用，提供中英双语向导、自定义路径、开始菜单与桌面快捷方式、控制面板卸载 |
+| **Windows** | `PhotoSort-Windows-Portable.zip` | **绿色免安装版** | 解压即用，适合放在 U 盘或临时目录运行 |
+
 
 ---
 

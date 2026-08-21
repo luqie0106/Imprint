@@ -1,7 +1,13 @@
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
+
+try:
+    import rawpy
+except ImportError:
+    rawpy = None
 
 
 EXIF_IFD_TAG = 34665
@@ -17,8 +23,28 @@ class ExifMetadata:
 
 class ExifReader:
     def read(self, image_path: Path) -> ExifMetadata:
-        with Image.open(image_path) as image:
-            exif = image.getexif()
+        try:
+            with Image.open(image_path) as image:
+                return self._parse_from_image(image)
+        except Exception:
+            pass
+
+        if rawpy is not None:
+            try:
+                with rawpy.imread(str(image_path)) as raw:
+                    thumb = raw.extract_thumb()
+                if thumb.format == rawpy.ThumbFormat.JPEG:
+                    with Image.open(BytesIO(thumb.data)) as image:
+                        return self._parse_from_image(image)
+            except Exception:
+                pass
+
+        return ExifMetadata(camera_model=None, lens_model=None)
+
+    def _parse_from_image(self, image: Image.Image) -> ExifMetadata:
+        exif = image.getexif()
+        if not exif:
+            return ExifMetadata(camera_model=None, lens_model=None)
 
         camera_model = self._normalize(exif.get(CAMERA_MODEL_TAG))
         lens_model = None
@@ -29,6 +55,7 @@ class ExifReader:
                 lens_model = self._normalize(exif_ifd.get(LENS_MODEL_TAG))
 
         return ExifMetadata(camera_model=camera_model, lens_model=lens_model)
+
 
     @staticmethod
     def _normalize(value: object) -> str | None:

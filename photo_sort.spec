@@ -126,4 +126,12 @@ app = BUNDLE(
     name='PhotoSort.app',
     icon='src/assets/icon.icns' if os.path.exists('src/assets/icon.icns') else None,
     bundle_identifier='com.photosort.app',
+    info_plist={
+        'CFBundleDisplayName': 'PhotoSort',
+        'CFBundleName': 'PhotoSort',
+        'CFBundlePackageType': 'APPL',
+        'CFBundleShortVersionString': '0.3.0',
+        'NSHighResolutionCapable': 'True',
+    },
 )
+

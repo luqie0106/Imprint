@@ -52,21 +52,63 @@ jobs:
         run: |
           pyinstaller photo_sort.spec
 
-      - name: Create DMG (macOS)
+      # --- macOS 打包步骤 ---
+      - name: Create Portable DMG (macOS)
         if: runner.os == 'macOS'
         run: |
-          hdiutil create -volname "PhotoSort" -srcfolder dist/PhotoSort.app -ov -format UDZO dist/PhotoSort-macOS.dmg
+          mkdir -p dist/dmg_staging
+          cp -R dist/PhotoSort.app dist/dmg_staging/
+          ln -s /Applications dist/dmg_staging/Applications
+          hdiutil create -volname "PhotoSort" -srcfolder dist/dmg_staging -ov -format UDZO dist/PhotoSort-macOS-Portable.dmg
+          rm -rf dist/dmg_staging
 
-      - name: Zip Artifacts (Windows)
+      - name: Create Installer PKG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          productbuild --component dist/PhotoSort.app /Applications dist/PhotoSort-macOS-Installer.pkg
+
+      # --- Windows 打包步骤 ---
+      - name: Create Portable ZIP (Windows)
         if: runner.os == 'Windows'
         run: |
-          Compress-Archive -Path dist\PhotoSort -DestinationPath dist\PhotoSort-Windows.zip -Force
+          Compress-Archive -Path dist\PhotoSort -DestinationPath dist\PhotoSort-Windows-Portable.zip -Force
 
+      - name: Create Windows Setup Installer (Inno Setup)
+        if: runner.os == 'Windows'
+        run: |
+          choco install innosetup --no-progress -y
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          if ($version -eq 'main' -or $version -eq 'master' -or [string]::IsNullOrWhiteSpace($version)) {
+            $version = (Get-Content pyproject.toml | Select-String -Pattern 'version\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          }
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+          }
+          & $iscc "/DMyAppVersion=$version" installer.iss
+
+      # --- 上传构建产物 (便于 workflow_dispatch 手动运行时下载) ---
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoSort-${{ matrix.os }}
+          path: |
+            dist/*.dmg
+            dist/*.pkg
+            dist/*.zip
+            dist/*.exe
+          if-no-files-found: warn
+
+      # --- 发布 Release (在 Tag push 时触发) ---
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            dist/PhotoSort-macOS.dmg
-            dist/PhotoSort-Windows.zip
+            dist/*.dmg
+            dist/*.pkg
+            dist/*.zip
+            dist/*.exe
+          fail_on_unmatched_files: false
           generate_release_notes: true
+

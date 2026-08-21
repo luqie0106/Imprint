@@ -282,12 +282,16 @@ class TestBurstFilter:
         assert result.review_dir.exists()
 
     def test_multi_format_scanning(self, tmp_path: Path):
-        """测试扫描支持 RAW (NEF/ARW/CR3/RAF) 及 JPEG, HIF, JXL 等格式。"""
+        """测试扫描支持 RAW (NEF/ARW/CR2/CR3/RAF/DNG/RW2/ORF/PEF) 及 JPEG, HIF, JXL 等格式。"""
         img_dir = tmp_path / "mixed"
         img_dir.mkdir()
         
-        # 创建多种格式的假文件
-        for name in ["a.NEF", "b.jpg", "c.JPEG", "d.hif", "e.jxl", "f.cr3", "g.png"]:
+        # 创建多种格式的假文件（包含 DNG, CR2, RW2 等）
+        test_files = [
+            "a.NEF", "b.jpg", "c.JPEG", "d.hif", "e.jxl", "f.cr3",
+            "g.cr2", "h.DNG", "i.rw2", "j.RAF", "k.orf", "l.png", "m.webp"
+        ]
+        for name in test_files:
             (img_dir / name).write_bytes(b"\x00" * 16)
         # 创建不支持的格式
         (img_dir / "ignore.txt").write_text("hello")
@@ -295,11 +299,117 @@ class TestBurstFilter:
 
         flt = BurstFilter()
         photos = flt._scan_photos(img_dir)
-        assert len(photos) == 7
+        assert len(photos) == len(test_files)
         names = {p.name for p in photos}
-        assert "a.NEF" in names
-        assert "b.jpg" in names
-        assert "d.hif" in names
-        assert "e.jxl" in names
+        for tf in test_files:
+            assert tf in names
         assert "ignore.txt" not in names
         assert "ignore.mp4" not in names
+
+    def test_raw_suffixes_contains_dng_cr2_rw2(self):
+        """验证支持集合中包含 DNG, CR2, RW2 等关键 RAW 格式。"""
+        from burst_filter import RAW_SUFFIXES, SUPPORTED_PHOTO_SUFFIXES
+        for ext in [".dng", ".cr2", ".rw2", ".cr3", ".nef", ".arw", ".raf", ".orf", ".pef"]:
+            assert ext in RAW_SUFFIXES
+            assert ext in SUPPORTED_PHOTO_SUFFIXES
+
+    def test_raw_plus_jpg_companion_pairing(self, tmp_path: Path):
+        """测试同名 RAW + JPG 伴生文件自动聚合成一个 PhotoShot。"""
+        from burst_filter import BurstFilter, PhotoShot
+        img_dir = tmp_path / "pairs"
+        img_dir.mkdir()
+
+        (img_dir / "DSC_0001.NEF").write_bytes(b"\x00" * 16)
+        (img_dir / "DSC_0001.JPG").write_bytes(b"\x00" * 16)
+        (img_dir / "DSC_0002.ARW").write_bytes(b"\x00" * 16)
+        (img_dir / "DSC_0002.jpg").write_bytes(b"\x00" * 16)
+
+        flt = BurstFilter()
+        photos = flt._scan_photos(img_dir)
+        assert len(photos) == 4
+        shots = flt._pair_shots(photos)
+        assert len(shots) == 2
+        for shot in shots:
+            assert isinstance(shot, PhotoShot)
+            assert len(shot.all_paths) == 2
+            # 确认 RAW 优先作为主文件
+            assert shot.primary_path.suffix.lower() in [".nef", ".arw"]
+
+    def test_single_raw_plus_jpg_shot_is_skipped(self, tmp_path: Path):
+        """单次快门拍摄的 RAW + JPG 不会被误判为连拍组，双方都安全保留在原位。"""
+        from burst_filter import BurstFilter
+        img_dir = tmp_path / "single_pair"
+        img_dir.mkdir()
+
+        nef = img_dir / "DSC_0001.NEF"
+        jpg = img_dir / "DSC_0001.JPG"
+        nef.write_bytes(b"\x00" * 16)
+        jpg.write_bytes(b"\x00" * 16)
+
+        flt = BurstFilter()
+        result = flt.run(img_dir)
+
+        assert result.total == 2
+        assert result.burst_groups == 0
+        assert result.moved == 0
+        assert nef.exists()
+        assert jpg.exists()
+
+    def test_burst_raw_plus_jpg_keeps_and_moves_together(self, tmp_path: Path):
+        """连拍组中获胜的快门同时保留 RAW 与 JPG，淘汰的快门同时将 RAW 与 JPG 移至审查目录。"""
+        from burst_filter import BurstFilter
+        img_dir = tmp_path / "burst_pairs"
+        img_dir.mkdir()
+
+        # 创建 3 组 RAW+JPG 连拍（共 6 个文件）
+        files = []
+        for i in range(1, 4):
+            nef = img_dir / f"DSC_{i:04d}.NEF"
+            jpg = img_dir / f"DSC_{i:04d}.JPG"
+            nef.write_bytes(b"\x00" * 16)
+            jpg.write_bytes(b"\x00" * 16)
+            files.extend([nef, jpg])
+
+        flt = BurstFilter(keep_count=1)
+        shots = flt._pair_shots(files)
+        assert len(shots) == 3
+
+        # mock 分组：3 个 shot 归为一个连拍组
+        flt._grouper.group = MagicMock(return_value=[shots])
+
+        sharp_img = _make_sharp_image()
+        blurry_img = _make_blurry_image()
+
+        # 设置第 2 个 shot（DSC_0002）得分最高
+        def fake_extract(p: Path) -> np.ndarray:
+            if "0002" in p.name:
+                return sharp_img
+            return blurry_img
+
+        flt._scorer.extract_preview = fake_extract
+        flt._scorer.sharpness = RawEvaluator().score
+        flt._scorer.exposure_score = MagicMock(return_value=1.0)
+        flt._aesthetic_scorer.score = MagicMock(return_value=1.0)
+
+        result = flt.run(img_dir)
+
+        assert result.burst_groups == 1
+        assert result.moved == 4  # 淘汰的 2 组 shot，每组 2 个文件共 4 个文件被移动
+        assert result.review_dir is not None
+
+        # DSC_0002.NEF 和 DSC_0002.JPG（胜出）均保留在原目录
+        assert (img_dir / "DSC_0002.NEF").exists()
+        assert (img_dir / "DSC_0002.JPG").exists()
+
+        # DSC_0001 与 DSC_0003 的 NEF + JPG 均被移动至审查目录
+        assert not (img_dir / "DSC_0001.NEF").exists()
+        assert not (img_dir / "DSC_0001.JPG").exists()
+        assert not (img_dir / "DSC_0003.NEF").exists()
+        assert not (img_dir / "DSC_0003.JPG").exists()
+
+        assert (result.review_dir / "DSC_0001.NEF").exists()
+        assert (result.review_dir / "DSC_0001.JPG").exists()
+        assert (result.review_dir / "DSC_0003.NEF").exists()
+        assert (result.review_dir / "DSC_0003.JPG").exists()
+
+
