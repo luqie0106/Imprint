@@ -269,15 +269,10 @@ AccessViolPriorToUninstall=在卸载前发生访问冲突。
 BadUninstallCode=卸载程序代码已损坏。
 ErrorRegisteringUninstaller=注册卸载程序时出错。
 FileDoesntExist=文件“%1”不存在。
-CustomMessages=
 
 [CustomMessages]
-chinesesimplified.CreateDesktopIcon=创建桌面快捷方式(&D)
-chinesesimplified.AdditionalIcons=附加快捷方式:
-chinesesimplified.LaunchProgram=启动
-chinesesimplified.UninstallProgram=卸载
+CreateDesktopIcon=创建桌面快捷方式(&D)
+AdditionalIcons=附加快捷方式:
+LaunchProgram=启动
+UninstallProgram=卸载
 
-english.CreateDesktopIcon=Create a &desktop shortcut
-english.AdditionalIcons=Additional shortcuts:
-english.LaunchProgram=Launch
-english.UninstallProgram=Uninstall
