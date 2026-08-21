@@ -248,29 +248,21 @@ except Exception:
     pass
 
 RAW_SUFFIXES = {
-    # 尼康 Nikon
     ".nef", ".nrw",
-    # 索尼 Sony
     ".arw", ".srf", ".sr2",
-    # 佳能 Canon (CR2 / CR3 / CRW)
     ".cr2", ".cr3", ".crw",
-    # 松下 / 徕卡 Panasonic / Lumix / Leica (RW2 / RAW)
     ".rw2", ".raw",
-    # Adobe DNG (通用 RAW / 徕卡 / 大疆无人机 / Apple ProRAW / 理光 / 宾得)
     ".dng",
-    # 富士 Fujifilm
     ".raf",
-    # 奥林巴斯 / OM System Olympus
     ".orf", ".ori",
-    # 宾得 / 理光 Pentax / Ricoh
     ".pef", ".ptx",
-    # 哈苏 / 飞思 / 三星 / 适马 / 柯达 / 美能达 / GoPro 等
     ".3fr", ".fff", ".iiq", ".srw", ".x3f", ".mrw", ".gpr", ".erf", ".mef", ".mos",
 }
 STANDARD_SUFFIXES = {
     ".jpg", ".jpeg", ".jpe", ".jxl", ".hif", ".heif", ".heic", ".png", ".webp", ".tiff", ".tif", ".bmp"
 }
 ALL_PHOTO_SUFFIXES = RAW_SUFFIXES | STANDARD_SUFFIXES
+
 
 
 class RawDataset:

@@ -138,45 +138,86 @@ class BurstFilterGUI(QWidget):
         # 第 0 行
         lbl1 = QLabel("淘汰子文件夹:")
         lbl1.setProperty("class", "SecondaryLabel")
+        lbl1.setToolTip("连拍中被淘汰的废片将移动到当前照片目录下的该子文件夹中，不破坏原图。")
         grid.addWidget(lbl1, 0, 0)
         self.subdir_input = QLineEdit("审查_连拍淘汰")
+        self.subdir_input.setToolTip("淘汰照片将存入该目录，方便您随时进入人工复查。")
         grid.addWidget(self.subdir_input, 0, 1)
 
         lbl2 = QLabel("每组保留张数:")
         lbl2.setProperty("class", "SecondaryLabel")
+        lbl2.setToolTip("每个连拍序列中最终评选保留的最佳照片张数，其余照片移入审查目录。默认 1 张。")
         grid.addWidget(lbl2, 0, 2)
         self.keep_input = QLineEdit("1")
+        self.keep_input.setToolTip("每个连拍组优选保留的张数（推荐 1~3 张）。")
         grid.addWidget(self.keep_input, 0, 3)
 
         # 第 1 行
-        lbl3 = QLabel("连拍时间阈值(秒):")
+        lbl3 = QLabel("连拍时间间隔(秒):")
         lbl3.setProperty("class", "SecondaryLabel")
+        lbl3.setToolTip("【连拍时间阈值】\n相邻照片在 EXIF 亚秒时间轴上的最大间隔秒数。\n在此时间窗口内连续按下的快门会被判定为同一个连拍序列。\n默认 1.5 秒（推荐 1.0 ~ 3.0 秒）。")
         grid.addWidget(lbl3, 1, 0)
         self.gap_input = QLineEdit("1.5")
+        self.gap_input.setToolTip("【连拍时间阈值】\n相邻照片拍摄间隔小于此值时参与连拍比对，超出此值自动开启新的一组。")
         grid.addWidget(self.gap_input, 1, 1)
 
         max_cpus = os.cpu_count() or 4
         default_workers = str(max(1, round(max_cpus * 0.8)))
-        lbl4 = QLabel(f"处理线程数 (80%):")
+        lbl4 = QLabel(f"并发处理线程数:")
         lbl4.setProperty("class", "SecondaryLabel")
+        lbl4.setToolTip("多线程并发读取 RAW 预览与计算清晰度，默认自动设置为电脑 CPU 核心数的 80%。")
         grid.addWidget(lbl4, 1, 2)
         self.workers_input = QLineEdit(default_workers)
+        self.workers_input.setToolTip(f"并发计算线程数（推荐 2 ~ {max_cpus}，过高可能占用较多内存）。")
         self.workers_input.textChanged.connect(self._validate_workers)
         grid.addWidget(self.workers_input, 1, 3)
 
         # 第 2 行
-        lbl5 = QLabel("dHash 汉明差异:")
+        lbl5 = QLabel("构图容差(汉明距离):")
         lbl5.setProperty("class", "SecondaryLabel")
+        hamming_tip = (
+            "【画面构图相似度容差 / 汉明距离 (dHash)】\n"
+            "用于衡量连续快门之间画面主体与构图的相似程度（取值范围 1 ~ 64，默认 12）：\n"
+            "· 数值越小（如 6~8）：要求画面构图极其严格一致（适合三脚架定点摆拍）。\n"
+            "· 默认值 12：适合绝大多数手持防抖与常规追焦连拍。\n"
+            "· 数值越大（如 16~20）：允许剧烈的大幅度甩镜头与奔跑运动，不易被拆分组。"
+        )
+        lbl5.setToolTip(hamming_tip)
         grid.addWidget(lbl5, 2, 0)
         self.hamming_input = QLineEdit("12")
+        self.hamming_input.setToolTip(hamming_tip)
         grid.addWidget(self.hamming_input, 2, 1)
 
         self.gpu_cb = QCheckBox("启用 显卡/NPU 硬件加速 (CoreML / DirectML)")
+        self.gpu_cb.setToolTip("使用系统 GPU 或 NPU 极速运行 AI 美学模型推理，提升连拍选优速度。")
         self.gpu_cb.setChecked(True)
         grid.addWidget(self.gpu_cb, 2, 2, 1, 2)
 
         p_layout.addLayout(grid)
+
+        # ── 参数常驻通俗说明条 ──
+        tip_frame = QFrame()
+        tip_frame.setStyleSheet(
+            "background-color: #F8F8FA; border: 1px solid #E5E5EA; border-radius: 8px; padding: 6px 10px;"
+        )
+        tip_layout = QVBoxLayout(tip_frame)
+        tip_layout.setContentsMargins(8, 6, 8, 6)
+        tip_layout.setSpacing(5)
+
+        tip_lbl1 = QLabel("💡 <b>构图容差 (汉明距离，1~64，默认 12)</b>：衡量连拍中画面构图与机位相似度。定点摆拍建议调小 (6~8)；奔跑追焦/大幅甩镜头建议调大 (16~20)。")
+        tip_lbl1.setStyleSheet("color: #636366; font-size: 12px; line-height: 1.4;")
+        tip_lbl1.setWordWrap(True)
+        tip_layout.addWidget(tip_lbl1)
+
+        tip_lbl2 = QLabel("💡 <b>连拍时间间隔 (默认 1.5s)</b>：相邻快门时间间隔小于此值归为同一连拍组。<b>RAW+JPG 伴生照片</b>将自动绑定为整体同步保留或淘汰。")
+        tip_lbl2.setStyleSheet("color: #636366; font-size: 12px; line-height: 1.4;")
+        tip_lbl2.setWordWrap(True)
+        tip_layout.addWidget(tip_lbl2)
+
+        p_layout.addWidget(tip_frame)
+
         main_layout.addWidget(param_card)
+
 
         # ── 4. 底部执行行 ──
         br_layout = QHBoxLayout()

@@ -83,8 +83,9 @@ class MainAppGUI(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Photo Sort — 智能连拍优选与个人审美系统")
-        self.resize(760, 620)
-        self.setMinimumSize(700, 540)
+        self.resize(840, 640)
+        self.setMinimumSize(760, 560)
+
 
         icon_path = _SRC_DIR / "assets" / "icon.png"
         if icon_path.exists():
