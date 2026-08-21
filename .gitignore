@@ -56,9 +56,12 @@ venv.bak/
 # Model files
 *.pt
 *.onnx
+models/clip-vit-base-patch32/
 
 # Explicitly track our custom trained aesthetic MLP (since it is small)
+!models/aesthetic_mlp.pth
 !aesthetic_mlp.pth
+
 
 # PyInstaller
 *.spec

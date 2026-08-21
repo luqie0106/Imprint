@@ -7,10 +7,17 @@ block_cipher = None
 
 # 收集需要打包的静态资源
 datas = [('src', 'src')]
+if os.path.exists('models/standard_aesthetic_model.onnx'):
+    datas.append(('models/standard_aesthetic_model.onnx', 'models'))
+if os.path.exists('models/custom_aesthetic_model.onnx'):
+    datas.append(('models/custom_aesthetic_model.onnx', 'models'))
+if os.path.exists('models/aesthetic_mlp.pth'):
+    datas.append(('models/aesthetic_mlp.pth', 'models'))
 if os.path.exists('photo_sort_model.onnx'):
     datas.append(('photo_sort_model.onnx', '.'))
 if os.path.exists('aesthetic_mlp.pth'):
     datas.append(('aesthetic_mlp.pth', '.'))
+
 
 a = Analysis(
     ['main.py'],

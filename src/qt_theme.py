@@ -49,9 +49,15 @@ _ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 _CHECK_PATH = (_ASSETS_DIR / "checkmark.png").resolve().as_posix()
 _ARROW_PATH = (_ASSETS_DIR / "chevron_down.png").resolve().as_posix()
+_RADIO_ON_PATH = (_ASSETS_DIR / "radio_checked.png").resolve().as_posix()
+_RADIO_OFF_PATH = (_ASSETS_DIR / "radio_unchecked.png").resolve().as_posix()
 
 
 def _ensure_icons():
+    from PySide6.QtGui import QGuiApplication
+    if not QGuiApplication.instance():
+        return
+
     if not os.path.exists(_CHECK_PATH):
         pm = QPixmap(32, 32)
         pm.fill(Qt.transparent)
@@ -75,6 +81,33 @@ def _ensure_icons():
         p.drawLine(16, 20, 24, 12)
         p.end()
         pm.save(_ARROW_PATH)
+
+    if not os.path.exists(_RADIO_ON_PATH):
+        pm = QPixmap(36, 36)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor("#0071E3"))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(2, 2, 32, 32)
+        p.setBrush(QColor("#FFFFFF"))
+        p.drawEllipse(11, 11, 14, 14)
+        p.end()
+        pm.save(_RADIO_ON_PATH)
+
+    if not os.path.exists(_RADIO_OFF_PATH):
+        pm = QPixmap(36, 36)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor("#FFFFFF"))
+        pen = QPen(QColor("#D1D1D6"), 2.5, Qt.SolidLine)
+        p.setPen(pen)
+        p.drawEllipse(3, 3, 30, 30)
+        p.end()
+        pm.save(_RADIO_OFF_PATH)
+
+
 
 
 try:
@@ -193,6 +226,23 @@ QCheckBox::indicator:checked {{
     background-color: {ACCENT};
     border-color: {ACCENT};
     image: url('{_CHECK_PATH}');
+}}
+
+/* ── 现代单选框 ── */
+QRadioButton {{
+    color: {TEXT};
+    font-size: 13px;
+    spacing: 10px;
+}}
+QRadioButton::indicator {{
+    width: 18px;
+    height: 18px;
+    image: url('{_RADIO_OFF_PATH}');
+    background: transparent;
+    border: none;
+}}
+QRadioButton::indicator:checked {{
+    image: url('{_RADIO_ON_PATH}');
 }}
 
 /* ── 统一交互按钮规范 (必须声明显式 border 才能激活 Qt border-radius) ── */

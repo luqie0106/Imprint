@@ -23,9 +23,23 @@ else:
 
 MODELS_DIR = PROJECT_ROOT / "models"
 CLIP_MODEL_DIR = MODELS_DIR / "clip-vit-base-patch32"
-MLP_WEIGHTS_PATH = PROJECT_ROOT / "aesthetic_mlp.pth"
-ONNX_MODEL_PATH = PROJECT_ROOT / "photo_sort_model.onnx"
-ONNX_BUNDLE_PATH = BUNDLE_ROOT / "photo_sort_model.onnx"
+
+# 1. 官方标准通用美学模型 (LAION-Aesthetics 25万+ 摄影全品类打分)
+STANDARD_ONNX_PATH = MODELS_DIR / "standard_aesthetic_model.onnx"
+STANDARD_ONNX_BUNDLE_PATH = BUNDLE_ROOT / "models" / "standard_aesthetic_model.onnx"
+STANDARD_ONNX_ROOT_BUNDLE_PATH = BUNDLE_ROOT / "standard_aesthetic_model.onnx"
+
+# 2. 个人专属训练模型 (在【偏好训练】微调熔铸生成)
+CUSTOM_ONNX_PATH = MODELS_DIR / "custom_aesthetic_model.onnx"
+CUSTOM_ONNX_LEGACY_PATH = PROJECT_ROOT / "photo_sort_model.onnx"
+CUSTOM_ONNX_BUNDLE_PATH = BUNDLE_ROOT / "photo_sort_model.onnx"
+
+# 3. 个人训练 PyTorch 权重
+MLP_WEIGHTS_PATH = MODELS_DIR / "aesthetic_mlp.pth"
+MLP_WEIGHTS_LEGACY_PATH = PROJECT_ROOT / "aesthetic_mlp.pth"
+
+# 4. 本地配置持久化路径
+CONFIG_FILE_PATH = PROJECT_ROOT / "config.json"
 
 # HuggingFace 默认系统缓存路径
 HF_HUB_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub" / "models--openai--clip-vit-base-patch32"
@@ -53,11 +67,92 @@ class ModelStatus:
     clip_ready: bool
     clip_location: str  # "local", "hf_cache", "none"
     clip_path: str
+    standard_onnx_ready: bool
+    standard_onnx_path: str
+    standard_onnx_size_mb: float
+    custom_onnx_ready: bool
+    custom_onnx_path: str
+    custom_onnx_size_mb: float
     mlp_ready: bool
     mlp_path: str
-    onnx_ready: bool
-    onnx_path: str
+    active_mode: str  # "standard" | "custom"
+    active_onnx_path: str
     is_fully_ready: bool
+
+
+def get_active_model_mode() -> str:
+    """读取用户选择的激活模型模式：'standard' (官方标准) 或 'custom' (个人专属)。"""
+    import json
+    if CONFIG_FILE_PATH.exists():
+        try:
+            with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                mode = data.get("aesthetic_model_mode", "standard")
+                if mode in ("standard", "custom"):
+                    return mode
+        except Exception:
+            pass
+    return "standard"
+
+
+def set_active_model_mode(mode: str) -> None:
+    """持久化保存用户选择的激活模型模式。"""
+    import json
+    if mode not in ("standard", "custom"):
+        mode = "standard"
+    data = {}
+    if CONFIG_FILE_PATH.exists():
+        try:
+            with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    data["aesthetic_model_mode"] = mode
+    try:
+        with open(CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def get_resolved_standard_onnx_path() -> Path | None:
+    """寻找可用的官方标准通用 ONNX 模型路径。"""
+    for p in [STANDARD_ONNX_PATH, STANDARD_ONNX_BUNDLE_PATH, STANDARD_ONNX_ROOT_BUNDLE_PATH]:
+        if p.exists() and p.stat().st_size > 100 * 1024 * 1024:
+            return p
+    return None
+
+
+def get_resolved_custom_onnx_path() -> Path | None:
+    """寻找可用的个人专属训练 ONNX 模型路径。"""
+    for p in [CUSTOM_ONNX_PATH, CUSTOM_ONNX_LEGACY_PATH, CUSTOM_ONNX_BUNDLE_PATH]:
+        if p.exists() and p.stat().st_size > 100 * 1024 * 1024:
+            return p
+    return None
+
+
+def get_resolved_mlp_path() -> Path | None:
+    """寻找可用的个人训练 PyTorch 权重文件。"""
+    for p in [MLP_WEIGHTS_PATH, MLP_WEIGHTS_LEGACY_PATH, BUNDLE_ROOT / "models" / "aesthetic_mlp.pth", BUNDLE_ROOT / "aesthetic_mlp.pth"]:
+        if p.exists() and p.stat().st_size > 1000:
+            return p
+    return None
+
+
+def get_active_aesthetic_model_path() -> Path | None:
+    """根据当前配置与文件存在情况，返回最终用于推理的 ONNX 模型路径。"""
+    mode = get_active_model_mode()
+    if mode == "custom":
+        custom_p = get_resolved_custom_onnx_path()
+        if custom_p:
+            return custom_p
+        return get_resolved_standard_onnx_path()
+    else:
+        standard_p = get_resolved_standard_onnx_path()
+        if standard_p:
+            return standard_p
+        return get_resolved_custom_onnx_path()
+
 
 
 def find_hf_cache_files() -> dict[str, Path]:
@@ -160,7 +255,7 @@ def import_from_hf_cache(progress_callback: Callable[[str, float], None] | None 
 
 
 def check_all_models() -> ModelStatus:
-    """全面检查所有模型状态。"""
+    """全面检查所有模型状态（标准通用模型与个人专属模型）。"""
     is_local = is_clip_model_downloaded()
     is_cached = is_clip_in_hf_cache()
 
@@ -172,26 +267,45 @@ def check_all_models() -> ModelStatus:
         clip_loc = "none"
 
     clip_ok = (clip_loc != "none")
-    has_local_mlp = MLP_WEIGHTS_PATH.exists() and MLP_WEIGHTS_PATH.stat().st_size > 1000
-    has_bundle_mlp = (BUNDLE_ROOT / "aesthetic_mlp.pth").exists() and (BUNDLE_ROOT / "aesthetic_mlp.pth").stat().st_size > 1000
-    mlp_ok = has_local_mlp or has_bundle_mlp
-    actual_mlp_path = MLP_WEIGHTS_PATH if has_local_mlp else (BUNDLE_ROOT / "aesthetic_mlp.pth")
 
-    has_local_onnx = ONNX_MODEL_PATH.exists() and ONNX_MODEL_PATH.stat().st_size > 100 * 1024 * 1024
-    has_bundle_onnx = ONNX_BUNDLE_PATH.exists() and ONNX_BUNDLE_PATH.stat().st_size > 100 * 1024 * 1024
-    onnx_ok = has_local_onnx or has_bundle_onnx
-    actual_onnx_path = ONNX_MODEL_PATH if has_local_onnx else ONNX_BUNDLE_PATH
+    # 1. 官方标准模型检测
+    std_p = get_resolved_standard_onnx_path()
+    std_ok = (std_p is not None)
+    std_size = (std_p.stat().st_size / (1024 * 1024)) if std_ok else 0.0
+
+    # 2. 个人专属模型检测
+    custom_p = get_resolved_custom_onnx_path()
+    custom_ok = (custom_p is not None)
+    custom_size = (custom_p.stat().st_size / (1024 * 1024)) if custom_ok else 0.0
+
+    # 3. 个人训练 PyTorch 权重检测
+    mlp_p = get_resolved_mlp_path()
+    mlp_ok = (mlp_p is not None)
+
+    # 4. 当前激活模式与最终模型
+    active_mode = get_active_model_mode()
+    active_onnx = get_active_aesthetic_model_path()
+    active_path_str = str(active_onnx) if active_onnx else ""
+
+    is_ready = bool(std_ok or custom_ok or (clip_ok and mlp_ok))
 
     return ModelStatus(
         clip_ready=clip_ok,
         clip_location=clip_loc,
         clip_path=str(CLIP_MODEL_DIR if is_local else CLIP_REPO_ID),
+        standard_onnx_ready=std_ok,
+        standard_onnx_path=str(std_p) if std_p else str(STANDARD_ONNX_PATH),
+        standard_onnx_size_mb=std_size,
+        custom_onnx_ready=custom_ok,
+        custom_onnx_path=str(custom_p) if custom_p else str(CUSTOM_ONNX_PATH),
+        custom_onnx_size_mb=custom_size,
         mlp_ready=mlp_ok,
-        mlp_path=str(actual_mlp_path),
-        onnx_ready=onnx_ok,
-        onnx_path=str(actual_onnx_path),
-        is_fully_ready=(onnx_ok or (clip_ok and mlp_ok)),
+        mlp_path=str(mlp_p) if mlp_p else str(MLP_WEIGHTS_PATH),
+        active_mode=active_mode,
+        active_onnx_path=active_path_str,
+        is_fully_ready=is_ready,
     )
+
 
 
 def download_file_with_progress(

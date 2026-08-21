@@ -15,7 +15,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
-    QHBoxLayout, QLabel, QPushButton, QCheckBox, QProgressBar,
+    QHBoxLayout, QLabel, QPushButton, QCheckBox, QRadioButton, QProgressBar,
     QStackedWidget, QButtonGroup, QMessageBox
 )
 
@@ -31,8 +31,11 @@ from model_manager import (
     MODELS_DIR,
     CLIP_MODEL_DIR,
     MLP_WEIGHTS_PATH,
-    ONNX_MODEL_PATH,
+    STANDARD_ONNX_PATH,
+    CUSTOM_ONNX_PATH,
     check_all_models,
+    get_active_model_mode,
+    set_active_model_mode,
     download_clip_model,
     is_clip_model_downloaded,
     is_clip_in_hf_cache,
@@ -40,6 +43,7 @@ from model_manager import (
 )
 from onnx_exporter import export_to_onnx, TORCH_EXPORT_AVAILABLE
 from qt_theme import APP_STYLE, GREEN_FG, AMBER_FG, TEXT_TERT, TEXT_SEC, FAM_TITLE
+
 
 
 class DownloadWorker(QThread):
@@ -164,103 +168,144 @@ class MainAppGUI(QMainWindow):
     def _build_model_manager_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 10, 0, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 8, 0, 8)
+        layout.setSpacing(12)
 
-        # ── 卡片 1：CLIP 基础视觉模型 ──
+        # ── 卡片 1：美学评分模型选择与管理 ──
         c1 = QFrame()
         c1.setProperty("class", "CardFrame")
         l1 = QVBoxLayout(c1)
-        l1.setContentsMargins(16, 12, 16, 12)
-        l1.setSpacing(8)
+        l1.setContentsMargins(18, 16, 18, 16)
+        l1.setSpacing(10)
 
-        t1 = QLabel("1. 基础视觉主干模型 (CLIP ViT-B/32)")
+        t1 = QLabel("🎯  AI 美学评分模型管理与选择")
         t1.setProperty("class", "CardTitle")
         l1.addWidget(t1)
 
+        desc1 = QLabel("连拍优选将采用当前勾选的模型进行照片画质与美学评估。出厂默认内置官方标准通用模型，开箱即用：")
+        desc1.setProperty("class", "SecondaryLabel")
+        desc1.setWordWrap(True)
+        l1.addWidget(desc1)
+
+        self.model_mode_group = QButtonGroup(self)
+
+        # ── 选项 1：官方标准通用模型 ──
+        self.radio_std = QRadioButton("🌟  官方标准通用模型 (Standard Universal Model)")
+        self.radio_std.setStyleSheet("font-weight: bold; font-size: 13px;")
+        self.model_mode_group.addButton(self.radio_std, 0)
+        l1.addWidget(self.radio_std)
+
+        std_desc = QLabel("• 官方推荐 · 全品类平衡：基于 LAION-Aesthetics / AVA 25万+ 张专业摄影数据集预训练，对人像、风光、街拍、生态等全题材中立公允打分。")
+        std_desc.setStyleSheet("color: #636366; font-size: 12px; margin-left: 26px;")
+        std_desc.setWordWrap(True)
+        l1.addWidget(std_desc)
+
+        self.std_status_label = QLabel("")
+        self.std_status_label.setStyleSheet("font-size: 12px; font-weight: bold; margin-left: 26px; margin-bottom: 6px;")
+        self.std_status_label.setWordWrap(True)
+        l1.addWidget(self.std_status_label)
+
+        # 分割线
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("background-color: #E5E5EA; max-height: 1px; margin: 4px 0px;")
+        l1.addWidget(sep)
+
+        # ── 选项 2：个人专属训练模型 ──
+        self.radio_custom = QRadioButton("🧠  个人专属训练模型 (Custom Trained Model)")
+        self.radio_custom.setStyleSheet("font-weight: bold; font-size: 13px;")
+        self.model_mode_group.addButton(self.radio_custom, 1)
+        l1.addWidget(self.radio_custom)
+
+        custom_desc = QLabel("• 个性化专属 · 审美微调：使用您在【偏好训练】中用自己的照片微调熔铸的模型，完全契合您的个人构图与色彩偏好。")
+        custom_desc.setStyleSheet("color: #636366; font-size: 12px; margin-left: 26px;")
+        custom_desc.setWordWrap(True)
+        l1.addWidget(custom_desc)
+
+        self.custom_status_label = QLabel("")
+        self.custom_status_label.setStyleSheet("font-size: 12px; font-weight: bold; margin-left: 26px;")
+        self.custom_status_label.setWordWrap(True)
+        l1.addWidget(self.custom_status_label)
+
+        r_custom_btns = QHBoxLayout()
+        r_custom_btns.setContentsMargins(26, 4, 0, 0)
+        r_custom_btns.setSpacing(10)
+
+        to_trainer_btn = QPushButton("🎯  前往偏好训练")
+        to_trainer_btn.setProperty("class", "SecondaryBtn")
+        to_trainer_btn.clicked.connect(lambda: self._switch_tab(1))
+        r_custom_btns.addWidget(to_trainer_btn)
+
+        self.export_onnx_btn = QPushButton("⚡  从当前权重重新熔铸 ONNX")
+        self.export_onnx_btn.setProperty("class", "PrimaryBtn")
+        self.export_onnx_btn.clicked.connect(self._on_manual_export_onnx)
+        r_custom_btns.addWidget(self.export_onnx_btn)
+        r_custom_btns.addStretch()
+        l1.addLayout(r_custom_btns)
+
+        self.radio_std.toggled.connect(self._on_model_mode_toggled)
+        self.radio_custom.toggled.connect(self._on_model_mode_toggled)
+
+        layout.addWidget(c1)
+
+        # ── 卡片 2：CLIP 基础视觉底座 ──
+        c2 = QFrame()
+        c2.setProperty("class", "CardFrame")
+        l2 = QVBoxLayout(c2)
+        l2.setContentsMargins(18, 16, 18, 16)
+        l2.setSpacing(10)
+
+        t2 = QLabel("📦  基础视觉主干底座 (CLIP ViT-B/32)")
+        t2.setProperty("class", "CardTitle")
+        l2.addWidget(t2)
+
+        desc2 = QLabel("用于提取照片的多维视觉特征。训练个人模型时需要此底座支持；标准通用 ONNX 模型已内置此特征提取能力。")
+        desc2.setProperty("class", "SecondaryLabel")
+        desc2.setWordWrap(True)
+        l2.addWidget(desc2)
+
         self.clip_status_label = QLabel("")
         self.clip_status_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        l1.addWidget(self.clip_status_label)
+        self.clip_status_label.setWordWrap(True)
+        l2.addWidget(self.clip_status_label)
 
-        r1 = QHBoxLayout()
-        r1.setSpacing(12)
+        r2 = QHBoxLayout()
+        r2.setSpacing(12)
         self.dl_clip_btn = QPushButton("⬇️  下载/补全到本地")
-        self.dl_clip_btn.setProperty("class", "PrimaryBtn")
+        self.dl_clip_btn.setProperty("class", "SecondaryBtn")
         self.dl_clip_btn.clicked.connect(self._start_download_clip)
-        r1.addWidget(self.dl_clip_btn)
+        r2.addWidget(self.dl_clip_btn)
 
         self.use_mirror_cb = QCheckBox("使用国内加速镜像 (hf-mirror.com)")
         self.use_mirror_cb.setChecked(True)
-        r1.addWidget(self.use_mirror_cb)
-        r1.addStretch()
-        l1.addLayout(r1)
+        r2.addWidget(self.use_mirror_cb)
+        r2.addStretch()
+        l2.addLayout(r2)
 
         self.dl_progress = QProgressBar()
         self.dl_progress.setRange(0, 100)
         self.dl_progress.setValue(0)
         self.dl_progress.setVisible(False)
-        l1.addWidget(self.dl_progress)
+        l2.addWidget(self.dl_progress)
 
         self.dl_status_lbl = QLabel("")
         self.dl_status_lbl.setProperty("class", "SecondaryLabel")
         self.dl_status_lbl.setVisible(False)
-        l1.addWidget(self.dl_status_lbl)
-
-        layout.addWidget(c1)
-
-        # ── 卡片 2：个人偏好 MLP 权重 ──
-        c2 = QFrame()
-        c2.setProperty("class", "CardFrame")
-        l2 = QVBoxLayout(c2)
-        l2.setContentsMargins(16, 12, 16, 12)
-        l2.setSpacing(8)
-
-        t2 = QLabel("2. 个人审美偏好分类头 (aesthetic_mlp.pth)")
-        t2.setProperty("class", "CardTitle")
-        l2.addWidget(t2)
-
-        self.mlp_status_label = QLabel("")
-        self.mlp_status_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        l2.addWidget(self.mlp_status_label)
-
-        r2 = QHBoxLayout()
-        to_trainer_btn = QPushButton("🎯  前往偏好训练")
-        to_trainer_btn.setProperty("class", "SecondaryBtn")
-        to_trainer_btn.clicked.connect(lambda: self._switch_tab(1))
-        r2.addWidget(to_trainer_btn)
-        r2.addStretch()
-        l2.addLayout(r2)
+        l2.addWidget(self.dl_status_lbl)
 
         layout.addWidget(c2)
-
-        # ── 卡片 3：ONNX 极速加速模型 ──
-        c3 = QFrame()
-        c3.setProperty("class", "CardFrame")
-        l3 = QVBoxLayout(c3)
-        l3.setContentsMargins(16, 12, 16, 12)
-        l3.setSpacing(8)
-
-        t3 = QLabel("3. ONNX 端到端融合模型 (photo_sort_model.onnx)")
-        t3.setProperty("class", "CardTitle")
-        l3.addWidget(t3)
-
-        self.onnx_status_label = QLabel("")
-        self.onnx_status_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        l3.addWidget(self.onnx_status_label)
-
-        r3 = QHBoxLayout()
-        self.export_onnx_btn = QPushButton("⚡  从当前权重重新熔铸 ONNX")
-        self.export_onnx_btn.setProperty("class", "PrimaryBtn")
-        self.export_onnx_btn.clicked.connect(self._on_manual_export_onnx)
-        r3.addWidget(self.export_onnx_btn)
-        r3.addStretch()
-        l3.addLayout(r3)
-
-        layout.addWidget(c3)
         layout.addStretch()
 
         self.refresh_model_mgr_ui()
         return widget
+
+
+    def _on_model_mode_toggled(self) -> None:
+        if self.radio_custom.isChecked():
+            set_active_model_mode("custom")
+        else:
+            set_active_model_mode("standard")
+        self._on_model_updated()
 
     def _switch_tab(self, idx: int) -> None:
         self.stack.setCurrentIndex(idx)
@@ -280,7 +325,46 @@ class MainAppGUI(QMainWindow):
     def refresh_model_mgr_ui(self) -> None:
         status = check_all_models()
 
-        # 1. CLIP
+        # 0. 单选状态同步
+        active_mode = get_active_model_mode()
+        if active_mode == "custom":
+            self.radio_custom.blockSignals(True)
+            self.radio_custom.setChecked(True)
+            self.radio_custom.blockSignals(False)
+        else:
+            self.radio_std.blockSignals(True)
+            self.radio_std.setChecked(True)
+            self.radio_std.blockSignals(False)
+
+        # 1. 官方标准模型状态
+        if status.standard_onnx_ready:
+            p = Path(status.standard_onnx_path)
+            self.std_status_label.setText(f"🟢 状态：已就绪 (文件: {p.name}, 大小: {status.standard_onnx_size_mb:.1f} MB · ONNX 极速加速)")
+            self.std_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold; margin-left: 24px;")
+        else:
+            self.std_status_label.setText("⚪ 状态：未找到标准通用模型文件")
+            self.std_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold; margin-left: 24px;")
+
+        # 2. 个人专属模型状态
+        if status.custom_onnx_ready:
+            p = Path(status.custom_onnx_path)
+            self.custom_status_label.setText(f"🟢 状态：已就绪 (文件: {p.name}, 大小: {status.custom_onnx_size_mb:.1f} MB · ONNX 极速加速)")
+            self.custom_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold; margin-left: 24px;")
+            self.export_onnx_btn.setText("⚡  重新熔铸 ONNX")
+            self.export_onnx_btn.setEnabled(True)
+        elif status.mlp_ready:
+            p = Path(status.mlp_path)
+            size_kb = p.stat().st_size / 1024 if p.exists() else 0
+            self.custom_status_label.setText(f"🟡 状态：已有权重未熔铸 (文件: {p.name}, {size_kb:.1f} KB，建议点击下方按钮一键熔铸 ONNX)")
+            self.custom_status_label.setStyleSheet(f"color: {AMBER_FG}; font-weight: bold; margin-left: 24px;")
+            self.export_onnx_btn.setText("⚡  一键熔铸为 ONNX 模型")
+            self.export_onnx_btn.setEnabled(True)
+        else:
+            self.custom_status_label.setText("⚪ 状态：未训练 (暂无个性化模型，可前往“偏好训练”导入照片训练)")
+            self.custom_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold; margin-left: 24px;")
+            self.export_onnx_btn.setEnabled(False)
+
+        # 3. CLIP 底座状态
         if status.clip_location == "local":
             size_mb = sum(f.stat().st_size for f in CLIP_MODEL_DIR.glob("**/*") if f.is_file()) / (1024 * 1024)
             self.clip_status_label.setText(f"✅ 已就绪 (项目本地: models/clip-vit-base-patch32, 共 {size_mb:.1f} MB)")
@@ -291,40 +375,12 @@ class MainAppGUI(QMainWindow):
             self.clip_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
             self.dl_clip_btn.setText("📥  秒级同步至项目 models/ 目录")
         else:
-            self.clip_status_label.setText("❌ 未下载 (训练或无 ONNX 时将自动下载)")
-            self.clip_status_label.setStyleSheet("color: #DC2626; font-weight: bold;")
+            self.clip_status_label.setText("⚪ 未下载 (训练时将自动下载)")
+            self.clip_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold;")
             self.dl_clip_btn.setText("⬇️  一键下载至本地 models/ 目录")
 
-        # 2. MLP
-        if status.mlp_ready:
-            p = Path(status.mlp_path)
-            size_kb = p.stat().st_size / 1024 if p.exists() else 0
-            self.mlp_status_label.setText(f"✅ 已就绪 (文件: {p.name}, 大小: {size_kb:.1f} KB)")
-            self.mlp_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
-        else:
-            self.mlp_status_label.setText("⚪ 未训练 (暂无个性化权重，可在“偏好训练”中导入照片训练)")
-            self.mlp_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold;")
-
-        # 3. ONNX
-        if status.onnx_ready:
-            p = Path(status.onnx_path)
-            size_mb = p.stat().st_size / (1024 * 1024) if p.exists() else 0
-            self.onnx_status_label.setText(f"✅ 已就绪 (文件: {p.name}, 大小: {size_mb:.1f} MB, 支持极速硬件加速)")
-            self.onnx_status_label.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
-            self.export_onnx_btn.setText("⚡  重新熔铸 ONNX")
-            self.export_onnx_btn.setEnabled(True)
-        else:
-            if status.mlp_ready:
-                self.onnx_status_label.setText("🟡 待熔铸 (已检测到 MLP 权重，点击下方按钮即可一键熔铸 ONNX)")
-                self.onnx_status_label.setStyleSheet(f"color: {AMBER_FG}; font-weight: bold;")
-                self.export_onnx_btn.setText("⚡  一键熔铸为 ONNX 模型")
-                self.export_onnx_btn.setEnabled(True)
-            else:
-                self.onnx_status_label.setText("⚪ 未生成 (请先在“偏好训练”中完成审美微调)")
-                self.onnx_status_label.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold;")
-                self.export_onnx_btn.setEnabled(False)
-
     def _check_startup_models(self) -> None:
+
         status = check_all_models()
         if not status.clip_ready and not status.onnx_ready:
             ret = QMessageBox.question(

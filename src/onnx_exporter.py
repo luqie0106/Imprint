@@ -71,9 +71,12 @@ def export_to_onnx(
 
     root = project_root or PROJECT_ROOT
     if mlp_path is None:
-        mlp_path = root / "aesthetic_mlp.pth"
+        if (root / "models" / "aesthetic_mlp.pth").exists():
+            mlp_path = root / "models" / "aesthetic_mlp.pth"
+        else:
+            mlp_path = root / "aesthetic_mlp.pth"
     if onnx_path is None:
-        onnx_path = root / "photo_sort_model.onnx"
+        onnx_path = root / "models" / "custom_aesthetic_model.onnx"
 
     if not mlp_path.exists():
         raise FileNotFoundError(f"找不到 MLP 权重文件: {mlp_path}，请先训练模型。")
@@ -108,6 +111,7 @@ def export_to_onnx(
     dummy_input = torch.randn(1, 3, 224, 224)
 
     _notify(f"正在导出 ONNX 模型至: {onnx_path.name} ...")
+    onnx_path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         combined,
         (dummy_input,),
@@ -121,7 +125,15 @@ def export_to_onnx(
             "pixel_values": {0: "batch_size"},
             "like_prob": {0: "batch_size"},
         },
+        dynamo=False,
     )
+    # 同步生成根目录的兼容符号/副本
+    legacy_path = root / "photo_sort_model.onnx"
+    try:
+        import shutil
+        shutil.copy2(str(onnx_path), str(legacy_path))
+    except Exception:
+        pass
 
-    _notify(f"✅ ONNX 熔铸成功！模型已保存至: {onnx_path}")
+    _notify(f"✅ ONNX 模型导出成功: {onnx_path}")
     return onnx_path

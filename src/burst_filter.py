@@ -404,24 +404,51 @@ class AestheticScorer:
     def __init__(self, project_root: Path, use_gpu: bool = True):
         self.available = False
         self.engine = None  # "onnx" or "torch"
+        self.model_name = "未加载"
         self._infer_lock = threading.Lock()
 
-        if getattr(sys, 'frozen', False):
-            bundle_root = Path(sys._MEIPASS)
-            exe_root = Path(sys.executable).parent
-        else:
-            bundle_root = project_root
-            exe_root = project_root
+        # 尝试从 model_manager 解析当前激活的模型
+        onnx_path = None
+        mlp_path = None
+        try:
+            from model_manager import get_active_aesthetic_model_path, get_resolved_mlp_path, get_active_model_mode
+            onnx_path = get_active_aesthetic_model_path()
+            mlp_path = get_resolved_mlp_path()
+            active_mode = get_active_model_mode()
+        except Exception:
+            active_mode = "standard"
 
-        if (exe_root / "photo_sort_model.onnx").exists():
-            onnx_path = exe_root / "photo_sort_model.onnx"
-        else:
-            onnx_path = bundle_root / "photo_sort_model.onnx"
+        if onnx_path is None:
+            if getattr(sys, 'frozen', False):
+                bundle_root = Path(sys._MEIPASS)
+                exe_root = Path(sys.executable).parent
+            else:
+                bundle_root = project_root
+                exe_root = project_root
 
-        mlp_path = exe_root / "aesthetic_mlp.pth"
+            for candidate in [
+                exe_root / "models" / "standard_aesthetic_model.onnx",
+                exe_root / "models" / "custom_aesthetic_model.onnx",
+                exe_root / "photo_sort_model.onnx",
+                bundle_root / "models" / "standard_aesthetic_model.onnx",
+                bundle_root / "standard_aesthetic_model.onnx",
+                bundle_root / "photo_sort_model.onnx",
+            ]:
+                if candidate.exists() and candidate.stat().st_size > 100 * 1024 * 1024:
+                    onnx_path = candidate
+                    break
+
+        if mlp_path is None:
+            for candidate in [
+                project_root / "models" / "aesthetic_mlp.pth",
+                project_root / "aesthetic_mlp.pth",
+            ]:
+                if candidate.exists() and candidate.stat().st_size > 1000:
+                    mlp_path = candidate
+                    break
 
         # 1. 尝试初始化 ONNX 引擎
-        if ONNX_AVAILABLE and onnx_path.exists():
+        if ONNX_AVAILABLE and onnx_path and onnx_path.exists():
             try:
                 # 动态探寻本地支持的硬件加速器
                 if use_gpu:
@@ -433,13 +460,14 @@ class AestheticScorer:
                 
                 self._session = ort.InferenceSession(str(onnx_path), providers=active_providers)
                 self.engine = "onnx"
+                self.model_name = "官方标准通用模型" if "standard" in onnx_path.name else "个人专属训练模型"
                 self.available = True
                 return
             except Exception as exc:
                 warnings.warn(f"无法加载 ONNX 模型，尝试降级: {exc}")
 
         # 2. 尝试回退到 PyTorch 引擎
-        if TORCH_AVAILABLE and CLIP_AVAILABLE and mlp_path.exists():
+        if TORCH_AVAILABLE and CLIP_AVAILABLE and mlp_path and mlp_path.exists():
             try:
                 if use_gpu:
                     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -496,7 +524,7 @@ class AestheticScorer:
         return np.expand_dims(img_transposed, axis=0)
 
     def score(self, img_rgb: np.ndarray) -> float:
-        """返回 0.0~1.0 的 Like 概率，不可用时返回 1.0（全部通过）。"""
+        """返回 0.0~1.0 的美学/偏好概率，不可用时返回 1.0（全部通过）。"""
         if not self.available:
             return 1.0
 
@@ -506,7 +534,8 @@ class AestheticScorer:
                 ort_inputs = {self._session.get_inputs()[0].name: inputs}
                 with self._infer_lock:
                     probs = self._session.run(None, ort_inputs)[0]
-                return float(probs[0])
+                val = float(np.squeeze(probs))
+                return float(np.clip(val, 0.0, 1.0))
             except Exception:
                 return 1.0
         
@@ -528,9 +557,10 @@ class AestheticScorer:
                         features = features / features.norm(dim=-1, keepdim=True)
                         logits = self._mlp(features)
                         prob = torch.softmax(logits, dim=1)[0][1].item()
-                return prob
+                return float(np.clip(prob, 0.0, 1.0))
             except Exception:
                 return 1.0
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════

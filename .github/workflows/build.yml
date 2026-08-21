@@ -35,9 +35,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch transformers onnx onnxscript
 
-      - name: Export ONNX Model
+      - name: Export ONNX Models
         run: |
-          python scripts/export_onnx.py
+          python scripts/generate_standard_onnx.py
+          if [ -f "models/aesthetic_mlp.pth" ] || [ -f "aesthetic_mlp.pth" ]; then python scripts/export_onnx.py || true; fi
+
 
       - name: Clean Heavy Dependencies
         run: |

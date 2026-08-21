@@ -258,9 +258,17 @@ class BurstFilterGUI(QWidget):
 
     def refresh_model_status(self) -> None:
         status = check_all_models()
-        if status.onnx_ready:
+        if status.active_mode == "custom" and status.custom_onnx_ready:
             self.model_badge_icon.setText("🟢")
-            self.model_status_lbl.setText("AI 美学引擎：ONNX 极速硬件加速已就绪 (已启用)")
+            self.model_status_lbl.setText("AI 美学引擎：个人专属训练模型 (ONNX 硬件加速已启用)")
+            self.model_status_lbl.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
+        elif status.standard_onnx_ready:
+            self.model_badge_icon.setText("🟢")
+            self.model_status_lbl.setText("AI 美学引擎：官方标准通用模型 (ONNX 硬件加速已启用)")
+            self.model_status_lbl.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
+        elif status.custom_onnx_ready:
+            self.model_badge_icon.setText("🟢")
+            self.model_status_lbl.setText("AI 美学引擎：个人专属训练模型 (ONNX 硬件加速已启用)")
             self.model_status_lbl.setStyleSheet(f"color: {GREEN_FG}; font-weight: bold;")
         elif status.mlp_ready:
             self.model_badge_icon.setText("🟡")
@@ -268,8 +276,9 @@ class BurstFilterGUI(QWidget):
             self.model_status_lbl.setStyleSheet(f"color: {AMBER_FG}; font-weight: bold;")
         else:
             self.model_badge_icon.setText("⚪")
-            self.model_status_lbl.setText("AI 美学引擎：未加载模型 (当前降级为纯 OpenCV 锐度 + 曝光过滤)")
+            self.model_status_lbl.setText("AI 美学引擎：未加载模型 (当前降级为纯物理规则对焦清晰度模式)")
             self.model_status_lbl.setStyleSheet(f"color: {TEXT_TERT}; font-weight: bold;")
+
 
     def _pick_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "选择 RAW 照片文件夹")

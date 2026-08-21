@@ -334,9 +334,11 @@ for ep in range(epochs):
         correct += (pred == labels).sum().item()
     print(f"  Epoch [{{ep+1:02d}}/{{epochs:02d}}] Loss: {{running_loss/max(1, len(dataloader)):.4f}} Acc: {{100*correct/max(1, total):.1f}}%", flush=True)
 
-save_path = Path(r"{PROJECT_ROOT}") / "aesthetic_mlp.pth"
+save_dir = Path(r"{PROJECT_ROOT}") / "models"
+save_dir.mkdir(parents=True, exist_ok=True)
+save_path = save_dir / "aesthetic_mlp.pth"
 torch.save(mlp.state_dict(), save_path)
-print(f"💾 权重已保存: {{save_path.name}}", flush=True)
+print(f"💾 权重已保存至 models/: {{save_path.name}}", flush=True)
 
 if {self.auto_onnx}:
     print("⚡ 正在导出 ONNX 极速加速模型...", flush=True)
@@ -351,9 +353,16 @@ if {self.auto_onnx}:
             feat = feat / feat.norm(dim=-1, keepdim=True)
             return torch.softmax(self.mlp(feat), dim=1)[:, 1]
     comb = Combined(clip_model, mlp).eval()
-    onnx_path = Path(r"{PROJECT_ROOT}") / "photo_sort_model.onnx"
-    torch.onnx.export(comb, (torch.randn(1, 3, 224, 224).to(device),), str(onnx_path), opset_version=14, input_names=["pixel_values"], output_names=["like_prob"], dynamic_axes={{"pixel_values": {{0: "batch_size"}}, "like_prob": {{0: "batch_size"}}}})
-    print("🎉 ONNX 模型生成完毕！", flush=True)
+    onnx_path = save_dir / "custom_aesthetic_model.onnx"
+    torch.onnx.export(comb, (torch.randn(1, 3, 224, 224).to(device),), str(onnx_path), opset_version=14, input_names=["pixel_values"], output_names=["like_prob"], dynamic_axes={{"pixel_values": {{0: "batch_size"}}, "like_prob": {{0: "batch_size"}}}}, dynamo=False)
+    legacy_onnx = Path(r"{PROJECT_ROOT}") / "photo_sort_model.onnx"
+    try:
+        import shutil
+        shutil.copy2(str(onnx_path), str(legacy_onnx))
+    except Exception:
+        pass
+    print("🎉 ONNX 模型生成完毕！已保存至 models/custom_aesthetic_model.onnx", flush=True)
+
 """
             proc = subprocess.Popen(
                 [self.py_bin, "-c", script],
