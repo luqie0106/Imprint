@@ -147,8 +147,9 @@ app = BUNDLE(
         'CFBundleDisplayName': 'PhotoSort',
         'CFBundleName': 'PhotoSort',
         'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '0.3.0',
+        'CFBundleShortVersionString': '1.0.8',
         'NSHighResolutionCapable': 'True',
     },
+
 )
 

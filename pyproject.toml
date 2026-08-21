@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photo-sort"
-version = "0.3.0"
+version = "1.0.8"
 description = "RAW / JPEG / JXL / HIF 智能连拍优选与个人审美微调系统"
+
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [

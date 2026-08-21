@@ -18,6 +18,10 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     
+    defaults:
+      run:
+        shell: bash
+
     env:
       PYTHONIOENCODING: utf-8
       
@@ -38,8 +42,7 @@ jobs:
       - name: Export ONNX Models
         run: |
           python scripts/generate_standard_onnx.py
-          if [ -f "models/aesthetic_mlp.pth" ] || [ -f "aesthetic_mlp.pth" ]; then python scripts/export_onnx.py || true; fi
-
+          python -c "import os, sys, subprocess; subprocess.run([sys.executable, 'scripts/export_onnx.py']) if os.path.exists('models/aesthetic_mlp.pth') or os.path.exists('aesthetic_mlp.pth') else None" || true
 
       - name: Clean Heavy Dependencies
         run: |
@@ -72,11 +75,13 @@ jobs:
       # --- Windows 打包步骤 ---
       - name: Create Portable ZIP (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           Compress-Archive -Path dist\PhotoSort -DestinationPath dist\PhotoSort-Windows-Portable.zip -Force
 
       - name: Create Windows Setup Installer (Inno Setup)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           choco install innosetup --no-progress -y
           $version = "${{ github.ref_name }}".TrimStart('v')
@@ -88,6 +93,7 @@ jobs:
             $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
           }
           & $iscc "/DMyAppVersion=$version" installer.iss
+
 
       # --- 上传构建产物 (便于 workflow_dispatch 手动运行时下载) ---
       - name: Upload Artifacts

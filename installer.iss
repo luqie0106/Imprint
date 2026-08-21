@@ -7,8 +7,9 @@
 #define MyAppExeName "PhotoSort.exe"
 
 #ifndef MyAppVersion
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "1.0.8"
 #endif
+
 
 [Setup]
 ; AppId uniquely identifies this application
