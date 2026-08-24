@@ -3,7 +3,7 @@ name = "tauri-frontend"
 version = "2.0.0"
 description = "Photo Sort Tauri 2.0 App"
 authors = ["Luqie"]
-edition = "2026"
+edition = "2021"
 
 [lib]
 name = "tauri_frontend_lib"

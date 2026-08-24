@@ -22,6 +22,10 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    defaults:
+      run:
+        shell: bash
+
     env:
       PYTHONIOENCODING: utf-8
 
@@ -50,7 +54,6 @@ jobs:
         run: python scripts/generate_standard_onnx.py
 
       - name: Remove PyTorch to keep sidecar lean
-        shell: bash
         run: |
           pip uninstall -y torch transformers onnxscript || true
           pip cache purge || true
@@ -59,10 +62,7 @@ jobs:
         run: pip install -r requirements-build.txt
 
       - name: Build Python sidecar (PyInstaller)
-        run: |
-          pyinstaller app_api.spec \
-            --distpath tauri-frontend/dist-python \
-            --noconfirm
+        run: pyinstaller app_api.spec --distpath tauri-frontend/dist-python --noconfirm
 
       # ── Node.js ───────────────────────────────────────────────────────
       - name: Set up Node.js 20
