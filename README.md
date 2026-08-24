@@ -140,6 +140,54 @@ pyinstaller photo_sort.spec
 | **Windows** | `PhotoSort-Windows-Installer.exe` | **向导安装包** | 推荐使用，提供中英双语向导、自定义路径、开始菜单与桌面快捷方式、控制面板卸载 |
 | **Windows** | `PhotoSort-Windows-Portable.zip` | **绿色免安装版** | 解压即用，适合放在 U 盘或临时目录运行 |
 
+---
+
+## ❓ 常见问题与安全/安装提示 (FAQ)
+
+### Q: 如何解除系统拦截并正常安装使用？
+
+#### 🪟 Windows 用户
+1. **浏览器拦截**：点击下载栏提示的「保留」或「仍要下载」。
+2. **SmartScreen 拦截提示“Windows 已保护你的电脑”**：
+   - 点击提示窗口中的 **「更多信息」**。
+   - 点击右下角的 **「仍要运行」** 即可正常进入安装向导或打开软件。
+
+#### 🍎 macOS 用户
+1. **提示“无法打开，因为无法验证开发者”或“来自身份不明的开发者”**：
+   - 按住键盘 `Control` 键并右键点击应用图标，选择 **「打开」**，在弹出的确认窗口中点击 **「打开」**。
+   - 或打开 **「系统设置」 $\rightarrow$ 「隐私与安全性」**，下滑至安全性区域，点击 **「仍要打开」**。
+2. **提示“应用已损坏，移到废纸篓”**（因 macOS 对下载文件的隔离属性导致）：
+   - 打开终端（Terminal），执行以下命令解除隔离：
+     ```bash
+     sudo xattr -r -d com.apple.quarantine /Applications/PhotoSort.app
+     # 或
+     xattr -cr /Applications/PhotoSort.app
+     ```
+
+---
+
+### Q: 如何验证下载文件的完整性？
+每次发布新版本时，GitHub Actions 均在公开透明的隔离容器中自动编译并生成 Release。您可以在 [Releases 页面](https://github.com/luqie0106/photo_sort/releases) 查看对应版本的 SHA256 校验和，并在本地使用以下命令校验：
+- **Windows (PowerShell)**:
+  ```powershell
+  Get-FileHash PhotoSort-Windows-Installer.exe -Algorithm SHA256
+  ```
+- **macOS / Linux**:
+  ```bash
+  shasum -a 256 PhotoSort-macOS-Installer.pkg
+  ```
+
+---
+
+### Q: 仍然担心预编译包的安全性？
+如果您对二进制安装包有所顾虑，推荐直接通过 **Python 源码运行**，环境与代码完全由您自行掌控：
+```bash
+git clone https://github.com/luqie0106/photo_sort.git
+cd photo_sort
+pip install -r requirements.txt
+python main.py
+```
+
 
 ---
 

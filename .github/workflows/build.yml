@@ -95,6 +95,24 @@ jobs:
           & $iscc "/DMyAppVersion=$version" installer.iss
 
 
+      # --- 生成 SHA256 校验和 ---
+      - name: Generate SHA256 Checksums (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          for file in *.dmg *.pkg; do
+            [ -f "$file" ] && shasum -a 256 "$file" > "$file.sha256"
+          done
+
+      - name: Generate SHA256 Checksums (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\*.zip, dist\*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Out-File -FilePath "$($_.FullName).sha256" -Encoding ascii
+          }
+
       # --- 上传构建产物 (便于 workflow_dispatch 手动运行时下载) ---
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -105,6 +123,7 @@ jobs:
             dist/*.pkg
             dist/*.zip
             dist/*.exe
+            dist/*.sha256
           if-no-files-found: warn
 
       # --- 发布 Release (在 Tag push 时触发) ---
@@ -117,6 +136,8 @@ jobs:
             dist/*.pkg
             dist/*.zip
             dist/*.exe
+            dist/*.sha256
           fail_on_unmatched_files: false
           generate_release_notes: true
+
 
