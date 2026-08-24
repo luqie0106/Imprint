@@ -92,13 +92,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── macOS PKG Installer ───────────────────────────────────────────
+      - name: Build macOS PKG Installer
+        if: runner.os == 'macOS'
+        run: |
+          productbuild --component tauri-frontend/src-tauri/target/release/bundle/macos/PhotoSort.app /Applications PhotoSort_2.0.0_macOS_Installer.pkg
+
       # ── Upload Artifacts ──────────────────────────────────────────────
-      - name: Upload macOS DMG
+      - name: Upload macOS Packages
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: PhotoSort-macOS
-          path: tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
+          path: |
+            tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
+            *.pkg
           if-no-files-found: warn
 
       - name: Upload Windows Installers
@@ -118,6 +126,7 @@ jobs:
         with:
           files: |
             tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
+            *.pkg
             tauri-frontend/src-tauri/target/release/bundle/msi/*.msi
             tauri-frontend/src-tauri/target/release/bundle/nsis/*.exe
           fail_on_unmatched_files: false
