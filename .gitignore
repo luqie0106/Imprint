@@ -1,16 +1,41 @@
-# macOS
+# ── macOS ───────────────────────────────────────────────────────────────────────
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
 
-# Byte-compiled / optimized / DLL files
+# ── Windows ─────────────────────────────────────────────────────────────────────
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ── Linux & Editors ─────────────────────────────────────────────────────────────
+*~
+*.swp
+*.swo
+
+# ── Python Byte-compiled & Optimized ────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+*.dylib
+*.dll
 
-# Distribution / packaging
+# ── Distribution & Build Artifacts ─────────────────────────────────────────────
 .Python
 build/
 develop-eggs/
 dist/
+dist-python/*
+!dist-python/.gitkeep
 downloads/
 eggs/
 .eggs/
@@ -26,21 +51,36 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Unit test / coverage reports
+# ── Tauri & Rust Build ─────────────────────────────────────────────────────────
+**/target/
+target/
+**/gen/schemas/
+gen/
+
+# ── Node & Frontend ────────────────────────────────────────────────────────────
+**/node_modules/
+node_modules/
+tauri-frontend/dist/
+tauri-frontend/dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Testing & Linters ──────────────────────────────────────────────────────────
 .pytest_cache/
 .coverage
 .coverage.*
 htmlcov/
 .tox/
 .nox/
-
-# Type checkers / linters
 .mypy_cache/
 .ruff_cache/
 .pyre/
 .pytype/
 
-# Environments
+# ── Virtual Environments ───────────────────────────────────────────────────────
 .env
 .venv
 env/
@@ -49,22 +89,23 @@ ENV/
 env.bak/
 venv.bak/
 
-# IDEs
+# ── IDEs ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 
-# Model files
+# ── Model Large Weights (Ignore large base models) ──────────────────────────────
 *.pt
 *.onnx
 models/clip-vit-base-patch32/
+models/clip-vit-large-patch14/
 
 # Explicitly track our custom trained aesthetic MLP (since it is small)
 !models/aesthetic_mlp.pth
 !aesthetic_mlp.pth
 
-
-# PyInstaller
+# ── PyInstaller ────────────────────────────────────────────────────────────────
 *.spec
 !photo_sort.spec
+!app_api.spec
 
 .reasonix

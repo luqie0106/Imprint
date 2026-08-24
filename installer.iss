@@ -7,7 +7,7 @@
 #define MyAppExeName "PhotoSort.exe"
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.9"
+#define MyAppVersion "2.0.0"
 #endif
 
 
