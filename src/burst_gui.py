@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -43,6 +45,16 @@ class BurstWorker(QThread):
         self.use_gpu = use_gpu
 
     def run(self):
+        self._last_emit_time = 0.0
+        self._throttle_lock = threading.Lock()
+
+        def throttled_progress(msg: str):
+            with self._throttle_lock:
+                now = time.monotonic()
+                if now - self._last_emit_time >= 0.15:
+                    self._last_emit_time = now
+                    self.progress_sig.emit(msg)
+
         try:
             flt = BurstFilter(
                 gap_seconds=self.gap,
@@ -51,11 +63,13 @@ class BurstWorker(QThread):
                 keep_count=self.keep,
                 max_workers=self.workers,
                 use_gpu=self.use_gpu,
-                progress_callback=lambda msg: self.progress_sig.emit(msg),
+                progress_callback=throttled_progress,
             )
             result = flt.run(self.input_dir)
+            self.progress_sig.emit("✅ 处理完成")
             self.done_sig.emit(result)
         except Exception as exc:
+            self.progress_sig.emit(f"❌ 出错：{exc}")
             self.error_sig.emit(str(exc))
 
 

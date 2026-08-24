@@ -883,6 +883,13 @@ class BurstFilter:
         import os
         workers = max(1, self.max_workers)
 
+        # ── 评分阶段并发执行 ──────────────────────────────────────────────
+        # 说明：此处维持 ThreadPoolExecutor 而不采用 ProcessPoolExecutor，原因如下：
+        # 1. self._aesthetic_scorer（包含 ONNX Runtime / PyTorch C++ Session）与 OpenCV
+        #    Cascade 级联分类器均包含底层 C++ 对象指针，无法跨进程 Pickle 序列化；
+        # 2. 在 PyInstaller 打包环境及 macOS spawn 模式下，子进程冷启动与模块重复加载开销巨大；
+        # 3. ONNX Runtime 推理与 OpenCV（Laplacian/Sobel）底层 C++ 函数执行期间已主动释放 Python GIL；
+        # 4. 前端 UI 响应延迟已通过 BurstWorker 层的 150ms 进度信号节流机制彻底消除。
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             for res in executor.map(_evaluate_shot, shots):
                 if isinstance(res, tuple):
