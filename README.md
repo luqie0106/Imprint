@@ -20,27 +20,27 @@
 
 PhotoSort 2.0 采用 **Tauri 2.0 (Rust) + Vue 3 前端 + Python FastAPI Sidecar 后端** 架构：
 
-```
-┌────────────────────────────────────────────────────────┐
-│               Tauri 2.0 Native Window                  │
-│    (macOS Vibrancy 毛玻璃 / Windows 11 Mica 材质)       │
-│                                                        │
-│   ┌────────────────────────────────────────────────┐   │
-│   │        Vue 3 + TailwindCSS 现代交互界面        │   │
-│   └───────────────────────┬────────────────────────┘   │
-│                           │ HTTP REST / SSE 实时日志流 │
-│                           ▼ (127.0.0.1 动态端口)       │
-│   ┌────────────────────────────────────────────────┐   │
-│   │           Python FastAPI Sidecar 引擎           │   │
-│   │     (app_api.py / PyInstaller 独立二进制)       │   │
-│   └───────────────────────┬────────────────────────┘   │
-│                           │                            │
-│                           ▼                            │
-│   ┌────────────────────────────────────────────────┐   │
-│   │       核心算法模块与 ONNX Runtime 硬件加速      │   │
-│   │  (burst_filter / model_manager / onnx_exporter)│   │
-│   └────────────────────────────────────────────────┘   │
-└────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph TauriApp[" Tauri 2.0 原生窗口 (macOS Vibrancy / Windows 11 Mica) "]
+        UI["Vue 3 + TailwindCSS 现代化 Web 交互界面"]
+    end
+
+    subgraph PythonSidecar[" Python FastAPI Sidecar 本地后端进程 "]
+        API["FastAPI 路由与 SSE 实时日志流 (127.0.0.1 动态端口)"]
+        
+        subgraph CoreEngine[" 核心算法与硬件加速引擎 "]
+            Burst["连拍分组与综合选优 (burst_filter)"]
+            ModelMgr["模型下载与状态管理 (model_manager)"]
+            ONNX["PyTorch 权重熔铸与推理加速 (onnx_exporter)"]
+        end
+        
+        API --> Burst
+        API --> ModelMgr
+        API --> ONNX
+    end
+
+    UI <===>|HTTP REST / SSE 事件流| API
 ```
 
 - **轻量原生外壳**：Tauri 2.0 驱动原生窗口，占用内存极低，原生支持 macOS 磨砂效果与 Windows Mica 材质；
