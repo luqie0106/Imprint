@@ -5,19 +5,11 @@ import sys
 
 block_cipher = None
 
-# 收集需要打包的静态资源
+# 收集需要打包的静态资源（默认仅内置官方标准通用模型，避免安装包体积冗余）
 datas = [('src', 'src')]
 for model_rel in [
     'models/standard_aesthetic_model.onnx',
-    'models/standard_aesthetic_l14_model.onnx',
-    'models/custom_aesthetic_model.onnx',
-    'models/custom_aesthetic_l14_model.onnx',
-    'models/aesthetic_mlp.pth',
-    'models/aesthetic_mlp_l14.pth',
     'models/sa_0_4_vit_b_32_linear.pth',
-    'models/sa_0_4_vit_l_14_linear.pth',
-    'photo_sort_model.onnx',
-    'aesthetic_mlp.pth',
 ]:
     if os.path.exists(model_rel):
         dest_folder = 'models' if model_rel.startswith('models') else '.'
@@ -147,7 +139,7 @@ app = BUNDLE(
         'CFBundleDisplayName': 'PhotoSort',
         'CFBundleName': 'PhotoSort',
         'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '1.0.8',
+        'CFBundleShortVersionString': '1.0.9',
         'NSHighResolutionCapable': 'True',
     },
 

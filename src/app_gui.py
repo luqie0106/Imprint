@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import sys
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 from typing import Callable
@@ -16,7 +18,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QCheckBox, QRadioButton, QProgressBar,
-    QStackedWidget, QButtonGroup, QMessageBox, QScrollArea
+    QStackedWidget, QButtonGroup, QMessageBox, QScrollArea, QFileDialog
 )
 
 # ── 确保 src 在 sys.path 上 ───────────────────────────────────────────────────
@@ -28,6 +30,7 @@ from burst_gui import BurstFilterGUI
 from trainer_gui import TrainerGUI
 from model_manager import (
     PROJECT_ROOT,
+    BUNDLE_ROOT,
     MODELS_DIR,
     CLIP_MODEL_DIR,
     CLIP_L14_MODEL_DIR,
@@ -110,10 +113,49 @@ class DownloadL14Worker(QThread):
 class ExportWorker(QThread):
     done_sig = Signal(bool, str)
 
+    def __init__(self, mlp_path: Path | None = None):
+        super().__init__()
+        self.mlp_path = mlp_path
+
     def run(self):
         try:
-            export_to_onnx(project_root=PROJECT_ROOT)
-            self.done_sig.emit(True, "photo_sort_model.onnx 已生成！连拍优选已自动启用极速硬件加速！")
+            if TORCH_EXPORT_AVAILABLE:
+                out = export_to_onnx(project_root=PROJECT_ROOT, mlp_path=self.mlp_path)
+                self.done_sig.emit(True, f"✅ 个人专属 ONNX 模型已成功熔铸生成至：\n{out.name}\n\n连拍优选已自动切换并启用该模型！")
+                return
+
+            from trainer_gui import discover_python_environments, probe_python_environment
+            envs = discover_python_environments()
+            valid_py = None
+            for py in envs:
+                probe = probe_python_environment(py)
+                if not probe.get("missing") and not probe.get("error"):
+                    valid_py = py
+                    break
+
+            if not valid_py:
+                self.done_sig.emit(
+                    False,
+                    "当前应用环境中未检测到 PyTorch，且未找到已安装 torch / transformers 的外部 Python 环境。\n\n"
+                    "请先安装 Python 依赖（pip install torch transformers onnx onnxscript），或在 Conda 环境中运行。",
+                )
+                return
+
+            script = f"""
+import sys
+from pathlib import Path
+root = Path(r"{PROJECT_ROOT}")
+sys.path.insert(0, str(root / "src"))
+from onnx_exporter import export_to_onnx
+mlp_p = Path(r"{self.mlp_path}") if r"{self.mlp_path}" != "None" else None
+export_to_onnx(project_root=root, mlp_path=mlp_p)
+"""
+            res = subprocess.run([valid_py, "-c", script], capture_output=True, text=True, timeout=180)
+            if res.returncode == 0:
+                self.done_sig.emit(True, "✅ 个人专属 ONNX 模型已通过外部 Python 环境成功生成！\n\n连拍优选已自动切换并启用该模型！")
+            else:
+                err = res.stderr.strip() or res.stdout.strip()
+                self.done_sig.emit(False, f"外部环境导出失败:\n{err}")
         except Exception as exc:
             self.done_sig.emit(False, f"ONNX 熔铸失败: {exc}")
 
@@ -300,18 +342,27 @@ class MainAppGUI(QMainWindow):
         r_custom_btns.setContentsMargins(26, 4, 0, 0)
         r_custom_btns.setSpacing(10)
 
+        self.import_pth_btn = QPushButton("📥  导入 .pth 权重文件")
+        self.import_pth_btn.setObjectName("secondaryBtn")
+        self.import_pth_btn.setProperty("class", "SecondaryBtn")
+        self.import_pth_btn.setToolTip("从本地导入您或他人训练好的 PyTorch 权重文件 (.pth)")
+        self.import_pth_btn.clicked.connect(self._on_import_pth)
+        r_custom_btns.addWidget(self.import_pth_btn)
+
+        self.export_onnx_btn = QPushButton("⚡  一键熔铸为 ONNX 模型")
+        self.export_onnx_btn.setObjectName("primaryBtn")
+        self.export_onnx_btn.setProperty("class", "PrimaryBtn")
+        self.export_onnx_btn.setStyleSheet("QPushButton { background-color: #0071E3; color: #FFFFFF; border: 1px solid #0071E3; border-radius: 15px; min-height: 28px; padding: 0 18px; font-weight: bold; } QPushButton:hover { background-color: #0077ED; } QPushButton:disabled { background-color: #D1D1D6; border-color: #D1D1D6; color: #FFFFFF; }")
+        self.export_onnx_btn.setToolTip("将当前导入或训练的 .pth 权重与 CLIP 视觉主干熔铸为单文件 ONNX 硬件加速模型")
+        self.export_onnx_btn.clicked.connect(self._on_manual_export_onnx)
+        r_custom_btns.addWidget(self.export_onnx_btn)
+
         to_trainer_btn = QPushButton("🎯  前往偏好训练")
         to_trainer_btn.setObjectName("secondaryBtn")
         to_trainer_btn.setProperty("class", "SecondaryBtn")
         to_trainer_btn.clicked.connect(lambda: self._switch_tab(1))
         r_custom_btns.addWidget(to_trainer_btn)
 
-        self.export_onnx_btn = QPushButton("⚡  从当前权重重新熔铸 ONNX")
-        self.export_onnx_btn.setObjectName("primaryBtn")
-        self.export_onnx_btn.setProperty("class", "PrimaryBtn")
-        self.export_onnx_btn.setStyleSheet("QPushButton { background-color: #0071E3; color: #FFFFFF; border: 1px solid #0071E3; border-radius: 15px; min-height: 28px; padding: 0 18px; font-weight: bold; } QPushButton:hover { background-color: #0077ED; } QPushButton:disabled { background-color: #D1D1D6; border-color: #D1D1D6; color: #FFFFFF; }")
-        self.export_onnx_btn.clicked.connect(self._on_manual_export_onnx)
-        r_custom_btns.addWidget(self.export_onnx_btn)
         r_custom_btns.addStretch()
         l1.addLayout(r_custom_btns)
 
@@ -617,13 +668,71 @@ class MainAppGUI(QMainWindow):
         else:
             QMessageBox.critical(self, "下载失败", msg)
 
-    def _on_manual_export_onnx(self) -> None:
-        if not MLP_WEIGHTS_PATH.exists() and not MLP_L14_WEIGHTS_PATH.exists() and not (BUNDLE_ROOT / "aesthetic_mlp.pth").exists():
-            QMessageBox.warning(self, "无法导出", "未找到 personal aesthetic_mlp.pth 权重文件，请先进行偏好训练。")
+    def _on_import_pth(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 PyTorch 审美权重文件 (.pth)",
+            str(Path.home()),
+            "PyTorch 权重 (*.pth *.pt);;所有文件 (*.*)",
+        )
+        if not file_path:
             return
 
-        if not TORCH_EXPORT_AVAILABLE:
-            QMessageBox.critical(self, "环境缺失", "导出 ONNX 需要 PyTorch 和 transformers，请在 py311 环境下运行。")
+        src_p = Path(file_path)
+        if not src_p.exists() or src_p.stat().st_size < 100:
+            QMessageBox.warning(self, "无效文件", "所选文件不存在或内容为空。")
+            return
+
+        try:
+            MODELS_DIR.mkdir(parents=True, exist_ok=True)
+            is_l14 = "l14" in src_p.name.lower() or "large" in src_p.name.lower()
+            target_name = "aesthetic_mlp_l14.pth" if is_l14 else "aesthetic_mlp.pth"
+            dest_p = MODELS_DIR / target_name
+
+            shutil.copy2(str(src_p), str(dest_p))
+            if not is_l14:
+                try:
+                    shutil.copy2(str(src_p), str(PROJECT_ROOT / "aesthetic_mlp.pth"))
+                except Exception:
+                    pass
+
+            self._on_model_updated()
+
+            reply = QMessageBox.question(
+                self,
+                "导入成功",
+                f"✅ 权重文件已成功导入至 models/{target_name}！\n\n是否立即一键熔铸为专属 ONNX 硬件加速模型并启用？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self._on_manual_export_onnx()
+            else:
+                QMessageBox.information(
+                    self,
+                    "导入完成",
+                    "权重已导入就绪。\n您可以随时在此面板点击「⚡ 一键熔铸为 ONNX 模型」生成并启用专属模型。",
+                )
+        except Exception as exc:
+            QMessageBox.critical(self, "导入失败", f"导入权重文件时出错: {exc}")
+
+    def _on_manual_export_onnx(self) -> None:
+        pth_exists = (
+            (MODELS_DIR / "aesthetic_mlp.pth").exists()
+            or (MODELS_DIR / "aesthetic_mlp_l14.pth").exists()
+            or (PROJECT_ROOT / "aesthetic_mlp.pth").exists()
+            or (BUNDLE_ROOT / "aesthetic_mlp.pth").exists()
+        )
+        if not pth_exists:
+            reply = QMessageBox.question(
+                self,
+                "未找到权重文件",
+                "当前尚未检测到任何 .pth 个人训练权重文件。\n\n是否立即从本地选择并导入一个 .pth 文件？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self._on_import_pth()
             return
 
         self.export_onnx_btn.setEnabled(False)
@@ -633,6 +742,9 @@ class MainAppGUI(QMainWindow):
 
     def _on_export_done(self, success: bool, msg: str) -> None:
         self.export_onnx_btn.setEnabled(True)
+        if success:
+            set_active_model_mode("custom")
+            self.radio_custom.setChecked(True)
         self._on_model_updated()
         if success:
             QMessageBox.information(self, "熔铸成功", msg)

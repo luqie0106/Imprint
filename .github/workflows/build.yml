@@ -29,6 +29,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Optimize Windows Runner (Disable Defender for Workspace)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-MpPreference -ExclusionPath "${{ github.workspace }}" -ErrorAction SilentlyContinue
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -39,10 +45,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch transformers onnx onnxscript
 
-      - name: Export ONNX Models
+      - name: Export Standard ONNX Model
         run: |
           python scripts/generate_standard_onnx.py
-          python -c "import os, sys, subprocess; subprocess.run([sys.executable, 'scripts/export_onnx.py']) if os.path.exists('models/aesthetic_mlp.pth') or os.path.exists('aesthetic_mlp.pth') else None" || true
 
       - name: Clean Heavy Dependencies
         run: |
@@ -92,7 +97,7 @@ jobs:
           if (-not (Test-Path $iscc)) {
             $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
           }
-          & $iscc "/DMyAppVersion=$version" installer.iss
+          & $iscc /Q "/DMyAppVersion=$version" installer.iss
 
 
       # --- 生成 SHA256 校验和 ---

@@ -7,7 +7,7 @@
 #define MyAppExeName "PhotoSort.exe"
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.8"
+#define MyAppVersion "1.0.9"
 #endif
 
 
@@ -27,8 +27,8 @@ AllowNoIcons=yes
 OutputDir=dist
 OutputBaseFilename=PhotoSort-Windows-Installer
 SetupIconFile=src\assets\icon.ico
-Compression=lzma2/ultra64
-SolidCompression=yes
+Compression=lzma2/fast
+SolidCompression=no
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
