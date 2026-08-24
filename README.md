@@ -1,16 +1,51 @@
 # Photo Sort
 
+[![Version](https://img.shields.io/badge/Version-2.0.0-6366F1?logo=v&logoColor=white)](https://github.com/luqie0106/photo_sort/releases)
+[![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?logo=tauri&logoColor=black)](https://tauri.app/)
+[![Vue 3](https://img.shields.io/badge/Frontend-Vue%203%20%7C%20TailwindCSS-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![Backend](https://img.shields.io/badge/Sidecar-FastAPI%20%2B%20Uvicorn-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.9%20~%203.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![GUI](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt6-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython/)
 [![Inference](https://img.shields.io/badge/Inference-ONNX%20Runtime%20%7C%20DirectML%20%7C%20CoreML-005CED?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 [![Formats](https://img.shields.io/badge/Formats-RAW%20%7C%20JPEG%20%7C%20JXL%20%7C%20HIF%2FHEIF-FF6F00)]()
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?logo=apple&logoColor=black)]()
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-22%2F22%20Passed-brightgreen)]()
 
-本地连拍照片智能筛选与优选工具。
+本地连拍照片智能筛选与审美优选工具（Tauri 2.0 + Python FastAPI Sidecar 现代化架构）。
 
 专为高频连拍场景（航空、体育、人像、生态等）设计，自动根据拍摄时间与画面相似度对连拍进行分组，结合局部清晰度（人脸优先）、曝光以及本地 AI 模型选出每组中的最佳照片，并将多余废片整理到审查目录。
+
+---
+
+## 🏗️ 架构设计
+
+PhotoSort 2.0 采用 **Tauri 2.0 (Rust) + Vue 3 前端 + Python FastAPI Sidecar 后端** 架构：
+
+```
+┌────────────────────────────────────────────────────────┐
+│               Tauri 2.0 Native Window                  │
+│    (macOS Vibrancy 毛玻璃 / Windows 11 Mica 材质)       │
+│                                                        │
+│   ┌────────────────────────────────────────────────┐   │
+│   │        Vue 3 + TailwindCSS 现代交互界面        │   │
+│   └───────────────────────┬────────────────────────┘   │
+│                           │ HTTP REST / SSE 实时日志流 │
+│                           ▼ (127.0.0.1 动态端口)       │
+│   ┌────────────────────────────────────────────────┐   │
+│   │           Python FastAPI Sidecar 引擎           │   │
+│   │     (app_api.py / PyInstaller 独立二进制)       │   │
+│   └───────────────────────┬────────────────────────┘   │
+│                           │                            │
+│                           ▼                            │
+│   ┌────────────────────────────────────────────────┐   │
+│   │       核心算法模块与 ONNX Runtime 硬件加速      │   │
+│   │  (burst_filter / model_manager / onnx_exporter)│   │
+│   └────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────┘
+```
+
+- **轻量原生外壳**：Tauri 2.0 驱动原生窗口，占用内存极低，原生支持 macOS 磨砂效果与 Windows Mica 材质；
+- **响应式通信**：前端通过 SSE (Server-Sent Events) 与本地 FastAPI 进程建立单向流式连接，毫秒级更新计算进度与终端日志；
+- **双模启动兼容**：开发阶段自动调度 Conda/系统 Python 解释器；生产打包时无缝切换为 PyInstaller 独立 Sidecar 二进制执行文件。
 
 ---
 
@@ -39,6 +74,7 @@
 | :--- | :--- | :--- |
 | **汉明距离 (dHash 构图容差)** | **画面结构相似度**。算法将照片压缩为 64 位结构指纹，汉明距离代表两张照片构图指纹**不同的位数**（取值 1~64）。 | · **默认值 12**：适合绝大多数手持常规连拍。<br>· **调小（6~8）**：对构图要求极严格，轻微移镜即拆分组（适合三脚架定点摆拍）。<br>· **调大（16~20）**：允许奔跑追焦、大幅度甩镜头仍聚在同一连拍组。 |
 | **连拍时间间隔 (秒)** | **连拍判定时间窗口**。相邻快门在 EXIF 亚秒时间轴上的最大间隔秒数。 | · **默认 1.5 秒**：在此时间内连续按下快门被视为同一连拍序列；停顿超过该时间自动开启新组。 |
+| **并发工作线程数** | **多核并行计算加速**。多线程并发读取 RAW 预览图与计算清晰度梯度。 | · 默认自动根据系统 CPU 逻辑核心数计算 **80%**；超过 CPU 最大物理上限时会自动标红警示并保护系统不卡顿。 |
 | **RAW + JPG 伴生绑定** | **同拍双格式一体化**。自动将同一次快门生成的 RAW+JPG 聚合为单一实体。 | · 自动生效。单拍不会被误判；优选时胜出者的 RAW+JPG **一同保留**，淘汰时**一同移动**，绝不拆散。 |
 | **人脸优先 Laplacian 清晰度** | **对焦实不实检测**。通过计算高频边缘反差衡量清晰度，自动识别合焦最实、未脱焦的锐利照片。 | · 自动检测画面人脸，优先计算**面部与眼部区域**清晰度；无人脸时检测中心主体区域。 |
 | **直方图曝光评分** | **高光过曝与欠曝检测**。统计画面像素分布，对高光死白（过曝不可挽回）施加严厉扣分惩罚。 | · 自动生效。防止算法将对焦清晰但严重过曝的大白脸选为最佳照片。 |
@@ -46,40 +82,46 @@
 
 ---
 
+## 🛠️ 运行环境与安装
 
-## 运行环境与安装
+### 1. 运行依赖要求
+- **Python**: 3.9 ~ 3.13（推荐使用 Conda `py311` 环境）
+- **Node.js**: >= 18.0.0
+- **Rust**: 稳定版工具链（`cargo` / `rustc`）
 
-建议使用 Python 3.9 ~ 3.13（推荐 Conda 环境）：
+### 2. 本地开发与启动
 
 ```bash
-# 克隆仓库
+# 1. 克隆仓库
 git clone https://github.com/luqie0106/photo_sort.git
 cd photo_sort
 
-# 安装依赖
+# 2. 安装 Python 核心与 API 依赖
 pip install -r requirements.txt
+
+# 3. 进入前端目录安装 npm 依赖
+cd tauri-frontend
+npm install
+
+# 4. 启动开发模式 (自动拉起 Tauri 窗口与 Python Sidecar)
+npm run tauri dev
+```
+
+### 3. 本地打包与构建
+
+```bash
+cd tauri-frontend
+
+# 步骤 1: 打包 Python Sidecar 二进制到 dist-python/
+npm run build:api
+
+# 步骤 2: 构建 Tauri 原生桌面安装包 (DMG / MSI / EXE)
+npm run tauri build
 ```
 
 ---
 
-## 使用说明
-
-### 1. 图形界面（默认）
-
-运行主程序打开桌面界面：
-
-```bash
-python main.py
-```
-
-界面包含三个标签页：
-- **连拍优选**：选择照片文件夹，设置连拍时间阈值（默认 1.5s）和每组保留张数，点击开始筛选。顶部常驻显示当前激活的 AI 美学引擎状态。
-- **偏好训练**：选择包含 `like/` 与 `dislike/` 的数据集根目录，本地训练专属审美模型并自动熔铸为 ONNX 模型。
-- **模型与环境**：
-  - **美学评分模型选择**：在「官方标准通用模型」与「个人专属训练模型」之间一键自由切换。
-  - **模型文件状态**：查看与管理本地 `models/` 目录中的标准模型、个人专属模型及 CLIP 基础底座。
-
-### 2. 命令行模式 (CLI)
+## 💻 命令行模式 (CLI)
 
 适合脚本批量处理或无界面的终端环境：
 
@@ -96,7 +138,7 @@ python main.py --export-onnx
 
 ---
 
-## 模型体系与个人审美偏好训练
+## 🧠 模型体系与个人审美偏好训练
 
 PhotoSort 采用 **「出厂预置权威标准模型 + 随时切换个人微调模型」** 的双轨架构：
 
@@ -105,117 +147,68 @@ PhotoSort 采用 **「出厂预置权威标准模型 + 随时切换个人微调�
    - 对人像、风光、街拍、生态、夜景等全品类摄影题材进行中立客观的构图与画质评估。
    - **默认内置于各平台安装包中**（`models/standard_aesthetic_model.onnx`，~335MB），下载安装后无需联网或额外配置，即可拥有开箱即用的 AI 构图打分能力。
 
-2. **🧠 个人专属微调模型（个性化偏好，支持 GUI 一键导入 / 本地训练）**：
-   - **轻量分发设计**：为了避免安装包体积过大（节省 336MB+ 下载流量与解压体积），各平台安装包**默认不捆绑**个人专属 ONNX 模型。
-   - **GUI 一键导入与熔铸（推荐）**：
-     - 下载 GitHub 仓库中作者预置的轻量分类头权重 [`models/aesthetic_mlp.pth`](file:///models/aesthetic_mlp.pth)（仅 500KB）或他人分享的 `.pth` 权重。
-     - 打开软件切换至 **【📦 模型与环境】** 页面。
-     - 在「个人专属训练模型」区域直接点击 **「📥 导入 .pth 权重文件」** 选取下载的权重。
-     - 系统将自动导入并提示是否立即 **「⚡ 一键熔铸为 ONNX 模型」**，熔铸完成后自动切换并启用，**完全无需手动查找软件安装路径或运行命令行**！
-   - **本地训练专属模型**：
-     - 准备样本文件夹：
-       ```
-       dataset/
-       ├── like/       # 放入满意的精选照片（建议 30~100 张以上，格式不限）
-       └── dislike/    # 放入不满意的废片/构图不佳照片
-       ```
-     - 打开软件切换至【偏好训练】页，选择 `dataset` 目录。
-     - 点击【开始训练与熔铸】，训练完成后自动生成 `models/custom_aesthetic_model.onnx`。
-     - 在【模型与环境】面板勾选「个人专属训练模型」即可一键启用。
-
-
----
-
-## 编译打包与发布
-
-项目使用 PyInstaller 进行轻量化打包，并由 GitHub Actions Workflow 自动完成双平台安装包与便携版的构建与发布：
-
-```bash
-# 安装打包依赖
-pip install -r requirements-build.txt
-
-# 打包生成可执行文件
-pyinstaller photo_sort.spec
-```
-
-### GitHub Actions 发布的产物说明
-
-| 平台 | 产物文件名 | 类型 | 适用场景 |
-| :--- | :--- | :--- | :--- |
-| **macOS** | `PhotoSort-macOS-Installer.pkg` | **系统原生安装包** | 推荐使用，双击系统向导一键自动安装至 `/Applications` |
-| **macOS** | `PhotoSort-macOS-Portable.dmg` | **磁盘镜像 (便携版)** | 经典 DMG 镜像，内含 App 与 Applications 快捷链接，支持拖拽运行 |
-| **Windows** | `PhotoSort-Windows-Installer.exe` | **向导安装包** | 推荐使用，提供中英双语向导、自定义路径、开始菜单与桌面快捷方式、控制面板卸载 |
-| **Windows** | `PhotoSort-Windows-Portable.zip` | **绿色免安装版** | 解压即用，适合放在 U 盘或临时目录运行 |
-
----
-
-## ❓ 常见问题与安全/安装提示 (FAQ)
-
-### Q: 如何解除系统拦截并正常安装使用？
-
-#### 🪟 Windows 用户
-1. **浏览器拦截**：点击下载栏提示的「保留」或「仍要下载」。
-2. **SmartScreen 拦截提示“Windows 已保护你的电脑”**：
-   - 点击提示窗口中的 **「更多信息」**。
-   - 点击右下角的 **「仍要运行」** 即可正常进入安装向导或打开软件。
-
-#### 🍎 macOS 用户
-1. **提示“无法打开，因为无法验证开发者”或“来自身份不明的开发者”**：
-   - 按住键盘 `Control` 键并右键点击应用图标，选择 **「打开」**，在弹出的确认窗口中点击 **「打开」**。
-   - 或打开 **「系统设置」 $\rightarrow$ 「隐私与安全性」**，下滑至安全性区域，点击 **「仍要打开」**。
-2. **提示“应用已损坏，移到废纸篓”**（因 macOS 对下载文件的隔离属性导致）：
-   - 打开终端（Terminal），执行以下命令解除隔离：
-     ```bash
-     sudo xattr -r -d com.apple.quarantine /Applications/PhotoSort.app
-     # 或
-     xattr -cr /Applications/PhotoSort.app
+2. **🧠 个人专属微调模型（个性化偏好，支持 GUI 一键训练 / 熔铸）**：
+   - **准备样本文件夹**：
      ```
+     dataset/
+     ├── like/       # 放入满意的精选照片（建议 30~100 张以上，格式不限）
+     └── dislike/    # 放入不满意的废片/构图不佳照片
+     ```
+   - 打开软件切换至【偏好训练】页，选择 `dataset` 目录。
+   - 点击【开始训练与熔铸】，训练完成后自动生成 `models/custom_aesthetic_model.onnx`。
+   - 在【模型管理】面板一键激活启用专属模型。
 
 ---
 
-### Q: 如何验证下载文件的完整性？
-每次发布新版本时，GitHub Actions 均在公开透明的隔离容器中自动编译并生成 Release。您可以在 [Releases 页面](https://github.com/luqie0106/photo_sort/releases) 查看对应版本的 SHA256 校验和，并在本地使用以下命令校验：
-- **Windows (PowerShell)**:
-  ```powershell
-  Get-FileHash PhotoSort-Windows-Installer.exe -Algorithm SHA256
-  ```
-- **macOS / Linux**:
-  ```bash
-  shasum -a 256 PhotoSort-macOS-Installer.pkg
-  ```
-
----
-
-### Q: 仍然担心预编译包的安全性？
-如果您对二进制安装包有所顾虑，推荐直接通过 **Python 源码运行**，环境与代码完全由您自行掌控：
-```bash
-git clone https://github.com/luqie0106/photo_sort.git
-cd photo_sort
-pip install -r requirements.txt
-python main.py
-```
-
-
----
-
-## 目录结构
+## 📁 目录结构
 
 ```
 photo_sort/
-├── main.py                     # 程序入口（GUI / CLI）
-├── photo_sort.spec             # PyInstaller 打包配置
-├── requirements.txt            # 运行依赖
-├── requirements-build.txt      # 构建依赖
 ├── src/
-│   ├── app_gui.py              # 主界面 (PySide6)
-│   ├── burst_gui.py            # 连拍优选面板
-│   ├── trainer_gui.py          # 偏好训练面板
-│   ├── qt_theme.py             # 界面样式与主题
-│   ├── burst_filter.py         # 连拍聚类、EXIF 与打分核心逻辑
-│   ├── model_manager.py        # 模型下载与状态管理
-│   └── onnx_exporter.py        # ONNX 导出工具
-└── tests/                      # 单元测试套件
+│   ├── app_api.py              # FastAPI Sidecar 后端 (REST / SSE 接口)
+│   ├── burst_filter.py         # 连拍聚类、EXIF 与多维打分核心逻辑
+│   ├── model_manager.py        # 模型下载、状态管理与缓存管理
+│   ├── onnx_exporter.py        # PyTorch 权重熔铸与 ONNX 导出工具
+│   ├── exif_reader.py          # 高性能 EXIF 与亚秒时间提取
+│   └── config.py               # 全局配置与参数常量
+├── tauri-frontend/             # Tauri 2.0 原生桌面端与 Vue 3 前端
+│   ├── src-tauri/              # Rust 核心（窗口管理、Sidecar 调度、毛玻璃特效）
+│   │   ├── Cargo.toml          # Rust 依赖配置
+│   │   ├── tauri.conf.json     # Tauri 2.0 应用配置文件
+│   │   └── src/lib.rs          # Sidecar 自动拉起与 IPC 通信绑定
+│   ├── src/                    # Vue 3 页面与交互组件
+│   │   ├── views/              # 连拍优选、模型管理、偏好训练视图
+│   │   ├── stores/             # API 连接与全局状态管理
+│   │   └── composables/        # SSE 实时日志流解析器
+│   ├── package.json            # 前端依赖与构建脚本
+│   └── vite.config.ts          # Vite 构建配置
+├── models/                     # 本地 AI 模型与权重目录
+├── scripts/                    # ONNX 模型导出与辅助脚本
+├── app_api.spec                # PyInstaller Sidecar 打包配置文件
+├── requirements.txt            # Python 完整运行依赖
+├── requirements-build.txt      # Python 轻量构建依赖
+└── .github/workflows/          # GitHub Actions 跨平台 CI/CD 自动发布工作流
 ```
+
+---
+
+## ❓ 常见问题与安全提示 (FAQ)
+
+### Q: 如何解除系统拦截并正常打开？
+
+#### 🪟 Windows 用户
+1. **SmartScreen 拦截提示“Windows 已保护你的电脑”**：
+   - 点击提示窗口中的 **「更多信息」** $\rightarrow$ **「仍要运行」** 即可。
+
+#### 🍎 macOS 用户
+1. **提示“无法打开，因为无法验证开发者”**：
+   - 打开 **「系统设置」 $\rightarrow$ 「隐私与安全性」**，下滑至安全性区域点击 **「仍要打开」**；
+   - 或按住键盘 `Control` 键右键点击应用图标，选择 **「打开」**。
+2. **提示“应用已损坏，移到废纸篓”**（macOS 下载文件的隔离属性）：
+   - 在终端执行命令解除隔离：
+     ```bash
+     xattr -cr /Applications/PhotoSort.app
+     ```
 
 ---
 
