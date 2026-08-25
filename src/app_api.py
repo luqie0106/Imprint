@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from burst_filter import BurstFilter
 from model_manager import (
     PROJECT_ROOT,
+    MODELS_DIR,
     check_all_models,
     download_clip_l14_model,
     download_clip_model,
@@ -36,8 +37,28 @@ from model_manager import (
     set_active_model_mode,
     get_resolved_mlp_path,
     get_resolved_mlp_l14_path,
+    get_resolved_standard_onnx_path,
+    get_resolved_standard_l14_onnx_path,
 )
-from onnx_exporter import export_to_onnx, TORCH_EXPORT_AVAILABLE
+from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
+
+import io
+import onnx
+import onnxruntime as ort
+import numpy as np
+from PIL import Image
+import rawpy
+
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
+
+try:
+    import pillow_jxl
+except Exception:
+    pass
 
 app = FastAPI(title="PhotoSort API", version="2.0.1")
 
@@ -366,11 +387,61 @@ async def fuse_custom_onnx(req: FuseOnnxRequest):
 # 接口五：POST /api/trainer/run (SSE 偏好模型微调与 ONNX 熔铸)
 # ══════════════════════════════════════════════════════════════════════════════
 
+RAW_SUFFIXES = {
+    ".nef", ".nrw", ".arw", ".srf", ".sr2", ".cr2", ".cr3", ".crw",
+    ".rw2", ".raw", ".dng", ".raf", ".orf", ".ori", ".pef", ".ptx",
+    ".3fr", ".fff", ".iiq", ".srw", ".x3f", ".mrw", ".gpr", ".erf", ".mef", ".mos",
+}
+STANDARD_SUFFIXES = {
+    ".jpg", ".jpeg", ".jpe", ".jxl", ".hif", ".heif", ".heic", ".png", ".webp", ".tiff", ".tif", ".bmp"
+}
+ALL_PHOTO_SUFFIXES = RAW_SUFFIXES | STANDARD_SUFFIXES
+
+
+def _preprocess_photo_for_clip(path: Path) -> np.ndarray | None:
+    img = None
+    suffix = path.suffix.lower()
+    if suffix in RAW_SUFFIXES:
+        try:
+            with rawpy.imread(str(path)) as raw:
+                thumb = raw.extract_thumb()
+            img = Image.open(io.BytesIO(thumb.data)).convert("RGB")
+        except Exception:
+            try:
+                with rawpy.imread(str(path)) as raw:
+                    arr = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
+                img = Image.fromarray(arr).convert("RGB")
+            except Exception:
+                pass
+    if img is None:
+        try:
+            with Image.open(path) as im:
+                img = im.convert("RGB")
+        except Exception:
+            return None
+
+    # CLIP 图像预处理: 等比缩放短边至 224 并中心裁剪
+    w, h = img.size
+    scale = 224.0 / min(w, h)
+    new_w, new_h = max(224, int(round(w * scale))), max(224, int(round(h * scale)))
+    img_resized = img.resize((new_w, new_h), Image.Resampling.BICUBIC)
+
+    left = (new_w - 224) // 2
+    top = (new_h - 224) // 2
+    img_cropped = img_resized.crop((left, top, left + 224, top + 224))
+
+    # 标准 CLIP 归一化
+    arr = np.array(img_cropped, dtype=np.float32) / 255.0
+    mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
+    std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
+    arr = (arr - mean) / std
+    return arr.transpose(2, 0, 1)
+
 
 @app.post("/api/trainer/run")
 async def run_trainer(req: TrainerRequest):
     """
-    启动偏好微调训练与 ONNX 熔铸进程，通过 SSE 返回实时日志和 Epoch 进度。
+    启动纯原生 (ONNX + NumPy) 偏好微调训练与 ONNX 熔铸进程，零外部 Python / PyTorch 依赖。
     """
     queue: asyncio.Queue[dict] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -381,237 +452,204 @@ async def run_trainer(req: TrainerRequest):
             yield f"data: {json.dumps({'type': 'error', 'msg': f'训练样本目录不存在: {req.photos_dir}'}, ensure_ascii=False)}\n\n"
         return StreamingResponse(err_stream(), media_type="text/event-stream")
 
-    backbone_key = "l14" if req.model_type in ("l14", "standard_l14", "custom_l14") else "b32"
-    repo_id = "openai/clip-vit-base-patch32" if backbone_key == "b32" else "openai/clip-vit-large-patch14"
-    dim = 512 if backbone_key == "b32" else 768
-    pth_name = "aesthetic_mlp.pth" if backbone_key == "b32" else "aesthetic_mlp_l14.pth"
-    onnx_name = "custom_aesthetic_model.onnx" if backbone_key == "b32" else "custom_aesthetic_l14_model.onnx"
-    backbone_desc = "CLIP ViT-B/32 (标准极速 · 512维)" if backbone_key == "b32" else "CLIP ViT-L/14 (专业高精 · 768维)"
+    def _notify(msg: str, pct: float | None = None):
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {"type": "progress", "msg": msg, "pct": pct},
+        )
 
-    training_script = f"""
-import sys
-from pathlib import Path
-data_dir = Path(r"{data_dir}")
-epochs = {req.epochs}
-lr = {req.lr}
-backbone_repo = "{repo_id}"
-feat_dim = {dim}
-pth_filename = "{pth_name}"
-onnx_filename = "{onnx_name}"
-project_root = Path(r"{PROJECT_ROOT}")
-
-try:
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import DataLoader
-    from transformers import CLIPProcessor, CLIPModel
-    from PIL import Image
-    import rawpy, io
-except ImportError as err:
-    print(f"❌ 运行环境缺少依赖: {{err}}\\n请确保所选 Python 环境已安装 torch, transformers, rawpy, Pillow", flush=True)
-    sys.exit(1)
-
-device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if sys.platform == "darwin" and torch.backends.mps.is_available() else "cpu"))
-if device.type == 'cuda':
-    dev_title = f"NVIDIA CUDA 显卡硬件加速 ({{torch.cuda.get_device_name(0)}})"
-elif device.type == 'mps':
-    dev_title = "Apple Silicon Metal 显卡硬件加速 (MPS)"
-else:
-    dev_title = "CPU 多核心并行计算"
-
-print(f"⚡ 深度学习加速设备: {{dev_title}}", flush=True)
-print(f"📦 正在加载视觉主干底座: {backbone_desc} ...", flush=True)
-
-models_local = project_root / "models"
-local_clip_dir = models_local / ("clip-vit-base-patch32" if feat_dim == 512 else "clip-vit-large-patch14")
-clip_src = str(local_clip_dir) if local_clip_dir.exists() and (local_clip_dir / "config.json").exists() else backbone_repo
-
-clip_model = CLIPModel.from_pretrained(clip_src).to(device).eval()
-for p in clip_model.parameters(): p.requires_grad_(False)
-clip_processor = CLIPProcessor.from_pretrained(clip_src)
-
-try:
-    import pillow_heif
-    pillow_heif.register_heif_opener()
-except Exception:
-    pass
-
-try:
-    import pillow_jxl
-except Exception:
-    pass
-
-RAW_SUFFIXES = {{
-    ".nef", ".nrw", ".arw", ".srf", ".sr2", ".cr2", ".cr3", ".crw",
-    ".rw2", ".raw", ".dng", ".raf", ".orf", ".ori", ".pef", ".ptx",
-    ".3fr", ".fff", ".iiq", ".srw", ".x3f", ".mrw", ".gpr", ".erf", ".mef", ".mos",
-}}
-STANDARD_SUFFIXES = {{
-    ".jpg", ".jpeg", ".jpe", ".jxl", ".hif", ".heif", ".heic", ".png", ".webp", ".tiff", ".tif", ".bmp"
-}}
-ALL_PHOTO_SUFFIXES = RAW_SUFFIXES | STANDARD_SUFFIXES
-
-class RawDataset:
-    def __init__(self, root):
-        self.samples = []
-        for l, dname in ((1, "like"), (0, "dislike")):
-            d = root / dname
-            if d.exists():
-                for p in d.iterdir():
-                    if p.is_file() and p.suffix.lower() in ALL_PHOTO_SUFFIXES:
-                        self.samples.append((p, l))
-    def __len__(self): return len(self.samples)
-    def __getitem__(self, idx):
-        p, l = self.samples[idx]
-        img = None
-        if p.suffix.lower() in RAW_SUFFIXES:
-            try:
-                with rawpy.imread(str(p)) as raw: thumb = raw.extract_thumb()
-                img = Image.open(io.BytesIO(thumb.data)).convert("RGB")
-            except Exception:
-                try:
-                    with rawpy.imread(str(p)) as raw: arr = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
-                    img = Image.fromarray(arr).convert("RGB")
-                except Exception:
-                    pass
-        if img is None:
-            try:
-                with Image.open(p) as im:
-                    img = im.convert("RGB")
-            except Exception:
-                img = Image.new("RGB", (224, 224), (0, 0, 0))
-        inp = clip_processor(images=img, return_tensors="pt", padding=True)
-        return {{k: v.squeeze(0) for k, v in inp.items()}}, l
-
-def collate_fn(batch):
-    inputs_list, labels = zip(*batch)
-    return {{k: torch.stack([d[k] for d in inputs_list]) for k in inputs_list[0]}}, torch.tensor(labels, dtype=torch.long)
-
-dataset = RawDataset(data_dir)
-print(f"✅ 成功扫描到 {{len(dataset)}} 张标注样本照片 (like/dislike)", flush=True)
-if len(dataset) == 0:
-    print("❌ 数据集为空，请确保在所选目录下包含 like/ 与 dislike/ 子文件夹并放置标注图片", flush=True)
-    sys.exit(1)
-
-batch_sz = 16 if device.type in ('cuda', 'mps') else 8
-dataloader = DataLoader(dataset, batch_size=batch_sz, shuffle=True, collate_fn=collate_fn)
-mlp = nn.Sequential(nn.Linear(feat_dim, 256), nn.ReLU(), nn.Dropout(0.3), nn.Linear(256, 2)).to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(mlp.parameters(), lr=lr)
-
-print("🎯 正在执行特征提取与微调训练...", flush=True)
-for ep in range(epochs):
-    mlp.train()
-    running_loss, correct, total = 0.0, 0, 0
-    for b_in, labels in dataloader:
-        b_in = {{k: v.to(device) for k, v in b_in.items()}}
-        labels = labels.to(device)
-        with torch.no_grad():
-            vout = clip_model.vision_model(pixel_values=b_in['pixel_values'], return_dict=False)
-            feat = clip_model.visual_projection(vout[1])
-            feat = feat / feat.norm(dim=-1, keepdim=True)
-        optimizer.zero_grad()
-        out = mlp(feat)
-        loss = criterion(out, labels)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-        _, pred = torch.max(out.data, 1)
-        total += labels.size(0)
-        correct += (pred == labels).sum().item()
-    print(f"  Epoch [{{ep+1:02d}}/{{epochs:02d}}] Loss: {{running_loss/max(1, len(dataloader)):.4f}} Acc: {{100*correct/max(1, total):.1f}}%", flush=True)
-
-save_dir = project_root / "models"
-save_dir.mkdir(parents=True, exist_ok=True)
-save_path = save_dir / pth_filename
-torch.save(mlp.state_dict(), save_path)
-print(f"💾 专属模型头权重已保存至: models/{{save_path.name}}", flush=True)
-
-print(f"⚡ 正在将专属模型头与视觉底座熔铸为 ONNX 硬件加速模型 ({{onnx_filename}})...", flush=True)
-class Combined(nn.Module):
-    def __init__(self, clip, mlp):
-        super().__init__()
-        self.clip = clip
-        self.mlp = mlp
-    def forward(self, pixel_values):
-        vout = self.clip.vision_model(pixel_values=pixel_values, return_dict=False)
-        feat = self.clip.visual_projection(vout[1])
-        feat = feat / feat.norm(dim=-1, keepdim=True)
-        return torch.softmax(self.mlp(feat), dim=1)[:, 1]
-comb = Combined(clip_model, mlp).eval()
-onnx_path = save_dir / onnx_filename
-torch.onnx.export(
-    comb,
-    (torch.randn(1, 3, 224, 224).to(device),),
-    str(onnx_path),
-    opset_version=14,
-    input_names=["pixel_values"],
-    output_names=["like_prob"],
-    dynamic_axes={{"pixel_values": {{0: "batch_size"}}, "like_prob": {{0: "batch_size"}}}},
-    dynamo=False,
-)
-if feat_dim == 512:
-    legacy_onnx = project_root / "photo_sort_model.onnx"
-    try:
-        import shutil
-        shutil.copy2(str(onnx_path), str(legacy_onnx))
-    except Exception:
-        pass
-print(f"🎉 ONNX 模型熔铸完毕！文件已就绪: models/{{onnx_filename}} ({{onnx_path.stat().st_size/(1024*1024):.1f}} MB)", flush=True)
-"""
-
-    async def run_training_subprocess():
+    async def run_training_worker():
         try:
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
-                {"type": "progress", "msg": "🚀 启动审美偏好微调训练进程..."},
-            )
+            _notify("🚀 启动审美偏好微调与 ONNX 熔铸引擎 (纯原生极速引擎)...")
 
-            def _proc_worker():
-                proc = subprocess.Popen(
-                    [sys.executable, "-c", training_script],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                for line in iter(proc.stdout.readline, ""):
-                    l = line.strip()
-                    if l:
-                        pct = None
-                        if "Epoch [" in l:
-                            try:
-                                cur_ep = int(l.split("[")[1].split("/")[0])
-                                pct = round(cur_ep / max(1, req.epochs), 4)
-                            except Exception:
-                                pass
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            {"type": "progress", "msg": l, "pct": pct},
-                        )
-                proc.stdout.close()
-                ret = proc.wait()
-                return ret
+            # 1. 扫描标注样本
+            samples: list[tuple[Path, int]] = []
+            for label, dname in ((1, "like"), (0, "dislike")):
+                sub_dir = data_dir / dname
+                if sub_dir.exists() and sub_dir.is_dir():
+                    for p in sub_dir.iterdir():
+                        if p.is_file() and p.suffix.lower() in ALL_PHOTO_SUFFIXES:
+                            samples.append((p, label))
+
+            _notify(f"✅ 成功扫描到 {len(samples)} 张标注样本照片 (like/dislike)")
+            if len(samples) == 0:
+                raise ValueError("数据集为空，请确保在所选目录下包含 like/ 与 dislike/ 子文件夹并放置标注图片")
+
+            like_count = sum(1 for _, l in samples if l == 1)
+            dislike_count = len(samples) - like_count
+            _notify(f"📊 样本分布: 喜欢 (Like) {like_count} 张 | 不喜欢 (Dislike) {dislike_count} 张")
+
+            # 2. 确定底座模型
+            backbone_key = "l14" if req.model_type in ("l14", "standard_l14", "custom_l14") else "b32"
+            dim = 768 if backbone_key == "l14" else 512
+            backbone_desc = "CLIP ViT-L/14 (专业高精 · 768维)" if backbone_key == "l14" else "CLIP ViT-B/32 (标准极速 · 512维)"
+            out_onnx_name = "custom_aesthetic_l14_model.onnx" if backbone_key == "l14" else "custom_aesthetic_model.onnx"
+
+            if backbone_key == "l14":
+                base_onnx_path = get_resolved_standard_l14_onnx_path()
+            else:
+                base_onnx_path = get_resolved_standard_onnx_path()
+
+            if not base_onnx_path or not base_onnx_path.exists():
+                raise FileNotFoundError(f"未找到基础视觉底座模型 ({backbone_desc})，请先在“模型管理”中下载或就绪底座。")
+
+            _notify(f"📦 正在加载视觉底座: {backbone_desc} ...")
+
+            def _extract_and_train():
+                base_model = onnx.load(str(base_onnx_path))
+                output_names = [o.name for o in base_model.graph.output]
+                if "/Div_output_0" not in output_names:
+                    div_out = onnx.helper.make_tensor_value_info("/Div_output_0", onnx.TensorProto.FLOAT, [None, dim])
+                    base_model.graph.output.append(div_out)
+
+                model_bytes = base_model.SerializeToString()
+                providers = []
+                available = ort.get_available_providers()
+                for p in ["CoreMLExecutionProvider", "DmlExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]:
+                    if p in available:
+                        providers.append(p)
+                session = ort.InferenceSession(model_bytes, providers=providers)
+                active_provider = session.get_providers()[0]
+                _notify(f"⚡ 特征提取硬件加速后端: {active_provider}")
+
+                # 4. 批量预处理并提取特征向量
+                _notify("🎯 正在提取全量样本特征向量...")
+                all_feats: list[np.ndarray] = []
+                all_labels: list[int] = []
+                batch_imgs: list[np.ndarray] = []
+                batch_labels: list[int] = []
+
+                batch_size = 16
+                for idx, (img_path, label) in enumerate(samples):
+                    arr = _preprocess_photo_for_clip(img_path)
+                    if arr is not None:
+                        batch_imgs.append(arr)
+                        batch_labels.append(label)
+
+                    if len(batch_imgs) >= batch_size or (idx == len(samples) - 1 and batch_imgs):
+                        batch_tensor = np.stack(batch_imgs, axis=0).astype(np.float32)
+                        feats = session.run(["/Div_output_0"], {"pixel_values": batch_tensor})[0]
+                        all_feats.append(feats)
+                        all_labels.extend(batch_labels)
+                        batch_imgs.clear()
+                        batch_labels.clear()
+
+                        pct = round((idx + 1) / len(samples) * 0.5, 4)
+                        _notify(f"  特征提取进度: [{idx + 1}/{len(samples)}]", pct=pct)
+
+                if not all_feats:
+                    raise RuntimeError("无法成功解析样本中的任何图片，请检查图片格式是否损坏")
+
+                X = np.concatenate(all_feats, axis=0)  # (N, dim)
+                y = np.array(all_labels, dtype=np.int64)  # (N,)
+                N = len(y)
+                _notify(f"✅ 特征提取完成！共计 {N} 个样本特征向量 (维度: {dim})")
+
+                # 5. 纯 NumPy Adam 训练 2 层 MLP 分类头
+                _notify(f"🔥 启动神经网络微调训练 (共 {req.epochs} 轮)...")
+                hidden = 256
+                np.random.seed(42)
+                W1 = (np.random.randn(hidden, dim).astype(np.float32) * np.sqrt(2.0 / dim))
+                b1 = np.zeros(hidden, dtype=np.float32)
+                W2 = (np.random.randn(2, hidden).astype(np.float32) * np.sqrt(2.0 / hidden))
+                b2 = np.zeros(2, dtype=np.float32)
+
+                mW1, vW1 = np.zeros_like(W1), np.zeros_like(W1)
+                mb1, vb1 = np.zeros_like(b1), np.zeros_like(b1)
+                mW2, vW2 = np.zeros_like(W2), np.zeros_like(W2)
+                mb2, vb2 = np.zeros_like(b2), np.zeros_like(b2)
+
+                lr = float(req.lr) if req.lr > 0 else 0.001
+                beta1, beta2, eps = 0.9, 0.999, 1e-8
+                epochs = max(1, req.epochs)
+                train_batch_sz = min(16, N)
+                t = 0
+
+                for ep in range(epochs):
+                    perm = np.random.permutation(N)
+                    total_loss, correct = 0.0, 0
+                    for i in range(0, N, train_batch_sz):
+                        t += 1
+                        b_idx = perm[i : i + train_batch_sz]
+                        xb, yb = X[b_idx], y[b_idx]
+                        B = len(yb)
+
+                        # 前向传播
+                        z1 = np.dot(xb, W1.T) + b1
+                        a1 = np.maximum(0, z1)
+                        z2 = np.dot(a1, W2.T) + b2
+                        # Softmax
+                        exp_z2 = np.exp(z2 - np.max(z2, axis=1, keepdims=True))
+                        probs = exp_z2 / (np.sum(exp_z2, axis=1, keepdims=True) + 1e-12)
+
+                        loss = -np.mean(np.log(probs[np.arange(B), yb] + 1e-12))
+                        total_loss += loss * B
+                        correct += int(np.sum(np.argmax(probs, axis=1) == yb))
+
+                        # 反向传播求梯度
+                        dz2 = probs.copy()
+                        dz2[np.arange(B), yb] -= 1.0
+                        dz2 /= B
+
+                        dW2 = np.dot(dz2.T, a1)
+                        db2 = np.sum(dz2, axis=0)
+
+                        da1 = np.dot(dz2, W2)
+                        dz1 = da1 * (z1 > 0)
+
+                        dW1 = np.dot(dz1.T, xb)
+                        db1 = np.sum(dz1, axis=0)
+
+                        # Adam 优化器参数更新
+                        for p_arr, g_arr, m_arr, v_arr in [
+                            (W1, dW1, mW1, vW1),
+                            (b1, db1, mb1, vb1),
+                            (W2, dW2, mW2, vW2),
+                            (b2, db2, mb2, vb2),
+                        ]:
+                            m_arr[:] = beta1 * m_arr + (1 - beta1) * g_arr
+                            v_arr[:] = beta2 * v_arr + (1 - beta2) * (g_arr ** 2)
+                            m_hat = m_arr / (1.0 - beta1 ** t)
+                            v_hat = v_arr / (1.0 - beta2 ** t)
+                            p_arr -= lr * m_hat / (np.sqrt(v_hat) + eps)
+
+                    ep_loss = total_loss / max(1, N)
+                    ep_acc = correct / max(1, N)
+                    train_pct = 0.5 + round((ep + 1) / epochs * 0.45, 4)
+                    _notify(
+                        f"  Epoch [{ep+1:02d}/{epochs:02d}] Loss: {ep_loss:.4f} 准确率: {ep_acc*100:.1f}%",
+                        pct=train_pct,
+                    )
+
+                # 6. 熔铸为单个 ONNX 模型
+                _notify(f"⚡ 正在将专属微调权重直接注入视觉底座生成 ONNX ({out_onnx_name})...")
+                MODELS_DIR.mkdir(parents=True, exist_ok=True)
+                out_onnx_path = MODELS_DIR / out_onnx_name
+                fuse_mlp_weights_to_onnx(base_onnx_path, out_onnx_path, W1, b1, W2, b2)
+
+                if backbone_key == "b32":
+                    legacy_path = PROJECT_ROOT / "photo_sort_model.onnx"
+                    try:
+                        import shutil
+                        shutil.copy2(str(out_onnx_path), str(legacy_path))
+                    except Exception:
+                        pass
+
+                _notify(f"🎉 ONNX 模型熔铸完毕！文件已就绪: models/{out_onnx_name} ({out_onnx_path.stat().st_size/(1024*1024):.1f} MB)")
+                return out_onnx_path
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                ret = await loop.run_in_executor(pool, _proc_worker)
+                await loop.run_in_executor(pool, _extract_and_train)
 
-            if ret == 0:
-                await queue.put({
-                    "type": "done",
-                    "success": True,
-                    "msg": "🎉 专属审美偏好模型微调与 ONNX 熔铸成功！模型已保存在 models/ 目录下，可即刻选用！",
-                })
-            else:
-                await queue.put({
-                    "type": "error",
-                    "msg": f"训练进程异常退出 (退出码: {ret})，请检查日志信息。",
-                })
+            await queue.put({
+                "type": "done",
+                "success": True,
+                "msg": "🎉 专属审美偏好模型微调与 ONNX 熔铸成功！模型已保存在 models/ 目录下，可即刻在“模型管理”中选用！",
+            })
         except Exception as exc:
             await queue.put({"type": "error", "msg": f"训练过程发生异常: {str(exc)}"})
 
-    asyncio.create_task(run_training_subprocess())
+    asyncio.create_task(run_training_worker())
 
     async def event_stream() -> AsyncGenerator[str, None]:
         while True:

@@ -118,7 +118,7 @@ watch(
         深度学习微调超参数
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         <!-- 基础视觉模型底座选择 -->
         <div class="flex flex-col gap-1.5">
           <label class="text-xs text-zinc-500 dark:text-zinc-400">视觉特征提取底座</label>
@@ -139,19 +139,6 @@ watch(
             type="number"
             min="1"
             max="100"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-          />
-        </div>
-
-        <!-- 学习率 -->
-        <div class="flex flex-col gap-1.5">
-          <label class="text-xs text-zinc-500 dark:text-zinc-400">学习率 (Learning Rate)</label>
-          <input
-            v-model.number="lr"
-            type="number"
-            step="0.0001"
-            min="0.00001"
-            max="0.1"
             class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
           />
         </div>
