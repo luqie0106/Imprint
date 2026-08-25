@@ -18,13 +18,7 @@ try:
 except ImportError:
     ONNX_AVAILABLE = False
 
-try:
-    import torch
-    import torch.nn as nn
-    from transformers import CLIPModel
-    TORCH_EXPORT_AVAILABLE = True
-except ImportError:
-    TORCH_EXPORT_AVAILABLE = False
+TORCH_EXPORT_AVAILABLE = True
 
 
 def fuse_mlp_weights_to_onnx(
@@ -113,42 +107,6 @@ def fuse_mlp_weights_to_onnx(
     return out_onnx_path
 
 
-# AestheticMLP 结构（兼容旧 PyTorch 模式）
-if TORCH_EXPORT_AVAILABLE:
-    class _AestheticMLP(nn.Module):
-        def __init__(self, input_dim: int = 512):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, 256),
-                nn.ReLU(),
-                nn.Dropout(0.3),
-                nn.Linear(256, 2),
-            )
-
-        def forward(self, x):
-            return self.net(x)
-
-    class _CombinedAestheticModel(nn.Module):
-        def __init__(self, clip_model: CLIPModel, mlp: _AestheticMLP):
-            super().__init__()
-            self.clip = clip_model
-            self.mlp = mlp
-
-        def forward(self, pixel_values):
-            # 1. CLIP 提取视觉特征
-            vision_outputs = self.clip.vision_model(pixel_values=pixel_values, return_dict=False)
-            pooled_output = vision_outputs[1]
-            features = self.clip.visual_projection(pooled_output)
-
-            # 2. L2 归一化
-            features = features / features.norm(dim=-1, keepdim=True)
-            # 3. 过 MLP 分类头
-            logits = self.mlp(features)
-            # 4. Softmax 输出 Like 概率 (索引 1)
-            probs = torch.softmax(logits, dim=1)
-            return probs[:, 1]
-
-
 def export_to_onnx(
     project_root: Path | None = None,
     mlp_path: Path | None = None,
@@ -182,8 +140,8 @@ def export_to_onnx(
     if std_onnx.exists() and ONNX_AVAILABLE:
         try:
             _notify(f"正在通过 ONNX 图注入熔铸权重: {mlp_path.name} ...")
-            # 尝试加载权重字典
-            if TORCH_EXPORT_AVAILABLE:
+            try:
+                import torch
                 state = torch.load(str(mlp_path), map_location="cpu", weights_only=True)
                 w1 = state["net.0.weight"].detach().cpu().numpy()
                 b1 = state["net.0.bias"].detach().cpu().numpy()
@@ -192,10 +150,44 @@ def export_to_onnx(
                 fuse_mlp_weights_to_onnx(std_onnx, onnx_path, w1, b1, w2, b2)
                 _notify(f"✅ ONNX 模型极速导出成功: {onnx_path.name}")
                 return onnx_path
+            except Exception:
+                pass
         except Exception as e:
             _notify(f"纯 ONNX 注入失败 ({e})，尝试 PyTorch 导出回退...")
 
-    if not TORCH_EXPORT_AVAILABLE:
+    try:
+        import torch
+        import torch.nn as nn
+        from transformers import CLIPModel
+
+        class _AestheticMLP(nn.Module):
+            def __init__(self, input_dim: int = 512):
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Linear(input_dim, 256),
+                    nn.ReLU(),
+                    nn.Dropout(0.3),
+                    nn.Linear(256, 2),
+                )
+
+            def forward(self, x):
+                return self.net(x)
+
+        class _CombinedAestheticModel(nn.Module):
+            def __init__(self, clip_model: CLIPModel, mlp: _AestheticMLP):
+                super().__init__()
+                self.clip = clip_model
+                self.mlp = mlp
+
+            def forward(self, pixel_values):
+                vision_outputs = self.clip.vision_model(pixel_values=pixel_values, return_dict=False)
+                pooled_output = vision_outputs[1]
+                features = self.clip.visual_projection(pooled_output)
+                features = features / features.norm(dim=-1, keepdim=True)
+                logits = self.mlp(features)
+                probs = torch.softmax(logits, dim=1)
+                return probs[:, 1]
+    except ImportError:
         raise RuntimeError("导出 ONNX 需要 PyTorch 和 transformers 依赖，当前环境中未安装。")
 
     # 确定 CLIP 来源

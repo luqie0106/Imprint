@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from "vue";
+import { ref, computed, nextTick, watch, onMounted } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSse } from "../composables/useSse";
+import { BASE_URL, isServerReady } from "../stores/api";
 import {
   Folder,
   Play,
@@ -22,7 +23,9 @@ const gapSeconds = ref(1.5);
 const maxHammingDistance = ref(12);
 const keepCount = ref(1);
 const maxWorkers = ref(defaultWorkers);
-const useGpu = ref(false);
+const useGpu = ref(true); // 默认优先尝试开启
+const gpuDetected = ref(false);
+const gpuDeviceName = ref("");
 const reviewSubdir = ref("审查_连拍淘汰");
 
 const isWorkersExceeded = computed(() => {
@@ -34,6 +37,40 @@ const logContainer = ref<HTMLElement | null>(null);
 
 const { messages, isDone, isRunning, error, resultData, start, cancel } =
   useSse("/api/burst/run");
+
+async function checkGpuAvailability() {
+  if (!BASE_URL.value) return;
+  try {
+    const res = await fetch(`${BASE_URL.value}/api/models/status`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.gpu_available) {
+        useGpu.value = true;
+        gpuDetected.value = true;
+        gpuDeviceName.value = data.gpu_name || "";
+      } else {
+        useGpu.value = false;
+        gpuDetected.value = false;
+        gpuDeviceName.value = data.gpu_name || "未检测到独立显卡";
+      }
+    }
+  } catch (err) {
+    console.error("检测 GPU 状态失败:", err);
+  }
+}
+
+onMounted(() => {
+  checkGpuAvailability();
+});
+
+watch(
+  () => isServerReady.value,
+  (ready) => {
+    if (ready) {
+      checkGpuAvailability();
+    }
+  }
+);
 
 async function selectDirectory() {
   try {
@@ -234,10 +271,16 @@ watch(
           />
           <label
             for="useGpuCheckbox"
-            class="text-sm font-medium text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer"
+            class="text-sm font-medium text-zinc-800 dark:text-zinc-200 flex items-center gap-2 cursor-pointer"
           >
-            <Cpu class="w-4 h-4 text-emerald-500" />
+            <Cpu class="w-5 h-5 text-emerald-500 shrink-0" />
             启用 GPU 硬件加速推理
+            <span
+              v-if="gpuDetected"
+              class="text-[11px] font-normal px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/60"
+            >
+              已检测: {{ gpuDeviceName }}
+            </span>
           </label>
         </div>
       </div>

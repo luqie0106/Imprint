@@ -93,21 +93,6 @@ DEFAULT_REVIEW_SUBDIR: str = "审查_连拍淘汰"
 
 _CENTER_CROP_RATIO: float = 0.6
 
-# ── 动态加载 PyTorch ──────────────────────────────────────────────────────────
-try:
-    import torch
-    import torch.nn as nn
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-
-# ── 动态加载 CLIP（transformers）─────────────────────────────────────────────
-try:
-    from transformers import CLIPProcessor, CLIPModel
-    CLIP_AVAILABLE = True
-except ImportError:
-    CLIP_AVAILABLE = False
-
 # ── 动态加载 ONNX Runtime ───────────────────────────────────────────────────
 try:
     import onnxruntime as ort
@@ -375,22 +360,6 @@ class RawEvaluator:
 # AI 美学评分器（CLIP 特征提取 + 轻量 MLP 分类头）
 # ══════════════════════════════════════════════════════════════════════════════
 
-# MLP 分类头定义（必须与训练时结构一致，用于 PyTorch Fallback）
-if TORCH_AVAILABLE:
-    class _AestheticMLP(nn.Module):
-        """接受 CLIP 512 维特征，输出 2 分类 logits。"""
-        def __init__(self, input_dim: int = 512):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, 256),
-                nn.ReLU(),
-                nn.Dropout(0.3),
-                nn.Linear(256, 2),
-            )
-
-        def forward(self, x):
-            return self.net(x)
-
 
 class AestheticScorer:
     """
@@ -474,8 +443,25 @@ class AestheticScorer:
                 warnings.warn(f"无法加载 ONNX 模型，尝试降级: {exc}")
 
         # 2. 尝试回退到 PyTorch 引擎
-        if TORCH_AVAILABLE and CLIP_AVAILABLE and mlp_path and mlp_path.exists():
+        if mlp_path and mlp_path.exists():
             try:
+                import torch
+                import torch.nn as nn
+                from transformers import CLIPProcessor, CLIPModel
+
+                class _AestheticMLP(nn.Module):
+                    def __init__(self, input_dim: int = 512):
+                        super().__init__()
+                        self.net = nn.Sequential(
+                            nn.Linear(input_dim, 256),
+                            nn.ReLU(),
+                            nn.Dropout(0.3),
+                            nn.Linear(256, 2),
+                        )
+
+                    def forward(self, x):
+                        return self.net(x)
+
                 if use_gpu:
                     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                     if sys.platform == "darwin" and torch.backends.mps.is_available():

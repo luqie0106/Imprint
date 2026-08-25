@@ -16,7 +16,7 @@ export const BASE_URL = computed(() => {
 /**
  * 轮询等待 Python FastAPI Sidecar 启动并就绪
  */
-export async function initApiConnection(maxRetries = 30, intervalMs = 500): Promise<boolean> {
+export async function initApiConnection(maxRetries = 60, intervalMs = 100): Promise<boolean> {
   isConnecting.value = true;
   serverError.value = null;
 
@@ -40,7 +40,9 @@ export async function initApiConnection(maxRetries = 30, intervalMs = 500): Prom
     } catch {
       // 端口尚未准备好
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    // 前 10 次尝试 100ms 极速轮询，后续回退为 250ms
+    const waitTime = i < 10 ? intervalMs : 250;
+    await new Promise((resolve) => setTimeout(resolve, waitTime));
   }
 
   isConnecting.value = false;

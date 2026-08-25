@@ -184,14 +184,33 @@ async def run_burst(req: BurstRequest):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _get_gpu_info() -> tuple[bool, str]:
+    try:
+        providers = ort.get_available_providers()
+        if "CoreMLExecutionProvider" in providers:
+            return True, "Apple Silicon Metal / 神经引擎 (CoreML)"
+        if "DmlExecutionProvider" in providers:
+            return True, "DirectX 12 显卡硬件加速 (DirectML)"
+        if "CUDAExecutionProvider" in providers:
+            return True, "NVIDIA 显卡硬件加速 (CUDA)"
+        if "ROCMExecutionProvider" in providers:
+            return True, "AMD 显卡硬件加速 (ROCm)"
+    except Exception:
+        pass
+    return False, "CPU 多核心并行计算"
+
+
 @app.get("/api/models/status")
 async def get_models_status():
-    """获取所有模型就绪状态及当前激活模式"""
+    """获取所有模型就绪状态、GPU 加速检测及当前激活模式"""
+    gpu_available, gpu_name = _get_gpu_info()
     try:
         active_mode = get_active_model_mode()
         status = check_all_models()
         return {
             "mode": active_mode,
+            "gpu_available": gpu_available,
+            "gpu_name": gpu_name,
             "clip_b32_ready": status.clip_ready,
             "clip_l14_ready": status.clip_l14_ready,
             "standard_onnx_ready": status.standard_onnx_ready,
@@ -208,6 +227,8 @@ async def get_models_status():
             status_code=200,
             content={
                 "mode": "standard",
+                "gpu_available": gpu_available,
+                "gpu_name": gpu_name,
                 "clip_b32_ready": False,
                 "clip_l14_ready": False,
                 "standard_onnx_ready": False,
