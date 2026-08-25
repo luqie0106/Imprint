@@ -7,6 +7,7 @@ import {
   DownloadCloud,
   RefreshCw,
   Zap,
+  Flame,
 } from "lucide-vue-next";
 
 interface ModelStatusResponse {
@@ -17,6 +18,10 @@ interface ModelStatusResponse {
   standard_l14_onnx_ready: boolean;
   custom_onnx_ready: boolean;
   custom_l14_onnx_ready: boolean;
+  mlp_ready: boolean;
+  mlp_path: string;
+  mlp_l14_ready: boolean;
+  mlp_l14_path: string;
 }
 
 const status = ref<ModelStatusResponse>({
@@ -27,6 +32,10 @@ const status = ref<ModelStatusResponse>({
   standard_l14_onnx_ready: false,
   custom_onnx_ready: false,
   custom_l14_onnx_ready: false,
+  mlp_ready: false,
+  mlp_path: "",
+  mlp_l14_ready: false,
+  mlp_l14_path: "",
 });
 
 const isRefreshing = ref(false);
@@ -38,6 +47,19 @@ const {
   isRunning: isDownloading,
   start: startDownload,
 } = useSse("/api/models/download");
+
+const {
+  messages: fuseMessages,
+  isRunning: isFusing,
+  isDone: fuseDone,
+  error: fuseError,
+  start: startFuse,
+} = useSse("/api/models/fuse-onnx");
+
+async function triggerFuse(modelType: "b32" | "l14") {
+  await startFuse({ model_type: modelType });
+  await fetchStatus();
+}
 
 async function fetchStatus() {
   if (!BASE_URL.value) return;
@@ -127,7 +149,7 @@ onMounted(() => {
 
     <!-- 当前激活模型模式选择卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-800/60 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-700/50 flex flex-col gap-4"
+      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
     >
       <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
         <Zap class="w-4 h-4 text-indigo-500" />
@@ -141,8 +163,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'standard'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/40 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-700 bg-white/40 dark:bg-zinc-900/30 hover:border-zinc-300 dark:hover:border-zinc-600'
+              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -151,7 +173,7 @@ onMounted(() => {
             </span>
             <span
               class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.standard_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300'"
+              :class="status.standard_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
             >
               {{ status.standard_onnx_ready ? '就绪' : '未就绪' }}
             </span>
@@ -167,8 +189,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'standard_l14'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/40 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-700 bg-white/40 dark:bg-zinc-900/30 hover:border-zinc-300 dark:hover:border-zinc-600'
+              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -177,7 +199,7 @@ onMounted(() => {
             </span>
             <span
               class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.standard_l14_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300'"
+              :class="status.standard_l14_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
             >
               {{ status.standard_l14_onnx_ready ? '就绪' : '未就绪' }}
             </span>
@@ -193,8 +215,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'custom'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/40 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-700 bg-white/40 dark:bg-zinc-900/30 hover:border-zinc-300 dark:hover:border-zinc-600'
+              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -203,7 +225,7 @@ onMounted(() => {
             </span>
             <span
               class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.custom_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300'"
+              :class="status.custom_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
             >
               {{ status.custom_onnx_ready ? '就绪' : '未训练' }}
             </span>
@@ -219,8 +241,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'custom_l14'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/40 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-700 bg-white/40 dark:bg-zinc-900/30 hover:border-zinc-300 dark:hover:border-zinc-600'
+              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -229,7 +251,7 @@ onMounted(() => {
             </span>
             <span
               class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.custom_l14_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300'"
+              :class="status.custom_l14_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
             >
               {{ status.custom_l14_onnx_ready ? '就绪' : '未训练' }}
             </span>
@@ -241,9 +263,90 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- 个人 PTH 权重熔铸为 ONNX -->
+    <div
+      v-if="status.mlp_ready || status.mlp_l14_ready"
+      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
+    >
+      <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
+        <Flame class="w-4 h-4 text-orange-500" />
+        个人偏好权重熔铸为 ONNX 推理模型
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400">
+        检测到本地已有训练好的 .pth 权重文件，需要熔铸为 ONNX 格式才能被筛选引擎加速调用。
+      </p>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- B/32 熔铸 -->
+        <div
+          v-if="status.mlp_ready"
+          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col gap-3"
+        >
+          <div class="flex items-center justify-between">
+            <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">个人模型 (ViT-B/32)</span>
+            <span
+              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
+              :class="status.custom_onnx_ready
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60'
+                : 'bg-orange-100 text-orange-700 dark:bg-orange-950/80 dark:text-orange-300 dark:border dark:border-orange-800/60'"
+            >
+              {{ status.custom_onnx_ready ? 'ONNX 就绪' : '待熔铸' }}
+            </span>
+          </div>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 font-mono break-all">{{ status.mlp_path }}</p>
+          <button
+            @click="triggerFuse('b32')"
+            :disabled="isFusing || status.custom_onnx_ready"
+            class="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+          >
+            <Flame class="w-3.5 h-3.5" />
+            {{ status.custom_onnx_ready ? '已熔铸（可重新熔铸）' : '立即熔铸 → ONNX' }}
+          </button>
+        </div>
+
+        <!-- L/14 熔铸 -->
+        <div
+          v-if="status.mlp_l14_ready"
+          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col gap-3"
+        >
+          <div class="flex items-center justify-between">
+            <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">个人模型 (ViT-L/14)</span>
+            <span
+              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
+              :class="status.custom_l14_onnx_ready
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60'
+                : 'bg-orange-100 text-orange-700 dark:bg-orange-950/80 dark:text-orange-300 dark:border dark:border-orange-800/60'"
+            >
+              {{ status.custom_l14_onnx_ready ? 'ONNX 就绪' : '待熔铸' }}
+            </span>
+          </div>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 font-mono break-all">{{ status.mlp_l14_path }}</p>
+          <button
+            @click="triggerFuse('l14')"
+            :disabled="isFusing || status.custom_l14_onnx_ready"
+            class="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+          >
+            <Flame class="w-3.5 h-3.5" />
+            {{ status.custom_l14_onnx_ready ? '已熔铸（可重新熔铸）' : '立即熔铸 → ONNX' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 熔铸进度 -->
+      <div v-if="isFusing || fuseMessages.length > 0" class="flex flex-col gap-2">
+        <div class="text-xs font-mono bg-zinc-900 dark:bg-zinc-950 text-zinc-300 border border-zinc-800 p-3 rounded-xl max-h-32 overflow-y-auto">
+          <div v-for="(msg, idx) in fuseMessages" :key="idx">{{ msg }}</div>
+        </div>
+        <p v-if="fuseError" class="text-xs text-rose-500">{{ fuseError }}</p>
+        <p v-if="fuseDone && !fuseError" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+          ✅ 熔铸完成，ONNX 模型已就绪
+        </p>
+      </div>
+    </div>
+
     <!-- 视觉底座模型下载与同步卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-800/60 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-700/50 flex flex-col gap-4"
+      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
     >
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
@@ -264,7 +367,7 @@ onMounted(() => {
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <!-- 下载项 1: ViT-B/32 -->
-        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/40 dark:bg-zinc-900/30 flex flex-col justify-between gap-3">
+        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
           <div>
             <div class="flex items-center justify-between">
               <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">
@@ -272,7 +375,7 @@ onMounted(() => {
               </span>
               <span
                 class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-                :class="status.clip_b32_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300'"
+                :class="status.clip_b32_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400 dark:border dark:border-zinc-700/60'"
               >
                 {{ status.clip_b32_ready ? '已就绪' : '未下载 (~335MB)' }}
               </span>
@@ -293,7 +396,7 @@ onMounted(() => {
         </div>
 
         <!-- 下载项 2: ViT-L/14 -->
-        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/40 dark:bg-zinc-900/30 flex flex-col justify-between gap-3">
+        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
           <div>
             <div class="flex items-center justify-between">
               <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">
@@ -301,7 +404,7 @@ onMounted(() => {
               </span>
               <span
                 class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-                :class="status.clip_l14_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300'"
+                :class="status.clip_l14_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400 dark:border dark:border-zinc-700/60'"
               >
                 {{ status.clip_l14_ready ? '已就绪' : '未下载 (~900MB)' }}
               </span>
@@ -337,7 +440,7 @@ onMounted(() => {
           max="1"
         ></progress>
 
-        <div class="text-xs font-mono bg-zinc-900/90 text-zinc-300 p-3 rounded-xl max-h-32 overflow-y-auto">
+        <div class="text-xs font-mono bg-zinc-900 dark:bg-zinc-950 text-zinc-300 border border-zinc-800 p-3 rounded-xl max-h-32 overflow-y-auto">
           <div v-for="(msg, idx) in downloadMessages" :key="idx">
             {{ msg }}
           </div>

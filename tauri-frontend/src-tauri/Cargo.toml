@@ -1,6 +1,6 @@
 [package]
 name = "tauri-frontend"
-version = "2.0.0"
+version = "2.0.1"
 description = "Photo Sort Tauri 2.0 App"
 authors = ["Luqie"]
 edition = "2021"

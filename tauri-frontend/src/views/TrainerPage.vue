@@ -83,7 +83,7 @@ watch(
 
     <!-- 样本目录选择卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-800/60 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-700/50 flex flex-col gap-3"
+      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-3"
     >
       <label class="text-sm font-medium text-zinc-700 dark:text-zinc-300 flex items-center gap-2">
         <Folder class="w-4 h-4 text-indigo-500" />
@@ -94,24 +94,24 @@ watch(
           v-model="photosDir"
           type="text"
           placeholder="请选择包含 like/ 与 dislike/ 两个子文件夹的样本目录..."
-          class="flex-1 px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+          class="flex-1 px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
         />
         <button
           @click="selectDirectory"
-          class="px-5 py-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-200 text-sm font-medium transition flex items-center gap-2 shadow-xs cursor-pointer"
+          class="px-5 py-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-sm font-medium transition flex items-center gap-2 shadow-xs cursor-pointer"
         >
           <Folder class="w-4 h-4" />
           浏览选择
         </button>
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400">
-        💡 提示：在所选目录下创建 <code class="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 font-mono">like</code> 与 <code class="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 font-mono">dislike</code> 文件夹，分别放入您满意和不满意的样张照片即可（支持 RAW / JPG / HIF 等全格式）。
+        💡 提示：在所选目录下创建 <code class="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 font-mono text-zinc-800 dark:text-zinc-200">like</code> 与 <code class="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 font-mono text-zinc-800 dark:text-zinc-200">dislike</code> 文件夹，分别放入您满意和不满意的样张照片即可（支持 RAW / JPG / HIF 等全格式）。
       </p>
     </div>
 
     <!-- 训练超参数配置卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-800/60 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-700/50 flex flex-col gap-4"
+      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
     >
       <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
         <Sliders class="w-4 h-4 text-indigo-500" />
@@ -124,7 +124,7 @@ watch(
           <label class="text-xs text-zinc-500 dark:text-zinc-400">视觉特征提取底座</label>
           <select
             v-model="modelType"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 cursor-pointer"
+            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 cursor-pointer"
           >
             <option value="standard">CLIP ViT-B/32 (标准极速 · 512维)</option>
             <option value="l14">CLIP ViT-L/14 (专业高精 · 768维)</option>
@@ -139,7 +139,7 @@ watch(
             type="number"
             min="1"
             max="100"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
           />
         </div>
 
@@ -152,13 +152,13 @@ watch(
             step="0.0001"
             min="0.00001"
             max="0.1"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
           />
         </div>
       </div>
 
       <!-- 操作按钮栏 -->
-      <div class="flex items-center justify-between pt-2 border-t border-zinc-200/50 dark:border-zinc-700/40">
+      <div class="flex items-center justify-between pt-2 border-t border-zinc-200/50 dark:border-zinc-800/80">
         <div class="flex items-center gap-3">
           <button
             v-if="!isRunning"
@@ -193,7 +193,7 @@ watch(
     <!-- 训练完成卡片 -->
     <div
       v-if="isDone"
-      class="bg-emerald-50/80 dark:bg-emerald-950/30 backdrop-blur-md rounded-2xl p-5 border border-emerald-300 dark:border-emerald-800/50 flex flex-col gap-2 shadow-sm animate-fade-in"
+      class="bg-emerald-50/80 dark:bg-emerald-950/40 backdrop-blur-md rounded-2xl p-5 border border-emerald-300 dark:border-emerald-800/60 flex flex-col gap-2 shadow-sm animate-fade-in"
     >
       <div class="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-semibold text-base">
         <CheckCircle2 class="w-5 h-5" />
@@ -207,7 +207,7 @@ watch(
     <!-- 异常提示卡片 -->
     <div
       v-if="error"
-      class="bg-rose-50/80 dark:bg-rose-950/30 backdrop-blur-md rounded-2xl p-4 border border-rose-300 dark:border-rose-800/50 flex items-center gap-3 text-sm text-rose-800 dark:text-rose-300 shadow-sm"
+      class="bg-rose-50/80 dark:bg-rose-950/40 backdrop-blur-md rounded-2xl p-4 border border-rose-300 dark:border-rose-800/60 flex items-center gap-3 text-sm text-rose-800 dark:text-rose-300 shadow-sm"
     >
       <AlertCircle class="w-5 h-5 shrink-0 text-rose-600 dark:text-rose-400" />
       <div>{{ error }}</div>
@@ -215,7 +215,7 @@ watch(
 
     <!-- 实时训练日志终端 -->
     <div
-      class="flex-1 min-h-[220px] bg-zinc-900/90 text-zinc-200 font-mono text-xs rounded-2xl p-4 shadow-sm border border-zinc-800 flex flex-col overflow-hidden"
+      class="flex-1 min-h-[220px] bg-zinc-900 dark:bg-zinc-950/95 text-zinc-200 font-mono text-xs rounded-2xl p-4 shadow-sm border border-zinc-800 flex flex-col overflow-hidden"
     >
       <div class="flex items-center justify-between pb-2 border-b border-zinc-800 text-zinc-400 text-xs">
         <span class="flex items-center gap-2">

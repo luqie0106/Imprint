@@ -116,11 +116,11 @@ jobs:
           APP="tauri-frontend/src-tauri/target/release/bundle/macos/PhotoSort.app"
           productbuild --component "$APP" /Applications PhotoSort-macOS-Installer.pkg
 
-      # Windows：只打 MSI（跳过 NSIS，NSIS 压缩 300MB+ sidecar 需 30 分钟导致超时）
+      # Windows：构建二进制（跳过所有 Installer 压缩打包，直接生成 Portable ZIP 便携版）
       - name: Build Tauri App (Windows)
         if: runner.os == 'Windows'
         working-directory: tauri-frontend
-        run: npm run tauri build -- --bundles msi
+        run: npm run tauri build -- --no-bundle
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -158,7 +158,6 @@ jobs:
         with:
           name: PhotoSort-Windows
           path: |
-            tauri-frontend/src-tauri/target/release/bundle/msi/*.msi
             PhotoSort-Windows-Portable.zip
           if-no-files-found: warn
 
@@ -170,7 +169,6 @@ jobs:
           files: |
             tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
             PhotoSort-macOS-Installer.pkg
-            tauri-frontend/src-tauri/target/release/bundle/msi/*.msi
             PhotoSort-Windows-Portable.zip
           fail_on_unmatched_files: false
           generate_release_notes: true

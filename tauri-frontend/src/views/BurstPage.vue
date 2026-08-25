@@ -101,7 +101,7 @@ watch(
 
     <!-- 目录选择卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-800/60 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-700/50 flex flex-col gap-3"
+      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-3"
     >
       <label class="text-sm font-medium text-zinc-700 dark:text-zinc-300 flex items-center gap-2">
         <Folder class="w-4 h-4 text-indigo-500" />
@@ -112,11 +112,11 @@ watch(
           v-model="inputDir"
           type="text"
           placeholder="请选择包含 RAW / JPG / HIF 等格式的照片目录..."
-          class="flex-1 px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+          class="flex-1 px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
         />
         <button
           @click="selectDirectory"
-          class="px-5 py-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-200 text-sm font-medium transition flex items-center gap-2 shadow-xs cursor-pointer"
+          class="px-5 py-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-sm font-medium transition flex items-center gap-2 shadow-xs cursor-pointer"
         >
           <Folder class="w-4 h-4" />
           浏览选择
@@ -126,7 +126,7 @@ watch(
 
     <!-- 参数配置卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-800/60 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-700/50 flex flex-col gap-4"
+      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
     >
       <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
         <Sliders class="w-4 h-4 text-indigo-500" />
@@ -143,9 +143,9 @@ watch(
             step="0.1"
             min="0.1"
             max="10"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
           />
-          <div class="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+          <div class="text-[11px] text-zinc-400 dark:text-zinc-400 mt-0.5">
             相邻快门小于此间隔归为同一连拍组（默认 1.5s）
           </div>
         </div>
@@ -154,16 +154,16 @@ watch(
         <div class="flex flex-col gap-1.5">
           <div class="flex items-center justify-between">
             <label class="text-xs text-zinc-500 dark:text-zinc-400">最大汉明距离 (图像相似度)</label>
-            <span class="text-[11px] text-zinc-400 dark:text-zinc-500">范围: 1~64</span>
+            <span class="text-[11px] text-zinc-400 dark:text-zinc-400">范围: 1~64</span>
           </div>
           <input
             v-model.number="maxHammingDistance"
             type="number"
             min="1"
             max="64"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
           />
-          <div class="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed space-y-0.5 mt-0.5 bg-zinc-100/60 dark:bg-zinc-900/40 p-2 rounded-lg border border-zinc-200/50 dark:border-zinc-700/40">
+          <div class="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed space-y-0.5 mt-0.5 bg-zinc-100/60 dark:bg-zinc-950/60 p-2 rounded-lg border border-zinc-200/50 dark:border-zinc-800/80">
             <div>• <span class="text-zinc-700 dark:text-zinc-200 font-medium">6 ~ 8</span>：定点摆拍（要求构图严格一致）</div>
             <div>• <span class="text-indigo-600 dark:text-indigo-400 font-medium">12</span>：常规手持 / 追焦（默认推荐）</div>
             <div>• <span class="text-zinc-700 dark:text-zinc-200 font-medium">16 ~ 20</span>：大幅甩镜头 / 奔跑运动抓拍</div>
@@ -178,9 +178,9 @@ watch(
             type="number"
             min="1"
             max="10"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
           />
-          <div class="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+          <div class="text-[11px] text-zinc-400 dark:text-zinc-400 mt-0.5">
             每组按画质与美学打分优选保留的前 N 张
           </div>
         </div>
@@ -194,7 +194,7 @@ watch(
             >
               并发工作线程数
             </label>
-            <span class="text-[11px] text-zinc-400 dark:text-zinc-500">
+            <span class="text-[11px] text-zinc-400 dark:text-zinc-400">
               (默认80%: {{ defaultWorkers }}，CPU上限: {{ maxCpus }})
             </span>
           </div>
@@ -205,8 +205,8 @@ watch(
             class="px-3.5 py-2 rounded-xl border transition-all text-sm focus:outline-none"
             :class="
               isWorkersExceeded
-                ? 'border-rose-500 text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/30 ring-2 ring-rose-500/20'
-                : 'border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500/40'
+                ? 'border-rose-500 text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/50 ring-2 ring-rose-500/20'
+                : 'border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500/40'
             "
           />
           <span v-if="isWorkersExceeded" class="text-[11px] text-rose-500 dark:text-rose-400 font-medium">
@@ -220,7 +220,7 @@ watch(
           <input
             v-model="reviewSubdir"
             type="text"
-            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/50 dark:bg-zinc-900/50 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+            class="px-3.5 py-2 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white/50 dark:bg-zinc-950/70 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
           />
         </div>
 
@@ -243,7 +243,7 @@ watch(
       </div>
 
       <!-- 操作按钮栏 -->
-      <div class="flex items-center justify-between pt-2 border-t border-zinc-200/50 dark:border-zinc-700/40">
+      <div class="flex items-center justify-between pt-2 border-t border-zinc-200/50 dark:border-zinc-800/80">
         <div class="flex items-center gap-3">
           <button
             v-if="!isRunning"
@@ -278,7 +278,7 @@ watch(
     <!-- 结果完成卡片 -->
     <div
       v-if="isDone && resultData"
-      class="bg-emerald-50/80 dark:bg-emerald-950/30 backdrop-blur-md rounded-2xl p-5 border border-emerald-300 dark:border-emerald-800/50 flex flex-col gap-3 shadow-sm animate-fade-in"
+      class="bg-emerald-50/80 dark:bg-emerald-950/40 backdrop-blur-md rounded-2xl p-5 border border-emerald-300 dark:border-emerald-800/60 flex flex-col gap-3 shadow-sm animate-fade-in"
     >
       <div class="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-semibold text-base">
         <CheckCircle2 class="w-5 h-5" />
@@ -286,28 +286,28 @@ watch(
       </div>
 
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm mt-1">
-        <div class="bg-white/60 dark:bg-zinc-800/50 p-3 rounded-xl">
+        <div class="bg-white/60 dark:bg-zinc-900/60 border border-transparent dark:border-zinc-800/60 p-3 rounded-xl">
           <div class="text-xs text-zinc-500 dark:text-zinc-400">总处理照片</div>
           <div class="text-lg font-bold text-zinc-800 dark:text-zinc-100">
             {{ resultData.total }}
           </div>
         </div>
 
-        <div class="bg-white/60 dark:bg-zinc-800/50 p-3 rounded-xl">
+        <div class="bg-white/60 dark:bg-zinc-900/60 border border-transparent dark:border-zinc-800/60 p-3 rounded-xl">
           <div class="text-xs text-zinc-500 dark:text-zinc-400">识别连拍组</div>
           <div class="text-lg font-bold text-indigo-600 dark:text-indigo-400">
             {{ resultData.burst_groups }} 组
           </div>
         </div>
 
-        <div class="bg-white/60 dark:bg-zinc-800/50 p-3 rounded-xl">
+        <div class="bg-white/60 dark:bg-zinc-900/60 border border-transparent dark:border-zinc-800/60 p-3 rounded-xl">
           <div class="text-xs text-zinc-500 dark:text-zinc-400">淘汰移入审查</div>
           <div class="text-lg font-bold text-amber-600 dark:text-amber-400">
             {{ resultData.moved }} 张
           </div>
         </div>
 
-        <div class="bg-white/60 dark:bg-zinc-800/50 p-3 rounded-xl">
+        <div class="bg-white/60 dark:bg-zinc-900/60 border border-transparent dark:border-zinc-800/60 p-3 rounded-xl">
           <div class="text-xs text-zinc-500 dark:text-zinc-400">单张快门跳过</div>
           <div class="text-lg font-bold text-zinc-700 dark:text-zinc-300">
             {{ resultData.skipped_single }} 张
@@ -324,7 +324,7 @@ watch(
     <!-- 异常提示卡片 -->
     <div
       v-if="error"
-      class="bg-rose-50/80 dark:bg-rose-950/30 backdrop-blur-md rounded-2xl p-4 border border-rose-300 dark:border-rose-800/50 flex items-center gap-3 text-sm text-rose-800 dark:text-rose-300 shadow-sm"
+      class="bg-rose-50/80 dark:bg-rose-950/40 backdrop-blur-md rounded-2xl p-4 border border-rose-300 dark:border-rose-800/60 flex items-center gap-3 text-sm text-rose-800 dark:text-rose-300 shadow-sm"
     >
       <AlertCircle class="w-5 h-5 shrink-0 text-rose-600 dark:text-rose-400" />
       <div>{{ error }}</div>
@@ -332,7 +332,7 @@ watch(
 
     <!-- 实时执行日志终端 -->
     <div
-      class="flex-1 min-h-[220px] bg-zinc-900/90 text-zinc-200 font-mono text-xs rounded-2xl p-4 shadow-sm border border-zinc-800 flex flex-col overflow-hidden"
+      class="flex-1 min-h-[220px] bg-zinc-900 dark:bg-zinc-950/95 text-zinc-200 font-mono text-xs rounded-2xl p-4 shadow-sm border border-zinc-800 flex flex-col overflow-hidden"
     >
       <div class="flex items-center justify-between pb-2 border-b border-zinc-800 text-zinc-400 text-xs">
         <span class="flex items-center gap-2">

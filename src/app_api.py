@@ -34,9 +34,12 @@ from model_manager import (
     download_clip_model,
     get_active_model_mode,
     set_active_model_mode,
+    get_resolved_mlp_path,
+    get_resolved_mlp_l14_path,
 )
+from onnx_exporter import export_to_onnx, TORCH_EXPORT_AVAILABLE
 
-app = FastAPI(title="PhotoSort API", version="2.0.0")
+app = FastAPI(title="PhotoSort API", version="2.0.1")
 
 # 配置 CORS 中间件，允许 Tauri 桌面端以及本地开发环境请求
 app.add_middleware(
@@ -174,6 +177,10 @@ async def get_models_status():
             "standard_l14_onnx_ready": status.standard_l14_onnx_ready,
             "custom_onnx_ready": status.custom_onnx_ready,
             "custom_l14_onnx_ready": status.custom_l14_onnx_ready,
+            "mlp_ready": status.mlp_ready,
+            "mlp_path": status.mlp_path,
+            "mlp_l14_ready": status.mlp_l14_ready,
+            "mlp_l14_path": status.mlp_l14_path,
         }
     except Exception as exc:
         return JSONResponse(
@@ -186,6 +193,10 @@ async def get_models_status():
                 "standard_l14_onnx_ready": False,
                 "custom_onnx_ready": False,
                 "custom_l14_onnx_ready": False,
+                "mlp_ready": False,
+                "mlp_path": "",
+                "mlp_l14_ready": False,
+                "mlp_l14_path": "",
                 "error": str(exc),
             },
         )
@@ -262,6 +273,93 @@ async def set_model_mode(req: SetModeRequest):
         return {"ok": True, "mode": req.mode}
     except Exception as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 接口：POST /api/models/fuse-onnx (SSE 个人 PTH 权重熔铸为 ONNX 模型)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class FuseOnnxRequest(BaseModel):
+    model_type: Literal["b32", "l14"] = "b32"
+
+
+@app.post("/api/models/fuse-onnx")
+async def fuse_custom_onnx(req: FuseOnnxRequest):
+    """
+    将已训练的 aesthetic_mlp.pth 熔铸为 ONNX 模型，通过 SSE 返回实时进度。
+    需要当前 Python 环境已安装 torch 和 transformers。
+    """
+    queue: asyncio.Queue[dict] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    if not TORCH_EXPORT_AVAILABLE:
+        async def err_stream():
+            yield f"data: {json.dumps({'type': 'error', 'msg': '熔铸 ONNX 需要 PyTorch 与 transformers，当前运行环境未安装。请在源码开发环境下运行此功能。'}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(err_stream(), media_type="text/event-stream")
+
+    def on_progress(msg: str):
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {"type": "progress", "msg": msg},
+        )
+
+    async def run_in_thread():
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                if req.model_type == "b32":
+                    mlp_p = get_resolved_mlp_path()
+                    if not mlp_p:
+                        await queue.put({"type": "error", "msg": "未找到 aesthetic_mlp.pth，请先完成偏好训练。"})
+                        return
+                    result = await loop.run_in_executor(
+                        pool,
+                        lambda: export_to_onnx(
+                            project_root=PROJECT_ROOT,
+                            mlp_path=mlp_p,
+                            progress_callback=on_progress,
+                        ),
+                    )
+                else:
+                    # L14 custom: 调用与 b32 相同的 export_to_onnx，但指向 L14 权重和模型路径
+                    from pathlib import Path
+                    mlp_p = get_resolved_mlp_l14_path()
+                    if not mlp_p:
+                        await queue.put({"type": "error", "msg": "未找到 aesthetic_mlp_l14.pth，请先完成 L14 偏好训练。"})
+                        return
+                    onnx_out = PROJECT_ROOT / "models" / "custom_aesthetic_l14_model.onnx"
+                    result = await loop.run_in_executor(
+                        pool,
+                        lambda: export_to_onnx(
+                            project_root=PROJECT_ROOT,
+                            mlp_path=mlp_p,
+                            onnx_path=onnx_out,
+                            clip_source=str(PROJECT_ROOT / "models" / "clip-vit-large-patch14"),
+                            progress_callback=on_progress,
+                        ),
+                    )
+                await queue.put({
+                    "type": "done",
+                    "msg": f"✅ ONNX 熔铸完成：{result.name}",
+                    "onnx_path": str(result),
+                })
+        except Exception as exc:
+            await queue.put({"type": "error", "msg": f"熔铸失败: {str(exc)}"})
+
+    asyncio.create_task(run_in_thread())
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        while True:
+            event = await queue.get()
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            if event.get("type") in ("done", "error"):
+                break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

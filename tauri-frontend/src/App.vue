@@ -33,11 +33,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="w-full h-full flex flex-col bg-transparent text-zinc-800 dark:text-zinc-100 select-none">
+  <div class="w-full h-full flex flex-col bg-transparent dark:bg-zinc-950/92 dark:backdrop-blur-2xl text-zinc-800 dark:text-zinc-100 select-none">
     <!-- 原生标题栏 / 顶部导航区域 (支持拖拽窗口) -->
     <header
       data-tauri-drag-region
-      class="h-14 shrink-0 px-5 flex items-center justify-between border-b border-zinc-200/40 dark:border-zinc-800/40 bg-white/40 dark:bg-zinc-900/40 backdrop-blur-md"
+      class="h-14 shrink-0 px-5 flex items-center justify-between border-b border-zinc-200/40 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-900/80 backdrop-blur-md"
     >
       <!-- Logo 与应用标题 -->
       <div class="flex items-center gap-3" data-tauri-drag-region>
@@ -57,13 +57,13 @@ onMounted(() => {
       </div>
 
       <!-- 居中 Tab 导航切换栏 -->
-      <nav class="flex items-center bg-zinc-200/50 dark:bg-zinc-800/60 p-1 rounded-xl gap-1">
+      <nav class="flex items-center bg-zinc-200/50 dark:bg-zinc-900/80 p-1 rounded-xl gap-1 border border-transparent dark:border-zinc-800/60">
         <button
           @click="activeTab = 'burst'"
           class="px-4 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer"
           :class="
             activeTab === 'burst'
-              ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-xs font-semibold'
+              ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-xs font-semibold'
               : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
           "
         >
@@ -76,7 +76,7 @@ onMounted(() => {
           class="px-4 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer"
           :class="
             activeTab === 'models'
-              ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-xs font-semibold'
+              ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-xs font-semibold'
               : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
           "
         >
@@ -89,7 +89,7 @@ onMounted(() => {
           class="px-4 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer"
           :class="
             activeTab === 'trainer'
-              ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-xs font-semibold'
+              ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-xs font-semibold'
               : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
           "
         >
