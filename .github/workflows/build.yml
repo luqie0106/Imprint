@@ -96,7 +96,9 @@ jobs:
       - name: Build macOS PKG Installer
         if: runner.os == 'macOS'
         run: |
-          productbuild --component tauri-frontend/src-tauri/target/release/bundle/macos/PhotoSort.app /Applications PhotoSort_2.0.0_macOS_Installer.pkg
+          APP_PATH=$(find tauri-frontend/src-tauri/target/release/bundle -name "*.app" -type d | head -n 1)
+          echo "Found App Bundle at: $APP_PATH"
+          productbuild --component "$APP_PATH" /Applications PhotoSort_2.0.0_macOS_Installer.pkg
 
       # ── Windows Portable ZIP ──────────────────────────────────────────
       - name: Create Windows Portable ZIP
