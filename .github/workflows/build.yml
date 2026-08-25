@@ -8,6 +8,7 @@ on:
 
 jobs:
   build:
+    name: Build (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
@@ -18,7 +19,7 @@ jobs:
             name: Windows
 
     permissions:
-      contents: write
+      contents: read
 
     runs-on: ${{ matrix.os }}
 
@@ -126,22 +127,24 @@ jobs:
 
       # Windows Portable ZIP：exe + Python sidecar，解压即用
       # 运行时 lib.rs 会在 dist-python/photo_sort_api/ 下查找 sidecar，路径匹配
-      # 依赖系统已安装 WebView2（Windows 10/11 默认预装）
+      # 使用 7z 多线程极速压缩，并排除 *.pdb 调试符号文件
       - name: Create Windows Portable ZIP
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $out = "PhotoSort-Portable"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          # 主程序（重命名为 PhotoSort.exe 方便用户识别）
+          # 主程序
           Copy-Item "tauri-frontend\src-tauri\target\release\tauri-frontend.exe" "$out\PhotoSort.exe"
-          # Python sidecar（保持目录结构，与 lib.rs 搜索路径一致）
+          # Python sidecar（保持目录结构）
           New-Item -ItemType Directory -Force -Path "$out\dist-python" | Out-Null
           Copy-Item -Recurse "tauri-frontend\dist-python\photo_sort_api" "$out\dist-python\photo_sort_api"
-          # 打包
-          Compress-Archive -Path "$out\*" -DestinationPath "PhotoSort-Windows-Portable.zip" -Force
+          # 清理调试符号
+          Get-ChildItem -Path $out -Recurse -Filter "*.pdb" | Remove-Item -Force -ErrorAction SilentlyContinue
+          # 使用 7-Zip 高速多线程压缩（避免 PowerShell Compress-Archive 单线程耗时 20+ 分钟）
+          7z a -tzip -mx=4 "PhotoSort-Windows-Portable.zip" ".\$out\*"
 
-      # ── Upload Artifacts ──────────────────────────────────────────────
+      # ── Upload Artifacts (分平台精确上传) ───────────────────────────────
       - name: Upload macOS Artifacts
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -150,25 +153,39 @@ jobs:
           path: |
             tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
             PhotoSort-macOS-Installer.pkg
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload Windows Artifacts
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: PhotoSort-Windows
-          path: |
-            PhotoSort-Windows-Portable.zip
-          if-no-files-found: warn
+          path: PhotoSort-Windows-Portable.zip
+          if-no-files-found: error
 
-      # ── GitHub Release（仅 tag push 时触发）────────────────────────────
+  # ── 独立 Release 任务（避免多平台矩阵并发冲突导致死锁/重试循环）──────────────
+  release:
+    name: Publish Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -la release-artifacts
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: |
-            tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
-            PhotoSort-macOS-Installer.pkg
-            PhotoSort-Windows-Portable.zip
-          fail_on_unmatched_files: false
+          files: release-artifacts/*
+          fail_on_unmatched_files: true
           generate_release_notes: true
