@@ -1,7 +1,7 @@
 [package]
-name = "tauri-frontend"
+name = "imprint"
 version = "2.0.3"
-description = "Photo Sort Tauri 2.0 App"
+description = "Imprint - Intelligent RAW Photo Burst Selection & Aesthetic Sorting App"
 authors = ["Luqie"]
 edition = "2021"
 

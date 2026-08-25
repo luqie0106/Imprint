@@ -109,8 +109,8 @@ jobs:
       - name: Create macOS PKG Installer
         if: runner.os == 'macOS'
         run: |
-          APP="tauri-frontend/src-tauri/target/release/bundle/macos/PhotoSort.app"
-          productbuild --component "$APP" /Applications PhotoSort-macOS-Installer.pkg
+          APP="tauri-frontend/src-tauri/target/release/bundle/macos/Imprint.app"
+          productbuild --component "$APP" /Applications Imprint-macOS-Installer.pkg
 
       # Windows：构建二进制（跳过所有 Installer 压缩打包，直接生成 Portable ZIP 便携版）
       - name: Build Tauri App (Windows)
@@ -121,41 +121,50 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Windows Portable ZIP：exe + Python sidecar，解压即用
-      # 运行时 lib.rs 会在 dist-python/photo_sort_api/ 下查找 sidecar，路径匹配
+      # 运行时 lib.rs 会在 dist-python/ 下查找 sidecar，路径匹配
       # 使用 7z 多线程极速压缩，并排除 *.pdb 调试符号文件
       - name: Create Windows Portable ZIP
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $out = "PhotoSort-Portable"
+          $out = "Imprint-Portable"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           # 主程序
-          Copy-Item "tauri-frontend\src-tauri\target\release\tauri-frontend.exe" "$out\PhotoSort.exe"
+          if (Test-Path "tauri-frontend\src-tauri\target\release\imprint.exe") {
+            Copy-Item "tauri-frontend\src-tauri\target\release\imprint.exe" "$out\Imprint.exe"
+          } else {
+            Copy-Item "tauri-frontend\src-tauri\target\release\tauri-frontend.exe" "$out\Imprint.exe"
+          }
           # Python sidecar（保持目录结构）
           New-Item -ItemType Directory -Force -Path "$out\dist-python" | Out-Null
-          Copy-Item -Recurse "tauri-frontend\dist-python\photo_sort_api" "$out\dist-python\photo_sort_api"
+          if (Test-Path "tauri-frontend\dist-python\imprint_api") {
+            Copy-Item -Recurse "tauri-frontend\dist-python\imprint_api" "$out\dist-python\imprint_api"
+          }
+          if (Test-Path "tauri-frontend\dist-python\photo_sort_api") {
+            Copy-Item -Recurse "tauri-frontend\dist-python\photo_sort_api" "$out\dist-python\photo_sort_api"
+          }
           # 清理调试符号
           Get-ChildItem -Path $out -Recurse -Filter "*.pdb" | Remove-Item -Force -ErrorAction SilentlyContinue
           # 使用 7-Zip 高速多线程压缩（避免 PowerShell Compress-Archive 单线程耗时 20+ 分钟）
-          7z a -tzip -mx=4 "PhotoSort-Windows-Portable.zip" ".\$out\*"
+          7z a -tzip -mx=4 "Imprint-Windows-Portable.zip" ".\$out\*"
 
       # ── Upload Artifacts (分平台精确上传) ───────────────────────────────
       - name: Upload macOS Artifacts
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: PhotoSort-macOS
+          name: Imprint-macOS
           path: |
             tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
-            PhotoSort-macOS-Installer.pkg
+            Imprint-macOS-Installer.pkg
           if-no-files-found: error
 
       - name: Upload Windows Artifacts
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: PhotoSort-Windows
-          path: PhotoSort-Windows-Portable.zip
+          name: Imprint-Windows
+          path: Imprint-Windows-Portable.zip
           if-no-files-found: error
 
   # ── 独立 Release 任务（避免多平台矩阵并发冲突导致死锁/重试循环）──────────────

@@ -105,7 +105,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='PhotoSort',
+    name='Imprint',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -127,17 +127,17 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='PhotoSort',
+    name='Imprint',
 )
 
 app = BUNDLE(
     coll,
-    name='PhotoSort.app',
+    name='Imprint.app',
     icon='src/assets/icon.icns' if os.path.exists('src/assets/icon.icns') else None,
-    bundle_identifier='com.photosort.app',
+    bundle_identifier='com.imprint.app',
     info_plist={
-        'CFBundleDisplayName': 'PhotoSort',
-        'CFBundleName': 'PhotoSort',
+        'CFBundleDisplayName': 'Imprint',
+        'CFBundleName': 'Imprint',
         'CFBundlePackageType': 'APPL',
         'CFBundleShortVersionString': '2.0.3',
         'NSHighResolutionCapable': 'True',

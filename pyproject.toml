@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "photo-sort"
+name = "imprint"
 version = "2.0.3"
 description = "RAW / JPEG / JXL / HIF 智能连拍优选与个人审美微调系统"
 

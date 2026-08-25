@@ -1,10 +1,10 @@
-; Inno Setup Script for PhotoSort
-; Generates PhotoSort-Windows-Installer.exe
+; Inno Setup Script for Imprint
+; Generates Imprint-Windows-Installer.exe
 
-#define MyAppName "PhotoSort"
+#define MyAppName "Imprint"
 #define MyAppPublisher "luqie"
-#define MyAppURL "https://github.com/luqie0106/photo_sort"
-#define MyAppExeName "PhotoSort.exe"
+#define MyAppURL "https://github.com/luqie0106/Imprint"
+#define MyAppExeName "Imprint.exe"
 
 #ifndef MyAppVersion
 #define MyAppVersion "2.0.3"
@@ -25,7 +25,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=dist
-OutputBaseFilename=PhotoSort-Windows-Installer
+OutputBaseFilename=Imprint-Windows-Installer
 SetupIconFile=src\assets\icon.ico
 Compression=lzma2/fast
 SolidCompression=no
@@ -36,7 +36,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 
@@ -44,7 +44,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\PhotoSort\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\Imprint\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

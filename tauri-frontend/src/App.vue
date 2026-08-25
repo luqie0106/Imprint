@@ -43,12 +43,12 @@ onMounted(() => {
       <div class="flex items-center gap-3" data-tauri-drag-region>
         <img
           :src="appLogo"
-          alt="PhotoSort"
+          alt="Imprint"
           class="w-8 h-8 rounded-xl object-contain shadow-xs"
         />
         <div>
           <h1 class="text-sm font-bold tracking-tight text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-            PhotoSort
+            Imprint
             <span class="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
               Tauri 2.0
             </span>

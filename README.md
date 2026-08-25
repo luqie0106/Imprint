@@ -1,6 +1,6 @@
-# Photo Sort
+# Imprint
 
-[![Version](https://img.shields.io/badge/Version-2.0.3-6366F1?logo=v&logoColor=white)](https://github.com/luqie0106/photo_sort/releases)
+[![Version](https://img.shields.io/badge/Version-2.0.3-6366F1?logo=v&logoColor=white)](https://github.com/luqie0106/Imprint/releases)
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?logo=tauri&logoColor=black)](https://tauri.app/)
 [![Vue 3](https://img.shields.io/badge/Frontend-Vue%203%20%7C%20TailwindCSS-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
 [![Backend](https://img.shields.io/badge/Sidecar-FastAPI%20%2B%20Uvicorn-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -18,7 +18,7 @@
 
 ## 🏗️ 架构设计
 
-PhotoSort 2.0 采用 **Tauri 2.0 (Rust) + Vue 3 前端 + Python FastAPI Sidecar 后端** 架构：
+Imprint 2.0 采用 **Tauri 2.0 (Rust) + Vue 3 前端 + Python FastAPI Sidecar 后端** 架构：
 
 ```mermaid
 flowchart TD
@@ -93,8 +93,8 @@ flowchart TD
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/luqie0106/photo_sort.git
-cd photo_sort
+git clone https://github.com/luqie0106/Imprint.git
+cd Imprint
 
 # 2. 安装 Python 核心与 API 依赖
 pip install -r requirements.txt
@@ -140,7 +140,7 @@ python main.py --export-onnx
 
 ## 🧠 模型体系与个人审美偏好训练
 
-PhotoSort 采用 **「出厂预置权威标准模型 + 随时切换个人微调模型」** 的双轨架构：
+Imprint 采用 **「出厂预置权威标准模型 + 随时切换个人微调模型」** 的双轨架构：
 
 1. **🌟 官方标准通用模型（开箱即用，已内置）**：
    - 基于全球摄影美学权威数据集（LAION / AVA 25万+ 张多题材专业摄影打分）预训练。
@@ -163,7 +163,7 @@ PhotoSort 采用 **「出厂预置权威标准模型 + 随时切换个人微调�
 ## 📁 目录结构
 
 ```
-photo_sort/
+Imprint/
 ├── src/
 │   ├── app_api.py              # FastAPI Sidecar 后端 (REST / SSE 接口)
 │   ├── burst_filter.py         # 连拍聚类、EXIF 与多维打分核心逻辑
@@ -198,16 +198,16 @@ photo_sort/
 
 #### 🪟 Windows 用户
 1. **SmartScreen 拦截提示“Windows 已保护你的电脑”**：
-   - 点击提示窗口中的 **「更多信息」** $\rightarrow$ **「仍要运行」** 即可。
+   - 点击提示窗口中的 **「更多信息」** $ightarrow$ **「仍要运行」** 即可。
 
 #### 🍎 macOS 用户
 1. **提示“无法打开，因为无法验证开发者”**：
-   - 打开 **「系统设置」 $\rightarrow$ 「隐私与安全性」**，下滑至安全性区域点击 **「仍要打开」**；
+   - 打开 **「系统设置」 $ightarrow$ 「隐私与安全性」**，下滑至安全性区域点击 **「仍要打开」**；
    - 或按住键盘 `Control` 键右键点击应用图标，选择 **「打开」**。
 2. **提示“应用已损坏，移到废纸篓”**（macOS 下载文件的隔离属性）：
    - 在终端执行命令解除隔离：
      ```bash
-     xattr -cr /Applications/PhotoSort.app
+     xattr -cr /Applications/Imprint.app
      ```
 
 ---

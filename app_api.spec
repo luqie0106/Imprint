@@ -76,7 +76,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='photo_sort_api',
+    name='imprint_api',
     debug=False,
     strip=False,
     upx=True,
@@ -93,5 +93,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='photo_sort_api',
+    name='imprint_api',
 )

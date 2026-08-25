@@ -105,6 +105,7 @@ models/clip-vit-large-patch14/
 
 # ── PyInstaller ────────────────────────────────────────────────────────────────
 *.spec
+!imprint.spec
 !photo_sort.spec
 !app_api.spec
 

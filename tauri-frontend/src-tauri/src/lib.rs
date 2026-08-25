@@ -121,22 +121,38 @@ fn find_app_api_script() -> Option<PathBuf> {
 fn find_sidecar_or_script() -> (Option<PathBuf>, bool) {
     // 优先查找 PyInstaller 打包的 sidecar 可执行文件
     #[cfg(target_os = "windows")]
-    let exe_name = "photo_sort_api.exe";
+    let exe_names = ["imprint_api.exe", "photo_sort_api.exe"];
     #[cfg(not(target_os = "windows"))]
-    let exe_name = "photo_sort_api";
+    let exe_names = ["imprint_api", "photo_sort_api"];
 
-    let mut sidecar_candidates = vec![
-        PathBuf::from("dist-python/photo_sort_api").join(exe_name),
-        PathBuf::from("../dist-python/photo_sort_api").join(exe_name),
-        PathBuf::from("../../dist-python/photo_sort_api").join(exe_name),
+    let dir_candidates = [
+        "dist-python/imprint_api",
+        "../dist-python/imprint_api",
+        "../../dist-python/imprint_api",
+        "dist-python/photo_sort_api",
+        "../dist-python/photo_sort_api",
+        "../../dist-python/photo_sort_api",
     ];
+
+    let mut sidecar_candidates = Vec::new();
+
+    for dir in &dir_candidates {
+        for exe in &exe_names {
+            sidecar_candidates.push(PathBuf::from(dir).join(exe));
+        }
+    }
 
     // 如果是通过双击 exe / 快捷方式运行，加入相对于可执行文件自身目录的路径查找
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
-            sidecar_candidates.push(exe_dir.join("dist-python/photo_sort_api").join(exe_name));
-            sidecar_candidates.push(exe_dir.join("resources/dist-python/photo_sort_api").join(exe_name));
-            sidecar_candidates.push(exe_dir.join("../Resources/dist-python/photo_sort_api").join(exe_name));
+            for exe in &exe_names {
+                sidecar_candidates.push(exe_dir.join("dist-python/imprint_api").join(exe));
+                sidecar_candidates.push(exe_dir.join("dist-python/photo_sort_api").join(exe));
+                sidecar_candidates.push(exe_dir.join("resources/dist-python/imprint_api").join(exe));
+                sidecar_candidates.push(exe_dir.join("resources/dist-python/photo_sort_api").join(exe));
+                sidecar_candidates.push(exe_dir.join("../Resources/dist-python/imprint_api").join(exe));
+                sidecar_candidates.push(exe_dir.join("../Resources/dist-python/photo_sort_api").join(exe));
+            }
         }
     }
 
