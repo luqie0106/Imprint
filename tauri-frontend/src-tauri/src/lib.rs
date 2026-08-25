@@ -19,7 +19,37 @@ fn get_api_port(state: State<AppState>) -> Result<u16, String> {
 
 /// 查找最适合的 Python 解释器或 sidecar 可执行文件
 fn find_python_executable() -> Option<PathBuf> {
-    // 1. 优先使用指定的 conda py311 虚拟环境
+    // 0. 优先检测当前终端激活的虚拟环境 (Conda 的 CONDA_PREFIX 或 venv 的 VIRTUAL_ENV)
+    if let Ok(conda_prefix) = std::env::var("CONDA_PREFIX") {
+        #[cfg(target_os = "windows")]
+        let p = PathBuf::from(&conda_prefix).join("python.exe");
+        #[cfg(not(target_os = "windows"))]
+        let p = PathBuf::from(&conda_prefix).join("bin/python");
+        if p.exists() {
+            println!("🎯 检测到当前终端激活的 Conda 环境: {}", p.display());
+            return Some(p);
+        }
+    }
+
+    if let Ok(venv_prefix) = std::env::var("VIRTUAL_ENV") {
+        #[cfg(target_os = "windows")]
+        let candidates = [
+            PathBuf::from(&venv_prefix).join("python.exe"),
+            PathBuf::from(&venv_prefix).join("Scripts/python.exe"),
+        ];
+        #[cfg(not(target_os = "windows"))]
+        let candidates = [
+            PathBuf::from(&venv_prefix).join("bin/python"),
+        ];
+        for p in &candidates {
+            if p.exists() {
+                println!("🎯 检测到当前终端激活的 VirtualEnv 环境: {}", p.display());
+                return Some(p.clone());
+            }
+        }
+    }
+
+    // 1. 尝试常见预设路径 (兜底)
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();
@@ -39,24 +69,29 @@ fn find_python_executable() -> Option<PathBuf> {
         }
     }
 
-    // 2. 尝试系统 PATH 中的 python3 / python
+    // 2. 尝试系统 PATH 中的解释器
+    // Windows 下优先查找 python，且过滤 WindowsApps 微软商店虚假占位符
     #[cfg(target_os = "windows")]
-    let which_cmd = "where";
+    let (which_cmd, cmds) = ("where", &["python", "python3"][..]);
     #[cfg(not(target_os = "windows"))]
-    let which_cmd = "which";
+    let (which_cmd, cmds) = ("which", &["python3", "python"][..]);
 
-    for cmd in &["python3", "python"] {
+    for cmd in cmds {
         if let Ok(output) = Command::new(which_cmd).arg(cmd).output() {
             if output.status.success() {
                 let stdout_str = String::from_utf8_lossy(&output.stdout);
-                // Windows 下 where 可能会返回多行候选路径，取第一行
-                if let Some(first_line) = stdout_str.lines().next() {
-                    let path_str = first_line.trim().to_string();
-                    if !path_str.is_empty() {
-                        let p = PathBuf::from(path_str);
-                        if p.exists() {
-                            return Some(p);
-                        }
+                for line in stdout_str.lines() {
+                    let path_str = line.trim().to_string();
+                    if path_str.is_empty() {
+                        continue;
+                    }
+                    // 过滤 Windows Store 虚假重定向占位符
+                    if path_str.to_lowercase().contains("windowsapps") {
+                        continue;
+                    }
+                    let p = PathBuf::from(path_str);
+                    if p.exists() {
+                        return Some(p);
                     }
                 }
             }
@@ -90,11 +125,21 @@ fn find_sidecar_or_script() -> (Option<PathBuf>, bool) {
     #[cfg(not(target_os = "windows"))]
     let exe_name = "photo_sort_api";
 
-    let sidecar_candidates = [
+    let mut sidecar_candidates = vec![
         PathBuf::from("dist-python/photo_sort_api").join(exe_name),
         PathBuf::from("../dist-python/photo_sort_api").join(exe_name),
         PathBuf::from("../../dist-python/photo_sort_api").join(exe_name),
     ];
+
+    // 如果是通过双击 exe / 快捷方式运行，加入相对于可执行文件自身目录的路径查找
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            sidecar_candidates.push(exe_dir.join("dist-python/photo_sort_api").join(exe_name));
+            sidecar_candidates.push(exe_dir.join("resources/dist-python/photo_sort_api").join(exe_name));
+            sidecar_candidates.push(exe_dir.join("../Resources/dist-python/photo_sort_api").join(exe_name));
+        }
+    }
+
     for c in &sidecar_candidates {
         if c.exists() {
             if let Ok(abs) = c.canonicalize() {
