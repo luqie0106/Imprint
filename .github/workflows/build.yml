@@ -95,11 +95,6 @@ jobs:
       - name: Set up Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: tauri-frontend/src-tauri -> target
-
       # ── Tauri Build ───────────────────────────────────────────────────
 
       # macOS：dmg（portable）+ app（用于生成 pkg）
