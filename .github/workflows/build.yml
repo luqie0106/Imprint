@@ -98,6 +98,19 @@ jobs:
         run: |
           productbuild --component tauri-frontend/src-tauri/target/release/bundle/macos/PhotoSort.app /Applications PhotoSort_2.0.0_macOS_Installer.pkg
 
+      # ── Windows Portable ZIP ──────────────────────────────────────────
+      - name: Create Windows Portable ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist_portable | Out-Null
+          Copy-Item "tauri-frontend\src-tauri\target\release\PhotoSort.exe" -Destination "dist_portable\" -ErrorAction SilentlyContinue
+          if (-not (Test-Path "dist_portable\PhotoSort.exe")) {
+            Copy-Item "tauri-frontend\src-tauri\target\release\*.exe" -Destination "dist_portable\"
+          }
+          Copy-Item -Path "dist-python" -Destination "dist_portable\" -Recurse -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist_portable\* -DestinationPath PhotoSort_2.0.0_Windows_Portable.zip -Force
+
       # ── Upload Artifacts ──────────────────────────────────────────────
       - name: Upload macOS Packages
         if: runner.os == 'macOS'
@@ -109,14 +122,14 @@ jobs:
             *.pkg
           if-no-files-found: warn
 
-      - name: Upload Windows Installers
+      - name: Upload Windows Packages
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: PhotoSort-Windows
           path: |
-            tauri-frontend/src-tauri/target/release/bundle/msi/*.msi
             tauri-frontend/src-tauri/target/release/bundle/nsis/*.exe
+            PhotoSort_2.0.0_Windows_Portable.zip
           if-no-files-found: warn
 
       # ── GitHub Release (tag push only) ────────────────────────────────
@@ -127,7 +140,7 @@ jobs:
           files: |
             tauri-frontend/src-tauri/target/release/bundle/dmg/*.dmg
             *.pkg
-            tauri-frontend/src-tauri/target/release/bundle/msi/*.msi
             tauri-frontend/src-tauri/target/release/bundle/nsis/*.exe
+            PhotoSort_2.0.0_Windows_Portable.zip
           fail_on_unmatched_files: false
           generate_release_notes: true
