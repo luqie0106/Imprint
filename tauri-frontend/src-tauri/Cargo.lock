@@ -1715,7 +1715,7 @@ dependencies = [
 
 [[package]]
 name = "imprint"
-version = "2.0.4"
+version = "2.0.5"
 dependencies = [
  "serde",
  "serde_json",

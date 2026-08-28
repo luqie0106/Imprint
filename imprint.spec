@@ -139,7 +139,7 @@ app = BUNDLE(
         'CFBundleDisplayName': 'Imprint',
         'CFBundleName': 'Imprint',
         'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '2.0.4',
+        'CFBundleShortVersionString': '2.0.5',
         'NSHighResolutionCapable': 'True',
     },
 

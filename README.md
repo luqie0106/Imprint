@@ -1,6 +1,6 @@
 # Imprint
 
-[![Version](https://img.shields.io/badge/Version-2.0.4-6366F1?logo=v&logoColor=white)](https://github.com/luqie0106/Imprint/releases)
+[![Version](https://img.shields.io/badge/Version-2.0.5-6366F1?logo=v&logoColor=white)](https://github.com/luqie0106/Imprint/releases)
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?logo=tauri&logoColor=black)](https://tauri.app/)
 [![Vue 3](https://img.shields.io/badge/Frontend-Vue%203%20%7C%20TailwindCSS-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
 [![Backend](https://img.shields.io/badge/Sidecar-FastAPI%20%2B%20Uvicorn-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
