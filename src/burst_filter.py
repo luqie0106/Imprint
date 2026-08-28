@@ -16,6 +16,14 @@ import shutil
 import sys
 import threading
 import warnings
+
+# 确保标准输出为 UTF-8 编码，防止 Windows GBK 环境下 Emoji 引发 UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
@@ -756,9 +764,9 @@ class BurstFilter:
         self._aesthetic_scorer = AestheticScorer(project_root, use_gpu=self.use_gpu)
         if self._aesthetic_scorer.available:
             engine_str = "ONNX" if self._aesthetic_scorer.engine == "onnx" else "PyTorch"
-            print(f"🚀 已启用 {engine_str} 美学评分模型！")
+            self._notify(f"🚀 已启用 {engine_str} 美学评分模型！")
         else:
-            print("ℹ️ 未检测到有效的美学模型，降级为纯 OpenCV 锐度过滤。")
+            self._notify("ℹ️ 未检测到有效的美学模型，降级为纯 OpenCV 锐度过滤。")
 
     def run(self, input_dir: Path) -> BurstFilterResult:
         result = BurstFilterResult()
@@ -957,5 +965,11 @@ class BurstFilter:
         if self.progress_callback:
             self.progress_callback(message)
         else:
-            print(message)
+            try:
+                print(message, flush=True)
+            except Exception:
+                try:
+                    print(message.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8"), flush=True)
+                except Exception:
+                    pass
 

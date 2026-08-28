@@ -125,7 +125,7 @@ onMounted(() => {
 
 <template>
   <div class="h-full flex flex-col gap-5 p-6 overflow-y-auto">
-    <!-- 头部说明与刷新 -->
+    <!-- 头部说明 -->
     <div class="flex items-center justify-between">
       <div>
         <h2 class="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
@@ -140,7 +140,7 @@ onMounted(() => {
       <button
         @click="fetchStatus"
         :disabled="isRefreshing"
-        class="px-4 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs font-medium transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+        class="px-4 py-2 rounded-xl bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs font-medium transition flex items-center gap-1.5 border border-zinc-200/60 dark:border-zinc-700/60 shadow-xs cursor-pointer"
       >
         <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isRefreshing }" />
         刷新状态
@@ -149,7 +149,7 @@ onMounted(() => {
 
     <!-- 当前激活模型模式选择卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
+      class="bg-white dark:bg-zinc-900/90 rounded-2xl p-5 shadow-xs border border-zinc-200 dark:border-zinc-800/80 flex flex-col gap-4 transition-colors duration-200"
     >
       <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
         <Zap class="w-4 h-4 text-indigo-500" />
@@ -163,8 +163,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'standard'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
+              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -189,8 +189,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'standard_l14'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
+              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -215,8 +215,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'custom'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
+              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -241,8 +241,8 @@ onMounted(() => {
           class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
           :class="
             status.mode === 'custom_l14'
-              ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
+              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
+              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
           "
         >
           <div class="flex items-center justify-between">
@@ -266,7 +266,7 @@ onMounted(() => {
     <!-- 个人 PTH 权重熔铸为 ONNX -->
     <div
       v-if="status.mlp_ready || status.mlp_l14_ready"
-      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
+      class="bg-white dark:bg-zinc-900/90 rounded-2xl p-5 shadow-xs border border-zinc-200 dark:border-zinc-800/80 flex flex-col gap-4 transition-colors duration-200"
     >
       <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
         <Flame class="w-4 h-4 text-orange-500" />
@@ -280,7 +280,7 @@ onMounted(() => {
         <!-- B/32 熔铸 -->
         <div
           v-if="status.mlp_ready"
-          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col gap-3"
+          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col gap-3"
         >
           <div class="flex items-center justify-between">
             <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">个人模型 (ViT-B/32)</span>
@@ -307,7 +307,7 @@ onMounted(() => {
         <!-- L/14 熔铸 -->
         <div
           v-if="status.mlp_l14_ready"
-          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col gap-3"
+          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col gap-3"
         >
           <div class="flex items-center justify-between">
             <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">个人模型 (ViT-L/14)</span>
@@ -346,7 +346,7 @@ onMounted(() => {
 
     <!-- 视觉底座模型下载与同步卡片 -->
     <div
-      class="bg-white/70 dark:bg-zinc-900/85 backdrop-blur-md rounded-2xl p-5 shadow-sm border border-zinc-200/60 dark:border-zinc-800/80 flex flex-col gap-4"
+      class="bg-white dark:bg-zinc-900/90 rounded-2xl p-5 shadow-xs border border-zinc-200 dark:border-zinc-800/80 flex flex-col gap-4 transition-colors duration-200"
     >
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
@@ -367,7 +367,7 @@ onMounted(() => {
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <!-- 下载项 1: ViT-B/32 -->
-        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
+        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
           <div>
             <div class="flex items-center justify-between">
               <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">
@@ -396,7 +396,7 @@ onMounted(() => {
         </div>
 
         <!-- 下载项 2: ViT-L/14 -->
-        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
+        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
           <div>
             <div class="flex items-center justify-between">
               <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">

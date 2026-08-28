@@ -14,6 +14,14 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+# 确保标准输出为 UTF-8 编码，防止 Windows GBK 环境下 Emoji 引发 UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (

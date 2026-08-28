@@ -215,6 +215,8 @@ fn spawn_python_sidecar(
     };
 
     cmd.current_dir(&project_root);
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.env("PYTHONUTF8", "1");
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::inherit());
 
@@ -279,18 +281,18 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![get_api_port])
         .setup(|app| {
-            // macOS 磨砂效果 / Windows Mica 效果
+            // macOS 磨砂效果 / Windows Mica 效果（支持深浅自适应）
             if let Some(window) = app.get_webview_window("main") {
                 #[cfg(target_os = "macos")]
                 {
                     use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
-                    let _ = apply_vibrancy(&window, NSVisualEffectMaterial::HudWindow, None, None);
+                    let _ = apply_vibrancy(&window, NSVisualEffectMaterial::FullScreenUI, None, None);
                 }
 
                 #[cfg(target_os = "windows")]
                 {
                     use window_vibrancy::apply_mica;
-                    let _ = apply_mica(&window, Some(true));
+                    let _ = apply_mica(&window, None);
                 }
             }
             Ok(())

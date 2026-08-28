@@ -7,6 +7,10 @@ import {
   serverError,
   apiPort,
 } from "./stores/api";
+import {
+  themePreference,
+  cycleTheme,
+} from "./stores/theme";
 import BurstPage from "./views/BurstPage.vue";
 import ModelsPage from "./views/ModelsPage.vue";
 import TrainerPage from "./views/TrainerPage.vue";
@@ -18,6 +22,9 @@ import {
   RefreshCw,
   AlertTriangle,
   Server,
+  Sun,
+  Moon,
+  Monitor,
 } from "lucide-vue-next";
 
 type TabType = "burst" | "models" | "trainer";
@@ -33,11 +40,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="w-full h-full flex flex-col bg-transparent dark:bg-zinc-950/92 dark:backdrop-blur-2xl text-zinc-800 dark:text-zinc-100 select-none">
+  <div class="w-full h-full flex flex-col bg-zinc-100 dark:bg-zinc-950 text-zinc-800 dark:text-zinc-100 select-none transition-colors duration-200">
     <!-- 原生标题栏 / 顶部导航区域 (支持拖拽窗口) -->
     <header
       data-tauri-drag-region
-      class="h-14 shrink-0 px-5 flex items-center justify-between border-b border-zinc-200/40 dark:border-zinc-800/80 bg-white/40 dark:bg-zinc-900/80 backdrop-blur-md"
+      class="h-14 shrink-0 px-5 flex items-center justify-between border-b border-zinc-200/90 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md transition-colors duration-200"
     >
       <!-- Logo 与应用标题 -->
       <div class="flex items-center gap-3" data-tauri-drag-region>
@@ -49,7 +56,7 @@ onMounted(() => {
         <div>
           <h1 class="text-sm font-bold tracking-tight text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
             Imprint
-            <span class="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
+            <span class="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/60">
               Tauri 2.0
             </span>
           </h1>
@@ -57,7 +64,7 @@ onMounted(() => {
       </div>
 
       <!-- 居中 Tab 导航切换栏 -->
-      <nav class="flex items-center bg-zinc-200/50 dark:bg-zinc-900/80 p-1 rounded-xl gap-1 border border-transparent dark:border-zinc-800/60">
+      <nav class="flex items-center bg-zinc-200/70 dark:bg-zinc-900/80 p-1 rounded-xl gap-1 border border-zinc-200/50 dark:border-zinc-800/60">
         <button
           @click="activeTab = 'burst'"
           class="px-4 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer"
@@ -98,11 +105,26 @@ onMounted(() => {
         </button>
       </nav>
 
-      <!-- 右侧后端状态指标 -->
+      <!-- 右侧控制区: 后端状态指标 + 主题切换按钮 -->
       <div class="flex items-center gap-3 text-xs" data-tauri-drag-region>
+        <!-- 主题切换按钮 -->
+        <button
+          @click="cycleTheme"
+          class="p-2 rounded-xl bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-300 transition flex items-center gap-1.5 border border-zinc-200/60 dark:border-zinc-700/60 cursor-pointer shadow-xs"
+          :title="themePreference === 'system' ? '当前: 跟随系统 (点击切换)' : themePreference === 'dark' ? '当前: 深色模式 (点击切换)' : '当前: 浅色模式 (点击切换)'"
+        >
+          <Monitor v-if="themePreference === 'system'" class="w-3.5 h-3.5 text-indigo-500" />
+          <Moon v-else-if="themePreference === 'dark'" class="w-3.5 h-3.5 text-indigo-400" />
+          <Sun v-else class="w-3.5 h-3.5 text-amber-500" />
+          <span class="text-[11px] font-medium hidden sm:inline">
+            {{ themePreference === 'system' ? '跟随系统' : themePreference === 'dark' ? '深色' : '浅色' }}
+          </span>
+        </button>
+
+        <!-- 后端就绪状态 -->
         <div
           v-if="isServerReady"
-          class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium px-2.5 py-1 rounded-full bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900"
+          class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium px-2.5 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 shadow-xs"
         >
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
           <span>Sidecar 就绪 (端口: {{ apiPort }})</span>
@@ -110,7 +132,7 @@ onMounted(() => {
 
         <div
           v-else-if="isConnecting"
-          class="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-medium px-2.5 py-1 rounded-full bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900"
+          class="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-medium px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 shadow-xs"
         >
           <RefreshCw class="w-3 h-3 animate-spin" />
           <span>正在连接后端服务...</span>
@@ -118,7 +140,7 @@ onMounted(() => {
 
         <div
           v-else
-          class="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-medium px-2.5 py-1 rounded-full bg-rose-50/80 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900"
+          class="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-medium px-2.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 shadow-xs"
         >
           <AlertTriangle class="w-3 h-3" />
           <span>后端离线</span>
@@ -131,7 +153,7 @@ onMounted(() => {
       <!-- 异常友好提示界面（非白屏） -->
       <div
         v-if="!isServerReady && !isConnecting"
-        class="absolute inset-0 z-50 flex flex-col items-center justify-center p-8 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-xl gap-4 text-center"
+        class="absolute inset-0 z-50 flex flex-col items-center justify-center p-8 bg-zinc-100/90 dark:bg-zinc-900/90 backdrop-blur-xl gap-4 text-center"
       >
         <div class="w-14 h-14 rounded-2xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shadow-sm">
           <Server class="w-7 h-7" />
@@ -154,7 +176,7 @@ onMounted(() => {
       <!-- 启动等待中界面 -->
       <div
         v-else-if="!isServerReady && isConnecting"
-        class="absolute inset-0 z-50 flex flex-col items-center justify-center p-8 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-xl gap-3 text-center"
+        class="absolute inset-0 z-50 flex flex-col items-center justify-center p-8 bg-zinc-100/80 dark:bg-zinc-900/80 backdrop-blur-xl gap-3 text-center"
       >
         <RefreshCw class="w-8 h-8 text-indigo-500 animate-spin" />
         <h3 class="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
