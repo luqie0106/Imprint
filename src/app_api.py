@@ -60,7 +60,7 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="Imprint API", version="2.0.3")
+app = FastAPI(title="Imprint API", version="2.0.4")
 
 # 配置 CORS 中间件，允许 Tauri 桌面端以及本地开发环境请求
 app.add_middleware(
@@ -163,10 +163,14 @@ async def run_burst(req: BurstRequest):
 
     async def event_stream() -> AsyncGenerator[str, None]:
         while True:
-            event = await queue.get()
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            if event.get("type") in ("done", "error"):
-                break
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=10.0)
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") in ("done", "error"):
+                    break
+            except asyncio.TimeoutError:
+                # SSE 注释行：不触发前端 onmessage，仅用于保持 TCP 连接活跃
+                yield ": keep-alive\n\n"
 
     return StreamingResponse(
         event_stream(),

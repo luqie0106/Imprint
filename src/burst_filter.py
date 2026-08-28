@@ -581,6 +581,7 @@ class BurstGrouper:
         gap_seconds: float = DEFAULT_TIME_GAP_SECONDS,
         max_hamming_distance: int = DEFAULT_MAX_HAMMING_DISTANCE,
         max_workers: int | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._exif = exif_reader
         self._previewer = preview_extractor
@@ -589,6 +590,7 @@ class BurstGrouper:
         if max_workers is None or max_workers <= 0:
             max_workers = max(1, round((os.cpu_count() or 4) * 0.8))
         self.max_workers = max_workers
+        self.progress_callback = progress_callback
 
     def group(self, items: Sequence[Path | PhotoShot]) -> list[list[Any]]:
         if not items:
@@ -600,7 +602,9 @@ class BurstGrouper:
             for it in items
         ]
 
-        # 1. 多线程并发读取时间与提取 dHash
+        total = len(shots)
+
+        # 1. 多线程并发读取时间与提取 dHash，每完成 50 张回调一次进度
         def _parse_meta(shot: PhotoShot) -> tuple[PhotoShot, datetime, np.ndarray | None]:
             p = shot.primary_path
             return shot, self._exif.read_datetime(p), self._safe_dhash(p)
@@ -610,9 +614,20 @@ class BurstGrouper:
         workers = max(1, self.max_workers)
 
         meta_map: dict[PhotoShot, tuple[datetime, np.ndarray | None]] = {}
+        _PROGRESS_BATCH = 50   # 每完成多少张通知一次
+        completed = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for shot, dt, h in executor.map(_parse_meta, shots):
+            futures = {executor.submit(_parse_meta, shot): shot for shot in shots}
+            for fut in concurrent.futures.as_completed(futures):
+                shot, dt, h = fut.result()
                 meta_map[shot] = (dt, h)
+                completed += 1
+                if self.progress_callback and (
+                    completed % _PROGRESS_BATCH == 0 or completed == total
+                ):
+                    self.progress_callback(
+                        f"正在提取图像特征哈希… ({completed}/{total})"
+                    )
 
         timed: list[tuple[datetime, PhotoShot]] = sorted(
             ((meta_map[s][0], s) for s in shots),
@@ -728,6 +743,7 @@ class BurstFilter:
             gap_seconds=gap_seconds,
             max_hamming_distance=max_hamming_distance,
             max_workers=max_workers,
+            progress_callback=self.progress_callback,
         )
         
         # 尝试加载美学模型（支持 ONNX 与 PyTorch 双引擎）
