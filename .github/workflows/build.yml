@@ -33,7 +33,12 @@ jobs:
       - name: Disable Windows Defender
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Set-MpPreference -ExclusionPath "${{ github.workspace }}" -ErrorAction SilentlyContinue
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableScriptScanning $true -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableIOAVProtection $true -ErrorAction SilentlyContinue
+          Set-MpPreference -ExclusionPath @("${{ github.workspace }}", "C:\Users\runneradmin", "$env:TEMP", "$env:TMP") -ErrorAction SilentlyContinue
 
       # ── Python ────────────────────────────────────────────────────────
       - name: Set up Python 3.11
@@ -95,6 +100,10 @@ jobs:
       - name: Set up Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Build Frontend
+        working-directory: tauri-frontend
+        run: npm run build
+
       # ── Tauri Build ───────────────────────────────────────────────────
 
       # macOS：dmg（portable）+ app（用于生成 pkg）
@@ -112,11 +121,11 @@ jobs:
           APP="tauri-frontend/src-tauri/target/release/bundle/macos/Imprint.app"
           productbuild --component "$APP" /Applications Imprint-macOS-Installer.pkg
 
-      # Windows：构建二进制（跳过所有 Installer 压缩打包，直接生成 Portable ZIP 便携版）
+      # Windows：构建二进制（跳过所有 Installer 压缩打包，覆盖 resources 避免在 build.rs 复制 15000+ 文件）
       - name: Build Tauri App (Windows)
         if: runner.os == 'Windows'
         working-directory: tauri-frontend
-        run: npm run tauri build -- --no-bundle
+        run: npm run tauri build -- --no-bundle --config '{"bundle": {"resources": []}}'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
