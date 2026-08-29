@@ -68,7 +68,7 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="Imprint API", version="2.0.5")
+app = FastAPI(title="Imprint API", version="2.0.6")
 
 # 配置 CORS 中间件，允许 Tauri 桌面端以及本地开发环境请求
 app.add_middleware(
