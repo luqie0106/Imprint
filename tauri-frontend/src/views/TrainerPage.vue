@@ -23,6 +23,11 @@ const logContainer = ref<HTMLElement | null>(null);
 const { messages, isDone, isRunning, error, start, cancel } =
   useSse("/api/trainer/run");
 
+function cleanPath(val: string): string {
+  if (!val) return "";
+  return val.trim().replace(/^["']|["']$/g, "").trim();
+}
+
 async function selectDirectory() {
   try {
     const selected = await open({
@@ -31,7 +36,7 @@ async function selectDirectory() {
       title: "选择包含 like/ 与 dislike/ 的样本照片目录",
     });
     if (selected && typeof selected === "string") {
-      photosDir.value = selected;
+      photosDir.value = cleanPath(selected);
     }
   } catch (err) {
     console.error("选择目录失败:", err);
@@ -39,13 +44,15 @@ async function selectDirectory() {
 }
 
 async function handleStart() {
-  if (!photosDir.value) {
+  const dir = cleanPath(photosDir.value);
+  photosDir.value = dir;
+  if (!dir) {
     alert("请先选择训练样本照片目录！");
     return;
   }
 
   await start({
-    photos_dir: photosDir.value,
+    photos_dir: dir,
     model_type: modelType.value,
     epochs: Number(epochs.value),
     lr: Number(lr.value),
@@ -92,6 +99,8 @@ watch(
       <div class="flex gap-3">
         <input
           v-model="photosDir"
+          @change="photosDir = cleanPath(photosDir)"
+          @blur="photosDir = cleanPath(photosDir)"
           type="text"
           placeholder="请选择包含 like/ 与 dislike/ 两个子文件夹的样本目录..."
           class="flex-1 px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/70 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"

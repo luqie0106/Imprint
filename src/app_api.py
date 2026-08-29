@@ -136,9 +136,10 @@ async def run_burst(req: BurstRequest):
 
     async def run_in_thread():
         try:
-            target_path = Path(req.input_dir)
+            clean_dir = str(req.input_dir).strip().strip('\'"')
+            target_path = Path(clean_dir)
             if not target_path.exists() or not target_path.is_dir():
-                await queue.put({"type": "error", "msg": f"目标目录不存在: {req.input_dir}"})
+                await queue.put({"type": "error", "msg": f"目标目录不存在: {clean_dir}"})
                 return
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -170,15 +171,18 @@ async def run_burst(req: BurstRequest):
     asyncio.create_task(run_in_thread())
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        while True:
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=10.0)
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("type") in ("done", "error"):
-                    break
-            except asyncio.TimeoutError:
-                # SSE 注释行：不触发前端 onmessage，仅用于保持 TCP 连接活跃
-                yield ": keep-alive\n\n"
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10.0)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if event.get("type") in ("done", "error"):
+                        break
+                except asyncio.TimeoutError:
+                    # SSE 注释行：不触发前端 onmessage，仅用于保持 TCP 连接活跃
+                    yield ": keep-alive\n\n"
+        except (asyncio.CancelledError, GeneratorExit, Exception):
+            pass
 
     return StreamingResponse(
         event_stream(),
@@ -479,10 +483,11 @@ async def run_trainer(req: TrainerRequest):
     queue: asyncio.Queue[dict] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
-    data_dir = Path(req.photos_dir)
+    clean_photos_dir = str(req.photos_dir).strip().strip('\'"')
+    data_dir = Path(clean_photos_dir)
     if not data_dir.exists() or not data_dir.is_dir():
         async def err_stream():
-            yield f"data: {json.dumps({'type': 'error', 'msg': f'训练样本目录不存在: {req.photos_dir}'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'msg': f'训练样本目录不存在: {clean_photos_dir}'}, ensure_ascii=False)}\n\n"
         return StreamingResponse(err_stream(), media_type="text/event-stream")
 
     def _notify(msg: str, pct: float | None = None):
@@ -685,11 +690,17 @@ async def run_trainer(req: TrainerRequest):
     asyncio.create_task(run_training_worker())
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        while True:
-            event = await queue.get()
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            if event.get("type") in ("done", "error"):
-                break
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10.0)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if event.get("type") in ("done", "error"):
+                        break
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        except (asyncio.CancelledError, GeneratorExit, Exception):
+            pass
 
     return StreamingResponse(
         event_stream(),

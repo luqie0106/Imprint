@@ -278,7 +278,7 @@ class RawEvaluator:
         else:
             try:
                 with Image.open(path) as img:
-                    return np.asarray(img.convert("RGB"))
+                    return np.asarray(img.convert("RGB")).copy()
             except Exception as exc:
                 raise RuntimeError(f"无法读取图像文件: {path.name}") from exc
 
@@ -287,17 +287,19 @@ class RawEvaluator:
         with rawpy.imread(str(path)) as raw:
             thumb = raw.extract_thumb()
         if thumb.format == rawpy.ThumbFormat.JPEG:
-            img = Image.open(BytesIO(thumb.data))
+            with Image.open(BytesIO(thumb.data)) as img:
+                return np.asarray(img.convert("RGB")).copy()
         elif thumb.format == rawpy.ThumbFormat.BITMAP:
-            img = Image.fromarray(thumb.data)
+            with Image.fromarray(thumb.data) as img:
+                return np.asarray(img.convert("RGB")).copy()
         else:
             raise ValueError(f"Unknown thumb format: {thumb.format}")
-        return np.asarray(img.convert("RGB"))
 
     @staticmethod
     def _half_decode(path: Path) -> np.ndarray:
         with rawpy.imread(str(path)) as raw:
-            return raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
+            res = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
+            return np.ascontiguousarray(res)
 
 
     # ── 人脸优先的锐度计算 ────────────────────────────────────────────────────
@@ -377,6 +379,30 @@ class AestheticScorer:
     """
 
     _CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
+
+    _CACHE: dict[tuple[str, bool, str], AestheticScorer] = {}
+    _CACHE_LOCK = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, project_root: Path, use_gpu: bool = True) -> AestheticScorer:
+        """获取或复用单例 AestheticScorer，避免 DirectML/CUDA 会话重复初始化导致显存泄漏与崩溃。"""
+        # 探查当前活跃模型
+        onnx_str = ""
+        try:
+            from model_manager import get_active_aesthetic_model_path, get_active_model_mode
+            p = get_active_aesthetic_model_path()
+            mode = get_active_model_mode()
+            onnx_str = f"{mode}:{p}"
+        except Exception:
+            onnx_str = "default"
+
+        cache_key = (onnx_str, use_gpu, str(project_root))
+        with cls._CACHE_LOCK:
+            if cache_key in cls._CACHE:
+                return cls._CACHE[cache_key]
+            instance = cls(project_root, use_gpu=use_gpu)
+            cls._CACHE[cache_key] = instance
+            return instance
 
     def __init__(self, project_root: Path, use_gpu: bool = True):
         self.available = False
@@ -754,59 +780,67 @@ class BurstFilter:
             progress_callback=self.progress_callback,
         )
         
-        # 尝试加载美学模型（支持 ONNX 与 PyTorch 双引擎）
+        # 尝试加载美学模型（支持 ONNX 与 PyTorch 双引擎，单例复用避免显卡设备泄漏）
         if getattr(sys, 'frozen', False):
             # PyInstaller 环境
             project_root = Path(sys._MEIPASS)
         else:
             project_root = Path(__file__).resolve().parent.parent
 
-        self._aesthetic_scorer = AestheticScorer(project_root, use_gpu=self.use_gpu)
+        self._aesthetic_scorer = AestheticScorer.get_instance(project_root, use_gpu=self.use_gpu)
         if self._aesthetic_scorer.available:
             engine_str = "ONNX" if self._aesthetic_scorer.engine == "onnx" else "PyTorch"
             self._notify(f"🚀 已启用 {engine_str} 美学评分模型！")
         else:
             self._notify("ℹ️ 未检测到有效的美学模型，降级为纯 OpenCV 锐度过滤。")
 
-    def run(self, input_dir: Path) -> BurstFilterResult:
+    def run(self, input_dir: Path | str) -> BurstFilterResult:
+        import gc
+        # 智能剥离首尾可能存在的双引号、单引号及两端空白（针对 Windows 复制路径场景）
+        input_dir = Path(str(input_dir).strip().strip('\'"'))
+
         result = BurstFilterResult()
-        photo_files = self._scan_raw(input_dir)
-        result.total = len(photo_files)
-        if not photo_files:
+        try:
+            photo_files = self._scan_raw(input_dir)
+            result.total = len(photo_files)
+            if not photo_files:
+                return result
+
+            # 伴生文件聚合（同一次快门的 RAW+JPG/HIF 等视为同一个 PhotoShot）
+            shots = self._pair_shots(photo_files)
+            paired_count = len(photo_files) - len(shots)
+            if paired_count > 0:
+                self._notify(f"扫描到 {result.total} 个文件（包含 {paired_count} 组 RAW+JPG 伴生照片，已合并为 {len(shots)} 张独立快门照片），正在分析连拍组…")
+            else:
+                self._notify(f"扫描到 {result.total} 张照片，正在分析连拍组…")
+
+            groups = self._grouper.group(shots)
+
+            burst_groups = [g for g in groups if len(g) > 1]
+            result.skipped_single = sum(
+                sum(len(item.all_paths) if isinstance(item, PhotoShot) else 1 for item in g)
+                for g in groups if len(g) == 1
+            )
+            result.burst_groups = len(burst_groups)
+
+            if not burst_groups:
+                self._notify("未检测到连拍组，所有文件保留原位。")
+                return result
+
+            review_dir = input_dir / self.review_subdir
+            review_dir.mkdir(parents=True, exist_ok=True)
+            result.review_dir = review_dir
+
+            for idx, group in enumerate(burst_groups, 1):
+                self._notify(f"处理连拍组 {idx}/{len(burst_groups)}（包含 {len(group)} 次连拍拍摄）…")
+                moved, errors = self._process_group(group, review_dir)
+                result.moved += moved
+                result.errors.extend(errors)
+
             return result
-
-        # 伴生文件聚合（同一次快门的 RAW+JPG/HIF 等视为同一个 PhotoShot）
-        shots = self._pair_shots(photo_files)
-        paired_count = len(photo_files) - len(shots)
-        if paired_count > 0:
-            self._notify(f"扫描到 {result.total} 个文件（包含 {paired_count} 组 RAW+JPG 伴生照片，已合并为 {len(shots)} 张独立快门照片），正在分析连拍组…")
-        else:
-            self._notify(f"扫描到 {result.total} 张照片，正在分析连拍组…")
-
-        groups = self._grouper.group(shots)
-
-        burst_groups = [g for g in groups if len(g) > 1]
-        result.skipped_single = sum(
-            sum(len(item.all_paths) if isinstance(item, PhotoShot) else 1 for item in g)
-            for g in groups if len(g) == 1
-        )
-        result.burst_groups = len(burst_groups)
-
-        if not burst_groups:
-            self._notify("未检测到连拍组，所有文件保留原位。")
-            return result
-
-        review_dir = input_dir / self.review_subdir
-        review_dir.mkdir(parents=True, exist_ok=True)
-        result.review_dir = review_dir
-
-        for idx, group in enumerate(burst_groups, 1):
-            self._notify(f"处理连拍组 {idx}/{len(burst_groups)}（包含 {len(group)} 次连拍拍摄）…")
-            moved, errors = self._process_group(group, review_dir)
-            result.moved += moved
-            result.errors.extend(errors)
-
-        return result
+        finally:
+            # 任务执行完毕后主动回收垃圾，彻底释放图像解码与 NumPy 内存
+            gc.collect()
 
     def _scan_raw(self, input_dir: Path) -> list[Path]:
         return sorted(

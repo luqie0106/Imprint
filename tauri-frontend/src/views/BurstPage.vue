@@ -72,6 +72,11 @@ watch(
   }
 );
 
+function cleanPath(val: string): string {
+  if (!val) return "";
+  return val.trim().replace(/^["']|["']$/g, "").trim();
+}
+
 async function selectDirectory() {
   try {
     const selected = await open({
@@ -80,7 +85,7 @@ async function selectDirectory() {
       title: "选择待筛选照片所在目录",
     });
     if (selected && typeof selected === "string") {
-      inputDir.value = selected;
+      inputDir.value = cleanPath(selected);
     }
   } catch (err) {
     console.error("选择目录失败:", err);
@@ -88,7 +93,9 @@ async function selectDirectory() {
 }
 
 async function handleStart() {
-  if (!inputDir.value) {
+  const dir = cleanPath(inputDir.value);
+  inputDir.value = dir;
+  if (!dir) {
     alert("请先选择照片目录！");
     return;
   }
@@ -98,7 +105,7 @@ async function handleStart() {
   }
 
   await start({
-    input_dir: inputDir.value,
+    input_dir: dir,
     gap_seconds: Number(gapSeconds.value),
     max_hamming_distance: Number(maxHammingDistance.value),
     review_subdir: reviewSubdir.value,
@@ -147,6 +154,8 @@ watch(
       <div class="flex gap-3">
         <input
           v-model="inputDir"
+          @change="inputDir = cleanPath(inputDir)"
+          @blur="inputDir = cleanPath(inputDir)"
           type="text"
           placeholder="请选择包含 RAW / JPG / HIF 等格式的照片目录..."
           class="flex-1 px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/70 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"

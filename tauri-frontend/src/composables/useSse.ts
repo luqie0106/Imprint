@@ -1,5 +1,5 @@
 import { ref, onUnmounted } from "vue";
-import { BASE_URL } from "../stores/api";
+import { BASE_URL, initApiConnection } from "../stores/api";
 
 export interface SseOptions {
   onProgress?: (msg: string, pct?: number | null) => void;
@@ -124,6 +124,13 @@ export function useSse(path: string, options?: SseOptions) {
         error.value = errMsg;
         messages.value.push(`❌ 连接异常: ${errMsg}`);
         options?.onError?.(errMsg);
+        if (
+          errMsg.toLowerCase().includes("fetch") ||
+          errMsg.toLowerCase().includes("network") ||
+          errMsg.toLowerCase().includes("failed")
+        ) {
+          initApiConnection();
+        }
       }
     } finally {
       isRunning.value = false;
