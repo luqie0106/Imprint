@@ -1,5 +1,4 @@
-# Minimal runtime dependencies for ONNX inference, PySide6 GUI, and PyInstaller
-PySide6>=6.5.0
+# Minimal runtime dependencies for ONNX inference, FastAPI Sidecar, and PyInstaller
 Pillow>=10.0.0
 pillow-heif>=0.15.0
 pillow-jxl-plugin>=1.3.0

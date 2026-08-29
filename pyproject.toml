@@ -10,7 +10,6 @@ description = "RAW / JPEG / JXL / HIF 智能连拍优选与个人审美微调系
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-  "PySide6>=6.5.0",
   "Pillow>=10.0.0",
   "pillow-heif>=0.15.0",
   "pillow-jxl-plugin>=1.3.0",
