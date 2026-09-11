@@ -142,10 +142,19 @@ fn find_sidecar_or_script() -> (Option<PathBuf>, bool) {
         }
     }
 
+    // Windows 发行包使用 PyInstaller onefile，sidecar 直接位于 dist-python/ 下。
+    for exe in &exe_names {
+        sidecar_candidates.push(PathBuf::from("dist-python").join(exe));
+        sidecar_candidates.push(PathBuf::from("../dist-python").join(exe));
+        sidecar_candidates.push(PathBuf::from("../../dist-python").join(exe));
+    }
+
     // 如果是通过双击 exe / 快捷方式运行，加入相对于可执行文件自身目录的路径查找
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
             for exe in &exe_names {
+                sidecar_candidates.push(exe_dir.join("dist-python").join(exe));
+                sidecar_candidates.push(exe_dir.join("resources/dist-python").join(exe));
                 sidecar_candidates.push(exe_dir.join("dist-python/imprint_api").join(exe));
                 sidecar_candidates.push(exe_dir.join("dist-python/photo_sort_api").join(exe));
                 sidecar_candidates.push(exe_dir.join("resources/dist-python/imprint_api").join(exe));

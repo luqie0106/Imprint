@@ -7,9 +7,34 @@ import {
   FolderOpen, Play, Square, SlidersHorizontal, CheckCircle2,
   AlertCircle, Cpu, Trash2, FileCheck2, ChevronDown,
   Images, ScanSearch, Layers3, ShieldCheck, Clock3,
+  Focus, ZoomIn, Trophy, BadgeCheck,
 } from "lucide-vue-next";
 
 type FilterPreset = "conservative" | "balanced" | "aggressive" | "custom";
+type ReviewMode = "auto" | "review";
+
+interface BurstPreviewShot {
+  photo_id: string;
+  name: string;
+  companion_count: number;
+  kept: boolean;
+  failed: boolean;
+  rank: number | null;
+  sharpness: number;
+  exposure: number;
+  aesthetic: number;
+  score: number;
+  sharpest: boolean;
+  aesthetic_best: boolean;
+}
+
+interface BurstPreviewGroup {
+  index: number;
+  shot_count: number;
+  confidence_margin: number;
+  needs_review: boolean;
+  shots: BurstPreviewShot[];
+}
 
 const maxCpus = ref(
   typeof window !== "undefined" && window.navigator.hardwareConcurrency
@@ -26,8 +51,11 @@ const gpuDetected = ref(false);
 const gpuDeviceName = ref("");
 const reviewSubdir = ref("审查_连拍淘汰");
 const preset = ref<FilterPreset>("balanced");
+const reviewMode = ref<ReviewMode>("auto");
 const logContainer = ref<HTMLElement | null>(null);
 const keepSliderPosition = ref(0);
+const selectedGroupIndex = ref(0);
+const selectedPhotoId = ref<string | null>(null);
 const presetOptions: Array<{
   value: Exclude<FilterPreset, "custom">;
   label: string;
@@ -70,6 +98,27 @@ const progressLabel = computed(() => {
   if (isRunning.value) return lastMessage.value || "正在扫描照片目录…";
   return inputDir.value ? "目录已就绪，可以开始筛选" : "选择一个照片目录开始";
 });
+
+const previewGroups = computed<BurstPreviewGroup[]>(
+  () => (resultData.value?.groups as BurstPreviewGroup[] | undefined) ?? [],
+);
+
+const selectedGroup = computed<BurstPreviewGroup | null>(
+  () => previewGroups.value[selectedGroupIndex.value] ?? null,
+);
+
+const selectedPhoto = computed<BurstPreviewShot | null>(() => {
+  const group = selectedGroup.value;
+  if (!group) return null;
+  return group.shots.find((shot) => shot.photo_id === selectedPhotoId.value)
+    ?? group.shots.find((shot) => shot.kept)
+    ?? group.shots[0]
+    ?? null;
+});
+
+const reviewGroupCount = computed(
+  () => previewGroups.value.filter((group) => group.needs_review).length,
+);
 
 function cleanPath(value: string): string {
   if (!value) return "";
@@ -121,6 +170,24 @@ function stepKeepCount(delta: number) {
   setKeepCount(Math.min(20, Math.max(1, keepCount.value + delta)));
 }
 
+function selectPreviewGroup(index: number) {
+  selectedGroupIndex.value = index;
+  const group = previewGroups.value[index];
+  selectedPhotoId.value = group?.shots.find((shot) => shot.kept)?.photo_id
+    ?? group?.shots[0]?.photo_id
+    ?? null;
+}
+
+function previewUrl(photoId: string, kind: "full" | "focus") {
+  const session = resultData.value?.preview_session;
+  if (!session || !BASE_URL.value) return "";
+  return `${BASE_URL.value}/api/burst/preview/${session}/${photoId}?kind=${kind}`;
+}
+
+function scorePercent(value: number) {
+  return `${Math.max(0, Math.min(100, value * 100))}%`;
+}
+
 async function checkGpuAvailability() {
   if (!BASE_URL.value) return;
   try {
@@ -165,6 +232,7 @@ async function handleStart() {
     keep_count: Number(keepCount.value),
     max_workers: Number(maxWorkers.value),
     use_gpu: Boolean(useGpu.value),
+    include_previews: reviewMode.value === "review",
   });
 }
 
@@ -177,6 +245,9 @@ watch(() => isServerReady.value, (ready) => ready && checkGpuAvailability());
 watch(() => messages.value.length, async () => {
   await nextTick();
   if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight;
+});
+watch(() => resultData.value, (result) => {
+  if (result?.groups?.length) selectPreviewGroup(0);
 });
 </script>
 
@@ -268,6 +339,106 @@ watch(() => messages.value.length, async () => {
               </div>
             </div>
 
+            <div v-if="previewGroups.length" class="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+              <div class="flex flex-wrap items-center gap-3 border-b border-slate-200 px-5 py-4 dark:border-zinc-800">
+                <div class="flex items-center gap-2 font-semibold text-slate-900 dark:text-zinc-100">
+                  <Images class="h-5 w-5 text-blue-600 dark:text-blue-400" />连拍组复核
+                </div>
+                <span class="text-xs text-slate-400">优先展示 {{ reviewGroupCount }} 个低置信度组</span>
+                <span class="ml-auto text-xs text-slate-400">本次显示 {{ previewGroups.length }} / {{ resultData.burst_groups }} 组</span>
+              </div>
+
+              <div class="border-b border-slate-200 bg-slate-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
+                <div class="flex gap-2 overflow-x-auto pb-1">
+                  <button
+                    v-for="(group, index) in previewGroups"
+                    :key="group.index"
+                    type="button"
+                    @click="selectPreviewGroup(index)"
+                    class="flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition"
+                    :class="selectedGroupIndex === index
+                      ? 'border-blue-500 bg-blue-600 text-white'
+                      : group.needs_review
+                        ? 'border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-300 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'"
+                  >
+                    <span>第 {{ group.index }} 组</span>
+                    <span class="opacity-70">{{ group.shot_count }} 张</span>
+                    <span v-if="group.needs_review" class="h-1.5 w-1.5 rounded-full" :class="selectedGroupIndex === index ? 'bg-amber-300' : 'bg-amber-500'"></span>
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="selectedGroup" class="p-5">
+                <div class="mb-4 flex flex-wrap items-center gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-slate-900 dark:text-zinc-100">第 {{ selectedGroup.index }} 组 · {{ selectedGroup.shot_count }} 次快门</div>
+                    <div class="mt-1 text-xs text-slate-400">点击缩略图检查完整画面与局部清晰度</div>
+                  </div>
+                  <span class="ml-auto rounded-md px-2 py-1 text-xs font-medium"
+                    :class="selectedGroup.needs_review ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'">
+                    {{ selectedGroup.needs_review ? '建议复核' : '选择明确' }}
+                  </span>
+                </div>
+
+                <div class="flex gap-3 overflow-x-auto pb-3">
+                  <button
+                    v-for="shot in selectedGroup.shots"
+                    :key="shot.photo_id"
+                    type="button"
+                    @click="selectedPhotoId = shot.photo_id"
+                    class="group/photo relative w-40 shrink-0 overflow-hidden rounded-lg border-2 bg-slate-100 text-left transition dark:bg-zinc-800"
+                    :class="selectedPhoto?.photo_id === shot.photo_id
+                      ? 'border-blue-500 shadow-[0_6px_18px_rgba(37,99,235,0.16)]'
+                      : shot.kept ? 'border-blue-200 hover:border-blue-400 dark:border-blue-900' : 'border-transparent opacity-70 hover:opacity-100'"
+                  >
+                    <div class="relative aspect-[3/2] overflow-hidden bg-slate-200 dark:bg-zinc-800">
+                      <img :src="previewUrl(shot.photo_id, 'full')" :alt="shot.name" loading="lazy" class="h-full w-full object-cover" />
+                      <span v-if="shot.kept" class="absolute left-2 top-2 flex items-center gap-1 rounded bg-blue-600 px-1.5 py-1 text-[10px] font-semibold text-white"><BadgeCheck class="h-3 w-3" />保留</span>
+                      <span v-else class="absolute left-2 top-2 rounded bg-slate-950/70 px-1.5 py-1 text-[10px] text-white">审查</span>
+                      <span class="absolute bottom-2 right-2 rounded bg-slate-950/75 px-1.5 py-1 text-[10px] font-semibold tabular-nums text-white">{{ Math.round(shot.score * 100) }}</span>
+                    </div>
+                    <div class="truncate px-2.5 py-2 text-[11px] text-slate-600 dark:text-zinc-300">{{ shot.name }}</div>
+                  </button>
+                </div>
+
+                <div v-if="selectedPhoto" class="mt-2 grid grid-cols-1 gap-4 border-t border-slate-200 pt-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(220px,0.65fr)] dark:border-zinc-800">
+                  <div class="grid min-w-0 grid-cols-2 gap-3">
+                    <div class="overflow-hidden rounded-lg bg-slate-950">
+                      <div class="flex items-center gap-2 border-b border-white/10 px-3 py-2 text-xs text-slate-300"><Images class="h-3.5 w-3.5 text-blue-400" />完整画面</div>
+                      <div class="flex aspect-[3/2] items-center justify-center"><img :src="previewUrl(selectedPhoto.photo_id, 'full')" :alt="selectedPhoto.name" class="max-h-full max-w-full object-contain" /></div>
+                    </div>
+                    <div class="overflow-hidden rounded-lg bg-slate-950">
+                      <div class="flex items-center gap-2 border-b border-white/10 px-3 py-2 text-xs text-slate-300"><ZoomIn class="h-3.5 w-3.5 text-blue-400" />人脸 / 中心清晰度区域</div>
+                      <div class="flex aspect-[3/2] items-center justify-center overflow-hidden"><img :src="previewUrl(selectedPhoto.photo_id, 'focus')" :alt="`${selectedPhoto.name} 清晰度区域`" class="h-full w-full object-cover" /></div>
+                    </div>
+                  </div>
+
+                  <div class="flex flex-col rounded-lg border border-slate-200 p-4 dark:border-zinc-700">
+                    <div class="mb-3 flex items-start justify-between gap-3">
+                      <div class="min-w-0"><div class="truncate text-sm font-semibold text-slate-900 dark:text-zinc-100">{{ selectedPhoto.name }}</div><div class="mt-1 text-xs text-slate-400">综合排名 #{{ selectedPhoto.rank ?? '—' }}</div></div>
+                      <span class="shrink-0 rounded-md px-2 py-1 text-xs font-semibold" :class="selectedPhoto.kept ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-300'">{{ selectedPhoto.kept ? '已保留' : '已移入审查' }}</span>
+                    </div>
+                    <div class="space-y-3">
+                      <div v-for="metric in [
+                        { label: '清晰度', value: selectedPhoto.sharpness },
+                        { label: '审美', value: selectedPhoto.aesthetic },
+                        { label: '曝光', value: selectedPhoto.exposure },
+                      ]" :key="metric.label">
+                        <div class="mb-1 flex justify-between text-xs text-slate-500 dark:text-zinc-400"><span>{{ metric.label }}</span><span class="tabular-nums">{{ Math.round(metric.value * 100) }}</span></div>
+                        <div class="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-zinc-800"><div class="h-full rounded-full bg-blue-500" :style="{ width: scorePercent(metric.value) }"></div></div>
+                      </div>
+                    </div>
+                    <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-3 dark:border-zinc-700">
+                      <span v-if="selectedPhoto.sharpest" class="flex items-center gap-1 rounded bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300"><Focus class="h-3 w-3" />本组最清晰</span>
+                      <span v-if="selectedPhoto.aesthetic_best" class="flex items-center gap-1 rounded bg-violet-50 px-2 py-1 text-[10px] font-medium text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"><Trophy class="h-3 w-3" />审美最高</span>
+                      <span v-if="selectedPhoto.companion_count > 1" class="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-600 dark:bg-zinc-800 dark:text-zinc-300">含 {{ selectedPhoto.companion_count }} 个伴生文件</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div v-if="error" class="flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
               <AlertCircle class="h-5 w-5 shrink-0" /> {{ error }}
             </div>
@@ -307,6 +478,30 @@ watch(() => messages.value.length, async () => {
           <div><h3 class="font-semibold text-slate-950 dark:text-white">筛选方案</h3><p class="mt-0.5 text-xs text-slate-400">控制归组范围与保留数量</p></div>
         </div>
         <div class="space-y-7">
+          <div>
+            <label class="mb-3 block text-xs font-semibold text-slate-700 dark:text-zinc-300">处理方式</label>
+            <div class="space-y-2">
+              <button type="button" @click="reviewMode = 'auto'"
+                class="flex w-full items-start gap-3 rounded-lg border p-3 text-left transition"
+                :class="reviewMode === 'auto' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/35' : 'border-slate-200 hover:border-blue-300 dark:border-zinc-700 dark:hover:border-blue-700'">
+                <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border"
+                  :class="reviewMode === 'auto' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 dark:border-zinc-600'">
+                  <CheckCircle2 v-if="reviewMode === 'auto'" class="h-3.5 w-3.5" />
+                </span>
+                <span><span class="block text-xs font-semibold text-slate-900 dark:text-zinc-100">全自动整理</span><span class="mt-1 block text-[10px] leading-4 text-slate-400">程序完成筛选与移动，只展示结果汇总</span></span>
+              </button>
+              <button type="button" @click="reviewMode = 'review'"
+                class="flex w-full items-start gap-3 rounded-lg border p-3 text-left transition"
+                :class="reviewMode === 'review' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/35' : 'border-slate-200 hover:border-blue-300 dark:border-zinc-700 dark:hover:border-blue-700'">
+                <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border"
+                  :class="reviewMode === 'review' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 dark:border-zinc-600'">
+                  <CheckCircle2 v-if="reviewMode === 'review'" class="h-3.5 w-3.5" />
+                </span>
+                <span><span class="block text-xs font-semibold text-slate-900 dark:text-zinc-100">整理后查看连拍组</span><span class="mt-1 block text-[10px] leading-4 text-slate-400">仍由程序自动完成，结束后提供可选复核视图</span></span>
+              </button>
+            </div>
+          </div>
+
           <div>
             <label class="mb-3 block text-xs font-semibold text-slate-700 dark:text-zinc-300">筛选强度</label>
             <div class="grid grid-cols-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800">

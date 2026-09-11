@@ -2,6 +2,7 @@
 import os
 
 block_cipher = None
+onefile = os.environ.get('IMPRINT_ONEFILE') == '1'
 
 datas = [
     ('src/burst_filter.py',   'src'),
@@ -71,27 +72,46 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name='imprint_api',
-    debug=False,
-    strip=False,
-    upx=True,
-    console=True,   # sidecar 需要 stdout 输出端口信息，必须 True
-    argv_emulation=False,
-    target_arch=None,
-)
+if onefile:
+    # Windows 安装器只收集一个 sidecar，避免 NSIS 遍历和压缩上万个零散文件。
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name='imprint_api',
+        debug=False,
+        strip=False,
+        upx=True,
+        console=True,
+        argv_emulation=False,
+        target_arch=None,
+        runtime_tmpdir=None,
+    )
+else:
+    # macOS 继续使用启动更快的 onedir，保持现有 DMG / PKG 打包方式。
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name='imprint_api',
+        debug=False,
+        strip=False,
+        upx=True,
+        console=True,   # sidecar 需要 stdout 输出端口信息，必须 True
+        argv_emulation=False,
+        target_arch=None,
+    )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='imprint_api',
-)
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name='imprint_api',
+    )

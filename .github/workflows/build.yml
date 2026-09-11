@@ -22,6 +22,7 @@ jobs:
       contents: read
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
 
     env:
       PYTHONIOENCODING: utf-8
@@ -78,11 +79,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tauri-frontend/dist-python
-          key: sidecar-${{ runner.os }}-${{ hashFiles('src/app_api.py', 'src/burst_filter.py', 'src/model_manager.py', 'src/onnx_exporter.py', 'app_api.spec', 'requirements-build.txt') }}
+          key: sidecar-onefile-v1-${{ runner.os }}-${{ hashFiles('src/app_api.py', 'src/burst_filter.py', 'src/model_manager.py', 'src/onnx_exporter.py', 'app_api.spec', 'requirements-build.txt') }}
 
-      - name: Build Python sidecar (PyInstaller)
-        if: steps.cache-sidecar.outputs.cache-hit != 'true'
+      - name: Build Python sidecar (macOS onedir)
+        if: steps.cache-sidecar.outputs.cache-hit != 'true' && runner.os == 'macOS'
         run: pyinstaller app_api.spec --distpath tauri-frontend/dist-python --noconfirm
+
+      - name: Build Python sidecar (Windows onefile)
+        if: steps.cache-sidecar.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:IMPRINT_ONEFILE = "1"
+          pyinstaller app_api.spec --distpath tauri-frontend/dist-python --noconfirm
 
       # ── Node.js ───────────────────────────────────────────────────────
       - name: Set up Node.js 20
@@ -121,13 +129,13 @@ jobs:
           APP="tauri-frontend/src-tauri/target/release/bundle/macos/Imprint.app"
           productbuild --component "$APP" /Applications Imprint-macOS-Installer.pkg
 
-      # Windows：构建二进制（跳过所有 Installer 压缩打包，覆盖 resources 避免在 build.rs 复制 15000+ 文件）
-      - name: Build Tauri App (Windows)
+      # Windows：单文件 sidecar + zlib 快速压缩，避免 NSIS 遍历 15000+ 个文件超时
+      - name: Build Tauri App and NSIS Installer (Windows)
         if: runner.os == 'Windows'
         working-directory: tauri-frontend
         shell: bash
         run: |
-          npm run tauri build -- --no-bundle --config '{"bundle": {"resources": []}}'
+          npm run tauri build -- --bundles nsis --config '{"bundle":{"resources":{"../dist-python/imprint_api.exe":"dist-python/imprint_api.exe"},"windows":{"nsis":{"compression":"zlib"}}}}'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -146,18 +154,13 @@ jobs:
           } else {
             Copy-Item "tauri-frontend\src-tauri\target\release\tauri-frontend.exe" "$out\Imprint.exe"
           }
-          # Python sidecar（保持目录结构）
+          # Python sidecar（Windows 专用单文件）
           New-Item -ItemType Directory -Force -Path "$out\dist-python" | Out-Null
-          if (Test-Path "tauri-frontend\dist-python\imprint_api") {
-            Copy-Item -Recurse "tauri-frontend\dist-python\imprint_api" "$out\dist-python\imprint_api"
-          }
-          if (Test-Path "tauri-frontend\dist-python\photo_sort_api") {
-            Copy-Item -Recurse "tauri-frontend\dist-python\photo_sort_api" "$out\dist-python\photo_sort_api"
-          }
+          Copy-Item "tauri-frontend\dist-python\imprint_api.exe" "$out\dist-python\imprint_api.exe"
           # 清理调试符号
           Get-ChildItem -Path $out -Recurse -Filter "*.pdb" | Remove-Item -Force -ErrorAction SilentlyContinue
           # 使用 7-Zip 高速多线程压缩（避免 PowerShell Compress-Archive 单线程耗时 20+ 分钟）
-          7z a -tzip -mx=4 "Imprint-Windows-Portable.zip" ".\$out\*"
+          7z a -tzip -mx=1 -mmt=on "Imprint-Windows-Portable.zip" ".\$out\*"
 
       # ── Upload Artifacts (分平台精确上传) ───────────────────────────────
       - name: Upload macOS Artifacts
@@ -175,7 +178,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Imprint-Windows
-          path: Imprint-Windows-Portable.zip
+          path: |
+            Imprint-Windows-Portable.zip
+            tauri-frontend/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
   # ── 独立 Release 任务（避免多平台矩阵并发冲突导致死锁/重试循环）──────────────

@@ -12,6 +12,7 @@ import os
 import socket
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Literal, Optional
 
@@ -31,10 +32,10 @@ if str(_SRC_DIR) not in sys.path:
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from burst_filter import BurstFilter
+from burst_filter import BurstFilter, RawEvaluator
 from model_manager import (
     PROJECT_ROOT,
     MODELS_DIR,
@@ -51,6 +52,7 @@ from model_manager import (
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
 
 import io
+import cv2
 import onnx
 import onnxruntime as ort
 import numpy as np
@@ -68,7 +70,14 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="Imprint API", version="2.0.6")
+app = FastAPI(title="Imprint API", version="2.1.0")
+
+# 最近几次筛选结果的缩略图访问表。只保存不可猜测的临时 ID 与本地路径映射，
+# 不把任意文件路径暴露为公开查询参数。
+_PREVIEW_SESSIONS: dict[str, dict[str, Path]] = {}
+_PREVIEW_CACHE: dict[tuple[str, str, str], bytes] = {}
+_MAX_PREVIEW_SESSIONS = 3
+_MAX_PREVIEW_GROUPS = 40
 
 # 配置 CORS 中间件，允许 Tauri 桌面端以及本地开发环境请求
 app.add_middleware(
@@ -100,6 +109,7 @@ class BurstRequest(BaseModel):
     keep_count: int = 1
     max_workers: int = 4
     use_gpu: bool = False
+    include_previews: bool = False
 
 
 class DownloadModelRequest(BaseModel):
@@ -116,6 +126,39 @@ class TrainerRequest(BaseModel):
     model_type: Literal["standard", "l14", "b32", "standard_l14", "custom_l14"] = "standard"
     epochs: int = 15
     lr: float = 1e-3
+
+
+def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
+    session_id = uuid.uuid4().hex
+    path_map: dict[str, Path] = {}
+    serialized: list[dict] = []
+
+    # 优先展示低置信度组，其余按原始顺序补齐。
+    ordered = sorted(
+        groups,
+        key=lambda group: (not bool(group.get("needs_review")), int(group.get("index", 0))),
+    )[:_MAX_PREVIEW_GROUPS]
+
+    for group_position, group in enumerate(ordered):
+        shots = []
+        for shot_position, shot in enumerate(group.get("shots", [])):
+            photo_id = f"g{group_position}-p{shot_position}-{uuid.uuid4().hex[:8]}"
+            path_map[photo_id] = Path(str(shot.get("path", "")))
+            shots.append({
+                key: value for key, value in shot.items() if key != "path"
+            } | {"photo_id": photo_id})
+        serialized.append({
+            key: value for key, value in group.items() if key != "shots"
+        } | {"shots": shots})
+
+    _PREVIEW_SESSIONS[session_id] = path_map
+    while len(_PREVIEW_SESSIONS) > _MAX_PREVIEW_SESSIONS:
+        expired = next(iter(_PREVIEW_SESSIONS))
+        _PREVIEW_SESSIONS.pop(expired, None)
+        for cache_key in [key for key in _PREVIEW_CACHE if key[0] == expired]:
+            _PREVIEW_CACHE.pop(cache_key, None)
+
+    return session_id, serialized
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -154,6 +197,13 @@ async def run_burst(req: BurstRequest):
                 )
                 result = await loop.run_in_executor(pool, lambda: flt.run(target_path))
 
+                if req.include_previews:
+                    preview_session, preview_groups = _register_preview_groups(
+                        getattr(result, "groups", [])
+                    )
+                else:
+                    preview_session, preview_groups = "", []
+
                 # 转换 BurstFilterResult 字段
                 done_payload = {
                     "type": "done",
@@ -163,6 +213,9 @@ async def run_burst(req: BurstRequest):
                     "skipped_single": getattr(result, "skipped_single", 0),
                     "errors": getattr(result, "errors", []),
                     "review_dir": str(result.review_dir) if getattr(result, "review_dir", None) else "",
+                    "preview_session": preview_session,
+                    "groups": preview_groups,
+                    "groups_shown": len(preview_groups),
                 }
                 await queue.put(done_payload)
         except Exception as exc:
@@ -193,6 +246,63 @@ async def run_burst(req: BurstRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/burst/preview/{session_id}/{photo_id}")
+def get_burst_preview(
+    session_id: str,
+    photo_id: str,
+    kind: Literal["full", "focus"] = "full",
+):
+    """按不可猜测的会话 ID 返回筛选结果缩略图或清晰度检查裁切。"""
+    path = _PREVIEW_SESSIONS.get(session_id, {}).get(photo_id)
+    if path is None or not path.exists() or not path.is_file():
+        return JSONResponse(status_code=404, content={"error": "预览已失效或照片不存在"})
+
+    cache_key = (session_id, photo_id, kind)
+    cached = _PREVIEW_CACHE.get(cache_key)
+    if cached is not None:
+        return Response(
+            content=cached,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    try:
+        evaluator = RawEvaluator()
+        image_rgb = evaluator.extract_preview(path)
+
+        if kind == "focus":
+            gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+            faces = evaluator._face_regions(gray)
+            height, width = image_rgb.shape[:2]
+            if faces:
+                x, y, face_width, face_height = max(faces, key=lambda face: face[2] * face[3])
+                center_x = x + face_width // 2
+                center_y = y + face_height // 2
+                side = int(max(face_width, face_height) * 1.8)
+            else:
+                center_x, center_y = width // 2, height // 2
+                side = int(min(width, height) * 0.46)
+            side = max(32, min(side, width, height))
+            left = max(0, min(width - side, center_x - side // 2))
+            top = max(0, min(height - side, center_y - side // 2))
+            image_rgb = image_rgb[top:top + side, left:left + side]
+
+        image = Image.fromarray(image_rgb).convert("RGB")
+        target_size = (260, 260) if kind == "focus" else (360, 220)
+        image.thumbnail(target_size, Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=84, optimize=True)
+        payload = output.getvalue()
+        _PREVIEW_CACHE[cache_key] = payload
+        return Response(
+            content=payload,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"生成预览失败: {exc}"})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

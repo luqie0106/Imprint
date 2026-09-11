@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import cv2
 import numpy as np
@@ -166,6 +166,7 @@ class BurstFilterResult:
     moved: int = 0
     review_dir: Path | None = None
     errors: list[str] = field(default_factory=list)
+    groups: list[dict[str, Any]] = field(default_factory=list)
 
 
 
@@ -833,9 +834,12 @@ class BurstFilter:
 
             for idx, group in enumerate(burst_groups, 1):
                 self._notify(f"处理连拍组 {idx}/{len(burst_groups)}（包含 {len(group)} 次连拍拍摄）…")
-                moved, errors = self._process_group(group, review_dir)
+                moved, errors, group_detail = self._process_group(group, review_dir)
                 result.moved += moved
                 result.errors.extend(errors)
+                if group_detail:
+                    group_detail["index"] = idx
+                    result.groups.append(group_detail)
 
             return result
         finally:
@@ -877,7 +881,7 @@ class BurstFilter:
 
     def _process_group(
         self, group: list[Any], review_dir: Path
-    ) -> tuple[int, list[str]]:
+    ) -> tuple[int, list[str], dict[str, Any]]:
         """
         对连拍组内所有照片实体进行多维度评估，综合加权后保留前 keep_count 张。
         若某照片包含 RAW+JPG 伴生文件，保留时全部保留在原目录，淘汰时全部移动至审查目录。
@@ -945,7 +949,7 @@ class BurstFilter:
                     evaluated_list.append(res)
 
         if not evaluated_list:
-            return 0, errors
+            return 0, errors, {}
 
         # ── 阶段 2：组内归一化锐度（避免绝对值量纲差异主导结果）─────────────
         valid = [es for es in evaluated_list if not es.failed]
@@ -971,8 +975,23 @@ class BurstFilter:
                 es.final_score = -1.0
 
         keep_n = min(self.keep_count, len(valid))
-        top = sorted(valid, key=lambda x: x.final_score, reverse=True)[:keep_n]
+        sorted_valid = sorted(valid, key=lambda x: x.final_score, reverse=True)
+        top = sorted_valid[:keep_n]
         top_shots: set[PhotoShot] = {es.shot for es in top}
+
+        # 保留边界的分差越小，越值得用户人工复核。
+        confidence_margin = 1.0
+        if keep_n > 0 and len(sorted_valid) > keep_n:
+            confidence_margin = max(
+                0.0,
+                sorted_valid[keep_n - 1].final_score - sorted_valid[keep_n].final_score,
+            )
+        needs_review = bool(errors) or confidence_margin < 0.08
+        sharpest_shot = max(valid, key=lambda x: x._norm_sharp).shot if valid else None
+        aesthetic_best_shot = max(valid, key=lambda x: x.aesthetic).shot if valid else None
+        final_primary_paths: dict[PhotoShot, Path] = {
+            es.shot: es.shot.primary_path for es in evaluated_list
+        }
 
         # ── 阶段 4：移动淘汰照片（连同 RAW+JPG/HIF 等伴生文件一同移动）─────────
         moved = 0
@@ -987,13 +1006,39 @@ class BurstFilter:
                     if dest.exists():
                         dest = review_dir / f"{fpath.stem}_dup{fpath.suffix}"
                     shutil.move(str(fpath), str(dest))
+                    if fpath == es.shot.primary_path:
+                        final_primary_paths[es.shot] = dest
                     moved += 1
                 except Exception as exc:
                     msg = f"移动 {fpath.name} 失败: {exc}"
                     warnings.warn(msg)
                     errors.append(msg)
 
-        return moved, errors
+        ranks = {es.shot: rank for rank, es in enumerate(sorted_valid, 1)}
+        group_detail = {
+            "shot_count": len(shots),
+            "confidence_margin": round(float(confidence_margin), 4),
+            "needs_review": needs_review,
+            "shots": [
+                {
+                    "name": es.shot.primary_path.name,
+                    "path": str(final_primary_paths[es.shot]),
+                    "companion_count": len(es.shot.all_paths),
+                    "kept": es.shot in top_shots,
+                    "failed": es.failed,
+                    "rank": ranks.get(es.shot),
+                    "sharpness": round(float(es._norm_sharp), 4),
+                    "exposure": round(float(es.exposure), 4),
+                    "aesthetic": round(float(es.aesthetic), 4),
+                    "score": round(float(es.final_score), 4),
+                    "sharpest": es.shot == sharpest_shot,
+                    "aesthetic_best": es.shot == aesthetic_best_shot,
+                }
+                for es in evaluated_list
+            ],
+        }
+
+        return moved, errors, group_detail
 
     def _notify(self, message: str) -> None:
         if self.progress_callback:
@@ -1006,4 +1051,3 @@ class BurstFilter:
                     print(message.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8"), flush=True)
                 except Exception:
                     pass
-
