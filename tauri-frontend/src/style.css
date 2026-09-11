@@ -36,3 +36,33 @@ html, body, #app {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(150, 150, 150, 0.5);
 }
+
+/* 高分辨率桌面屏上，10–12px 的辅助文字可读性不足。 */
+.workspace-readable .text-\[10px\] {
+  font-size: 11.5px;
+  line-height: 1.05rem;
+}
+
+.workspace-readable .text-\[11px\] {
+  font-size: 12.5px;
+  line-height: 1.15rem;
+}
+
+.workspace-readable .text-xs {
+  font-size: 13px;
+  line-height: 1.25rem;
+}
+
+@media (min-width: 1440px) {
+  .workspace-readable .text-\[10px\] {
+    font-size: 12px;
+  }
+
+  .workspace-readable .text-\[11px\] {
+    font-size: 13px;
+  }
+
+  .workspace-readable .text-xs {
+    font-size: 13.5px;
+  }
+}

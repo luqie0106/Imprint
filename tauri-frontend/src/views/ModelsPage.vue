@@ -1,17 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { BASE_URL, isServerReady } from "../stores/api";
 import { useSse } from "../composables/useSse";
 import {
-  Sparkles,
-  DownloadCloud,
-  RefreshCw,
-  Zap,
-  Flame,
+  Sparkles, DownloadCloud, RefreshCw, Zap, Flame, ChevronDown,
+  Gauge, CheckCircle2, CircleAlert, Database, ShieldCheck,
 } from "lucide-vue-next";
 
+type ModelMode = "standard" | "standard_l14" | "custom" | "custom_l14";
+
 interface ModelStatusResponse {
-  mode: "standard" | "standard_l14" | "custom" | "custom_l14";
+  mode: ModelMode;
   clip_b32_ready: boolean;
   clip_l14_ready: boolean;
   standard_onnx_ready: boolean;
@@ -38,6 +37,48 @@ const status = ref<ModelStatusResponse>({
   mlp_l14_path: "",
 });
 
+const modelOptions: Array<{
+  mode: ModelMode;
+  name: string;
+  shortName: string;
+  family: string;
+  description: string;
+  readyKey: keyof ModelStatusResponse;
+}> = [
+  {
+    mode: "standard",
+    name: "官方通用模型",
+    shortName: "标准",
+    family: "ViT-B/32",
+    description: "速度与画质均衡，适合日常连拍筛选",
+    readyKey: "standard_onnx_ready",
+  },
+  {
+    mode: "standard_l14",
+    name: "Aesthetic 3 专业模型",
+    shortName: "专业",
+    family: "ViT-L/14",
+    description: "细节感知更强，适合高质量摄影工作流",
+    readyKey: "standard_l14_onnx_ready",
+  },
+  {
+    mode: "custom",
+    name: "个人偏好模型",
+    shortName: "个人",
+    family: "ViT-B/32",
+    description: "根据您的 like / dislike 样片学习审美",
+    readyKey: "custom_onnx_ready",
+  },
+  {
+    mode: "custom_l14",
+    name: "个人偏好专业模型",
+    shortName: "个人专业",
+    family: "ViT-L/14",
+    description: "更高精度的个人摄影偏好模型",
+    readyKey: "custom_l14_onnx_ready",
+  },
+];
+
 const isRefreshing = ref(false);
 const useMirror = ref(true);
 
@@ -45,6 +86,7 @@ const {
   messages: downloadMessages,
   progressPct: downloadPct,
   isRunning: isDownloading,
+  error: downloadError,
   start: startDownload,
 } = useSse("/api/models/download");
 
@@ -56,19 +98,37 @@ const {
   start: startFuse,
 } = useSse("/api/models/fuse-onnx");
 
-async function triggerFuse(modelType: "b32" | "l14") {
-  await startFuse({ model_type: modelType });
-  await fetchStatus();
+const activeModel = computed(
+  () => modelOptions.find((model) => model.mode === status.value.mode) ?? modelOptions[0],
+);
+
+const fuseTargets = computed(() => [
+  {
+    type: "b32" as const,
+    name: "个人模型 · ViT-B/32",
+    path: status.value.mlp_path,
+    available: status.value.mlp_ready,
+    ready: status.value.custom_onnx_ready,
+  },
+  {
+    type: "l14" as const,
+    name: "个人模型 · ViT-L/14",
+    path: status.value.mlp_l14_path,
+    available: status.value.mlp_l14_ready,
+    ready: status.value.custom_l14_onnx_ready,
+  },
+].filter((target) => target.available));
+
+function modelIsReady(model: typeof modelOptions[number]) {
+  return Boolean(status.value[model.readyKey]);
 }
 
 async function fetchStatus() {
   if (!BASE_URL.value) return;
   isRefreshing.value = true;
   try {
-    const resp = await fetch(`${BASE_URL.value}/api/models/status`);
-    if (resp.ok) {
-      status.value = await resp.json();
-    }
+    const response = await fetch(`${BASE_URL.value}/api/models/status`);
+    if (response.ok) status.value = await response.json();
   } catch (err) {
     console.error("获取模型状态失败:", err);
   } finally {
@@ -76,376 +136,176 @@ async function fetchStatus() {
   }
 }
 
-watch(
-  () => isServerReady.value,
-  (ready) => {
-    if (ready) {
-      fetchStatus();
-    }
-  },
-  { immediate: true }
-);
-
-watch(
-  () => BASE_URL.value,
-  (url) => {
-    if (url) {
-      fetchStatus();
-    }
-  }
-);
-
-async function setMode(mode: "standard" | "standard_l14" | "custom" | "custom_l14") {
+async function setMode(mode: ModelMode) {
   try {
-    const resp = await fetch(`${BASE_URL.value}/api/models/set-mode`, {
+    const response = await fetch(`${BASE_URL.value}/api/models/set-mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
     });
-    if (resp.ok) {
-      status.value.mode = mode;
-    }
+    if (response.ok) status.value.mode = mode;
   } catch (err) {
     console.error("切换模型模式失败:", err);
   }
 }
 
 async function triggerDownload(model: "clip_b32" | "clip_l14") {
-  await startDownload({
-    model,
-    use_mirror: useMirror.value,
-  });
+  await startDownload({ model, use_mirror: useMirror.value });
   await fetchStatus();
 }
 
-onMounted(() => {
-  fetchStatus();
-});
+async function triggerFuse(modelType: "b32" | "l14") {
+  await startFuse({ model_type: modelType });
+  await fetchStatus();
+}
+
+watch(() => isServerReady.value, (ready) => ready && fetchStatus(), { immediate: true });
+watch(() => BASE_URL.value, (url) => url && fetchStatus());
+onMounted(fetchStatus);
 </script>
 
 <template>
-  <div class="h-full flex flex-col gap-5 p-6 overflow-y-auto">
-    <!-- 头部说明 -->
-    <div class="flex items-center justify-between">
-      <div>
-        <h2 class="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-          <Sparkles class="w-6 h-6 text-amber-500" />
-          AI 美学模型管理与底座库
-        </h2>
-        <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-          管理官方 ViT-B/32 与 ViT-L/14 基础模型、ONNX 硬件加速模型及个人专属微调模型
-        </p>
-      </div>
+  <div class="workspace-readable h-full min-h-0 bg-[#f5f7fa] dark:bg-zinc-950">
+    <div class="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_clamp(360px,24vw,430px)]">
+      <section class="flex min-h-0 flex-col border-r border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-950">
+        <div class="flex-1 overflow-y-auto px-7 py-6">
+          <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col gap-5">
+            <header class="flex items-start justify-between gap-4">
+              <div>
+                <div class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-blue-600 dark:text-blue-400">
+                  <Sparkles class="h-3.5 w-3.5" /> Aesthetic model library
+                </div>
+                <h2 class="text-[28px] font-bold tracking-tight text-slate-950 dark:text-white">模型管理</h2>
+                <p class="mt-1 text-sm text-slate-500 dark:text-zinc-400">选择连拍筛选使用的审美模型，并管理本地模型资源</p>
+              </div>
+              <button @click="fetchStatus" :disabled="isRefreshing"
+                class="flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:border-blue-300 hover:text-blue-700 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': isRefreshing }" />刷新状态
+              </button>
+            </header>
 
-      <button
-        @click="fetchStatus"
-        :disabled="isRefreshing"
-        class="px-4 py-2 rounded-xl bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs font-medium transition flex items-center gap-1.5 border border-zinc-200/60 dark:border-zinc-700/60 shadow-xs cursor-pointer"
-      >
-        <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isRefreshing }" />
-        刷新状态
-      </button>
-    </div>
+            <div class="rounded-xl border border-slate-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+              <div class="mb-4 flex items-center justify-between">
+                <div class="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-zinc-200">
+                  <Zap class="h-4 w-4 text-blue-600 dark:text-blue-400" />筛选模型
+                </div>
+                <span class="text-[11px] text-slate-400">点击即可切换</span>
+              </div>
+              <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <button v-for="model in modelOptions" :key="model.mode" type="button" @click="setMode(model.mode)"
+                  class="group relative flex min-h-[116px] flex-col rounded-lg border p-4 text-left transition"
+                  :class="status.mode === model.mode
+                    ? 'border-blue-500 bg-blue-50/70 shadow-[0_6px_18px_rgba(37,99,235,0.08)] ring-2 ring-blue-500/10 dark:bg-blue-950/30'
+                    : 'border-slate-200 bg-slate-50/60 hover:border-blue-300 hover:bg-white dark:border-zinc-700 dark:bg-zinc-800/50 dark:hover:border-blue-700 dark:hover:bg-zinc-800'">
+                  <div class="flex w-full items-start justify-between gap-3">
+                    <span class="rounded-md px-2 py-1 text-[10px] font-bold"
+                      :class="status.mode === model.mode ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600 dark:bg-zinc-700 dark:text-zinc-300'">{{ model.shortName }}</span>
+                    <span class="flex items-center gap-1 text-[10px] font-medium"
+                      :class="modelIsReady(model) ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'">
+                      <span class="h-1.5 w-1.5 rounded-full" :class="modelIsReady(model) ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+                      {{ modelIsReady(model) ? '可用' : '未就绪' }}
+                    </span>
+                  </div>
+                  <div class="mt-3 flex items-baseline gap-2">
+                    <span class="text-sm font-semibold text-slate-900 dark:text-white">{{ model.name }}</span>
+                    <span class="font-mono text-[10px] text-slate-400">{{ model.family }}</span>
+                  </div>
+                  <p class="mt-1 text-[11px] leading-5 text-slate-500 dark:text-zinc-400">{{ model.description }}</p>
+                  <CheckCircle2 v-if="status.mode === model.mode" class="absolute bottom-3 right-3 h-4 w-4 text-blue-600 dark:text-blue-400" />
+                </button>
+              </div>
+            </div>
 
-    <!-- 当前激活模型模式选择卡片 -->
-    <div
-      class="bg-white dark:bg-zinc-900/90 rounded-2xl p-5 shadow-xs border border-zinc-200 dark:border-zinc-800/80 flex flex-col gap-4 transition-colors duration-200"
-    >
-      <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
-        <Zap class="w-4 h-4 text-indigo-500" />
-        当前活跃打分模型选择
-      </div>
+            <div class="overflow-hidden rounded-xl border border-slate-200 bg-slate-900 dark:border-zinc-800">
+              <div class="flex items-center justify-between border-b border-white/10 px-5 py-4">
+                <div class="flex items-center gap-3">
+                  <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/15 text-blue-300"><Gauge class="h-4 w-4" /></span>
+                  <div><div class="text-sm font-semibold text-white">当前启用</div><div class="mt-0.5 text-[11px] text-slate-400">连拍筛选会使用此模型进行审美评分</div></div>
+                </div>
+                <div class="text-right"><div class="text-sm font-semibold text-blue-300">{{ activeModel.name }}</div><div class="mt-0.5 font-mono text-[10px] text-slate-500">{{ activeModel.family }}</div></div>
+              </div>
+              <div class="flex items-center gap-2 px-5 py-3 text-[11px] text-slate-400">
+                <ShieldCheck class="h-4 w-4 text-emerald-400" />所有模型均保存在本地，照片不会上传到云端
+              </div>
+            </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <!-- 模式 1: Standard B/32 -->
-        <div
-          @click="setMode('standard')"
-          class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
-          :class="
-            status.mode === 'standard'
-              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
-          "
-        >
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-sm text-zinc-900 dark:text-zinc-100">
-              官方通用标准模型 (ViT-B/32)
-            </span>
-            <span
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.standard_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
-            >
-              {{ status.standard_onnx_ready ? '就绪' : '未就绪' }}
-            </span>
+            <div v-if="fuseTargets.length" class="rounded-xl border border-slate-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+              <div class="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-zinc-200">
+                <Flame class="h-4 w-4 text-blue-600 dark:text-blue-400" />部署个人模型
+              </div>
+              <p class="mb-4 text-xs text-slate-500 dark:text-zinc-400">将训练权重熔铸为可硬件加速的 ONNX 推理模型。</p>
+              <div class="space-y-2">
+                <div v-for="target in fuseTargets" :key="target.type" class="flex items-center gap-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-zinc-700 dark:bg-zinc-800/60">
+                  <Database class="h-4 w-4 shrink-0 text-slate-400" />
+                  <div class="min-w-0 flex-1"><div class="text-xs font-semibold text-slate-800 dark:text-zinc-200">{{ target.name }}</div><div class="mt-0.5 truncate font-mono text-[10px] text-slate-400">{{ target.path }}</div></div>
+                  <button @click="triggerFuse(target.type)" :disabled="isFusing || target.ready"
+                    class="shrink-0 rounded-md bg-blue-600 px-3 py-2 text-[11px] font-semibold text-white transition hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-zinc-700">
+                    {{ target.ready ? '已部署' : isFusing ? '处理中…' : '部署模型' }}
+                  </button>
+                </div>
+              </div>
+              <details v-if="fuseMessages.length || fuseError" class="group mt-3 rounded-lg border border-slate-200 dark:border-zinc-700">
+                <summary class="flex cursor-pointer list-none items-center px-3 py-2 text-[11px] text-slate-500 dark:text-zinc-400">部署记录<ChevronDown class="ml-auto h-3.5 w-3.5 transition group-open:rotate-180" /></summary>
+                <div class="max-h-32 overflow-y-auto border-t border-slate-200 bg-slate-950 p-3 font-mono text-[10px] leading-5 text-slate-300 dark:border-zinc-700"><div v-for="(message, index) in fuseMessages" :key="index">{{ message }}</div><div v-if="fuseError" class="text-rose-400">{{ fuseError }}</div><div v-if="fuseDone && !fuseError" class="text-emerald-400">模型部署完成</div></div>
+              </details>
+            </div>
           </div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400">
-            兼顾极速推理与通用大众审美评分（推荐大多数场景日常使用）
-          </p>
+        </div>
+        <footer class="flex h-11 shrink-0 items-center gap-3 border-t border-slate-200 bg-white px-7 text-xs text-slate-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+          <span class="h-2 w-2 rounded-full" :class="isServerReady ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+          <span>{{ isServerReady ? '模型服务就绪' : '正在连接模型服务' }}</span>
+          <span class="text-slate-300 dark:text-zinc-700">|</span><span>当前：{{ activeModel.name }}</span>
+        </footer>
+      </section>
+
+      <aside class="models-settings-scroll min-h-0 bg-white px-7 py-6 dark:bg-zinc-900">
+        <div class="mb-6 flex items-center gap-2">
+          <DownloadCloud class="h-5 w-5 text-blue-600 dark:text-blue-400" />
+          <div><h3 class="font-semibold text-slate-950 dark:text-white">模型资源</h3><p class="mt-0.5 text-xs text-slate-400">下载与校验本地视觉底座</p></div>
         </div>
 
-        <!-- 模式 2: Standard L/14 -->
-        <div
-          @click="setMode('standard_l14')"
-          class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
-          :class="
-            status.mode === 'standard_l14'
-              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
-          "
-        >
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-sm text-zinc-900 dark:text-zinc-100">
-              Aesthetic 3 专业大模型 (ViT-L/14)
-            </span>
-            <span
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.standard_l14_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
-            >
-              {{ status.standard_l14_onnx_ready ? '就绪' : '未就绪' }}
-            </span>
-          </div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400">
-            LAION-AI 官方专业摄影级高分辨率大底座，细节感知力更强
-          </p>
-        </div>
-
-        <!-- 模式 3: Custom B/32 -->
-        <div
-          @click="setMode('custom')"
-          class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
-          :class="
-            status.mode === 'custom'
-              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
-          "
-        >
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-sm text-zinc-900 dark:text-zinc-100">
-              个人专属训练模型 (ViT-B/32)
-            </span>
-            <span
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.custom_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
-            >
-              {{ status.custom_onnx_ready ? '就绪' : '未训练' }}
-            </span>
-          </div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400">
-            由您个人标记的 like/dislike 样本训练出的专属审美风格
-          </p>
-        </div>
-
-        <!-- 模式 4: Custom L/14 -->
-        <div
-          @click="setMode('custom_l14')"
-          class="p-4 rounded-xl border transition cursor-pointer flex flex-col gap-1.5"
-          :class="
-            status.mode === 'custom_l14'
-              ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/60 ring-2 ring-indigo-500/20'
-              : 'border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 hover:border-zinc-300 dark:hover:border-zinc-700'
-          "
-        >
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-sm text-zinc-900 dark:text-zinc-100">
-              个人专属训练模型 (ViT-L/14)
-            </span>
-            <span
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.custom_l14_onnx_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-800/60'"
-            >
-              {{ status.custom_l14_onnx_ready ? '就绪' : '未训练' }}
-            </span>
-          </div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400">
-            基于 ViT-L/14 专业大底座微调的最高精度个人偏好模型
-          </p>
-        </div>
-      </div>
-    </div>
-
-    <!-- 个人 PTH 权重熔铸为 ONNX -->
-    <div
-      v-if="status.mlp_ready || status.mlp_l14_ready"
-      class="bg-white dark:bg-zinc-900/90 rounded-2xl p-5 shadow-xs border border-zinc-200 dark:border-zinc-800/80 flex flex-col gap-4 transition-colors duration-200"
-    >
-      <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
-        <Flame class="w-4 h-4 text-orange-500" />
-        个人偏好权重熔铸为 ONNX 推理模型
-      </div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400">
-        检测到本地已有训练好的 .pth 权重文件，需要熔铸为 ONNX 格式才能被筛选引擎加速调用。
-      </p>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- B/32 熔铸 -->
-        <div
-          v-if="status.mlp_ready"
-          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col gap-3"
-        >
-          <div class="flex items-center justify-between">
-            <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">个人模型 (ViT-B/32)</span>
-            <span
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.custom_onnx_ready
-                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60'
-                : 'bg-orange-100 text-orange-700 dark:bg-orange-950/80 dark:text-orange-300 dark:border dark:border-orange-800/60'"
-            >
-              {{ status.custom_onnx_ready ? 'ONNX 就绪' : '待熔铸' }}
-            </span>
-          </div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400 font-mono break-all">{{ status.mlp_path }}</p>
-          <button
-            @click="triggerFuse('b32')"
-            :disabled="isFusing || status.custom_onnx_ready"
-            class="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
-          >
-            <Flame class="w-3.5 h-3.5" />
-            {{ status.custom_onnx_ready ? '已熔铸（可重新熔铸）' : '立即熔铸 → ONNX' }}
-          </button>
-        </div>
-
-        <!-- L/14 熔铸 -->
-        <div
-          v-if="status.mlp_l14_ready"
-          class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col gap-3"
-        >
-          <div class="flex items-center justify-between">
-            <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">个人模型 (ViT-L/14)</span>
-            <span
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-              :class="status.custom_l14_onnx_ready
-                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60'
-                : 'bg-orange-100 text-orange-700 dark:bg-orange-950/80 dark:text-orange-300 dark:border dark:border-orange-800/60'"
-            >
-              {{ status.custom_l14_onnx_ready ? 'ONNX 就绪' : '待熔铸' }}
-            </span>
-          </div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400 font-mono break-all">{{ status.mlp_l14_path }}</p>
-          <button
-            @click="triggerFuse('l14')"
-            :disabled="isFusing || status.custom_l14_onnx_ready"
-            class="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
-          >
-            <Flame class="w-3.5 h-3.5" />
-            {{ status.custom_l14_onnx_ready ? '已熔铸（可重新熔铸）' : '立即熔铸 → ONNX' }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 熔铸进度 -->
-      <div v-if="isFusing || fuseMessages.length > 0" class="flex flex-col gap-2">
-        <div class="text-xs font-mono bg-zinc-900 dark:bg-zinc-950 text-zinc-300 border border-zinc-800 p-3 rounded-xl max-h-32 overflow-y-auto">
-          <div v-for="(msg, idx) in fuseMessages" :key="idx">{{ msg }}</div>
-        </div>
-        <p v-if="fuseError" class="text-xs text-rose-500">{{ fuseError }}</p>
-        <p v-if="fuseDone && !fuseError" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-          ✅ 熔铸完成，ONNX 模型已就绪
-        </p>
-      </div>
-    </div>
-
-    <!-- 视觉底座模型下载与同步卡片 -->
-    <div
-      class="bg-white dark:bg-zinc-900/90 rounded-2xl p-5 shadow-xs border border-zinc-200 dark:border-zinc-800/80 flex flex-col gap-4 transition-colors duration-200"
-    >
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
-          <DownloadCloud class="w-4 h-4 text-indigo-500" />
-          CLIP 视觉底座下载与离线同步
-        </div>
-
-        <!-- 镜像源开关 -->
-        <label class="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
-          <input
-            v-model="useMirror"
-            type="checkbox"
-            class="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 dark:border-zinc-700 dark:bg-zinc-900"
-          />
-          启用国内 HuggingFace 镜像源加速
+        <label class="mb-5 flex cursor-pointer items-start gap-3 rounded-lg bg-blue-50 p-3.5 dark:bg-blue-950/35">
+          <input v-model="useMirror" type="checkbox" class="mt-0.5 h-4 w-4 accent-blue-600" />
+          <span><span class="block text-xs font-semibold text-blue-900 dark:text-blue-200">国内镜像加速</span><span class="mt-1 block text-[10px] leading-4 text-blue-700/70 dark:text-blue-300/70">通过 HuggingFace 镜像下载模型资源</span></span>
         </label>
-      </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- 下载项 1: ViT-B/32 -->
-        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
-          <div>
-            <div class="flex items-center justify-between">
-              <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">
-                CLIP ViT-B/32 基础底座
-              </span>
-              <span
-                class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-                :class="status.clip_b32_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400 dark:border dark:border-zinc-700/60'"
-              >
-                {{ status.clip_b32_ready ? '已就绪' : '未下载 (~335MB)' }}
-              </span>
-            </div>
-            <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-              用于个人偏好模型微调与特征提取的基础视觉模型
-            </p>
+        <div class="space-y-3">
+          <div class="rounded-lg border border-slate-200 p-4 dark:border-zinc-700">
+            <div class="flex items-start justify-between gap-2"><div><div class="text-sm font-semibold text-slate-900 dark:text-zinc-100">CLIP ViT-B/32</div><div class="mt-1 text-[11px] text-slate-400">标准底座 · 约 335 MB</div></div><span class="mt-1 h-2 w-2 rounded-full" :class="status.clip_b32_ready ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-zinc-600'"></span></div>
+            <button @click="triggerDownload('clip_b32')" :disabled="isDownloading"
+              class="mt-4 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700 transition hover:border-blue-300 hover:text-blue-700 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              <DownloadCloud class="h-3.5 w-3.5" />{{ status.clip_b32_ready ? '重新下载 / 校验' : '下载标准底座' }}
+            </button>
           </div>
-
-          <button
-            @click="triggerDownload('clip_b32')"
-            :disabled="isDownloading"
-            class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
-          >
-            <DownloadCloud class="w-3.5 h-3.5" />
-            {{ status.clip_b32_ready ? '重新下载/校验' : '一键下载 B/32 底座' }}
-          </button>
-        </div>
-
-        <!-- 下载项 2: ViT-L/14 -->
-        <div class="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-950/60 flex flex-col justify-between gap-3">
-          <div>
-            <div class="flex items-center justify-between">
-              <span class="font-medium text-sm text-zinc-800 dark:text-zinc-200">
-                CLIP ViT-L/14 专业大底座
-              </span>
-              <span
-                class="text-[11px] px-2 py-0.5 rounded-full font-medium"
-                :class="status.clip_l14_ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border dark:border-emerald-800/60' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400 dark:border dark:border-zinc-700/60'"
-              >
-                {{ status.clip_l14_ready ? '已就绪' : '未下载 (~900MB)' }}
-              </span>
-            </div>
-            <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-              LAION Aesthetic 3 官方专业级大底座模型
-            </p>
-          </div>
-
-          <button
-            @click="triggerDownload('clip_l14')"
-            :disabled="isDownloading"
-            class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
-          >
-            <DownloadCloud class="w-3.5 h-3.5" />
-            {{ status.clip_l14_ready ? '重新下载/校验' : '一键下载 L/14 底座' }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 下载进度条与状态显示 -->
-      <div v-if="isDownloading || downloadMessages.length > 0" class="pt-2 flex flex-col gap-2">
-        <div class="flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-400">
-          <span>下载进度日志:</span>
-          <span v-if="typeof downloadPct === 'number'" class="font-mono font-medium text-indigo-600 dark:text-indigo-400">
-            {{ Math.round(downloadPct * 100) }}%
-          </span>
-        </div>
-
-        <progress
-          class="w-full h-2 rounded-full overflow-hidden [&::-webkit-progress-bar]:bg-zinc-200 dark:[&::-webkit-progress-bar]:bg-zinc-700 [&::-webkit-progress-value]:bg-indigo-600 [&::-moz-progress-bar]:bg-indigo-600"
-          :value="downloadPct ?? 0"
-          max="1"
-        ></progress>
-
-        <div class="text-xs font-mono bg-zinc-900 dark:bg-zinc-950 text-zinc-300 border border-zinc-800 p-3 rounded-xl max-h-32 overflow-y-auto">
-          <div v-for="(msg, idx) in downloadMessages" :key="idx">
-            {{ msg }}
+          <div class="rounded-lg border border-slate-200 p-4 dark:border-zinc-700">
+            <div class="flex items-start justify-between gap-2"><div><div class="text-sm font-semibold text-slate-900 dark:text-zinc-100">CLIP ViT-L/14</div><div class="mt-1 text-[11px] text-slate-400">专业底座 · 约 900 MB</div></div><span class="mt-1 h-2 w-2 rounded-full" :class="status.clip_l14_ready ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-zinc-600'"></span></div>
+            <button @click="triggerDownload('clip_l14')" :disabled="isDownloading"
+              class="mt-4 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700 transition hover:border-blue-300 hover:text-blue-700 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              <DownloadCloud class="h-3.5 w-3.5" />{{ status.clip_l14_ready ? '重新下载 / 校验' : '下载专业底座' }}
+            </button>
           </div>
         </div>
-      </div>
+
+        <div v-if="isDownloading || downloadMessages.length || downloadError" class="mt-5 rounded-lg border border-slate-200 p-4 dark:border-zinc-700">
+          <div class="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-zinc-300"><span>下载进度</span><span v-if="downloadPct !== null" class="tabular-nums text-blue-600 dark:text-blue-400">{{ Math.round(downloadPct * 100) }}%</span></div>
+          <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-zinc-700"><div class="h-full rounded-full bg-blue-600 transition-all" :class="downloadPct === null && isDownloading ? 'w-1/3 animate-pulse' : ''" :style="downloadPct !== null ? { width: `${downloadPct * 100}%` } : undefined"></div></div>
+          <details v-if="downloadMessages.length || downloadError" class="group mt-3">
+            <summary class="flex cursor-pointer list-none items-center text-[10px] text-slate-400">查看下载记录<ChevronDown class="ml-auto h-3.5 w-3.5 transition group-open:rotate-180" /></summary>
+            <div class="mt-2 max-h-36 overflow-y-auto rounded-md bg-slate-950 p-3 font-mono text-[10px] leading-5 text-slate-300"><div v-for="(message, index) in downloadMessages" :key="index">{{ message }}</div><div v-if="downloadError" class="text-rose-400">{{ downloadError }}</div></div>
+          </details>
+        </div>
+
+        <div class="mt-5 flex gap-2 rounded-lg bg-slate-50 p-3 text-[10px] leading-4 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400">
+          <CircleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />下载时请保持应用运行。已下载的模型可完全离线使用。
+        </div>
+      </aside>
     </div>
   </div>
 </template>
+
+<style scoped>
+.models-settings-scroll {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+</style>
