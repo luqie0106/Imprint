@@ -1,145 +1,147 @@
 # Imprint
 
-[![Version](https://img.shields.io/badge/Version-2.1.0-6366F1?logo=v&logoColor=white)](https://github.com/luqie0106/Imprint/releases)
-[![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?logo=tauri&logoColor=black)](https://tauri.app/)
-[![Vue 3](https://img.shields.io/badge/Frontend-Vue%203%20%7C%20TailwindCSS-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
-[![Python](https://img.shields.io/badge/Python-3.9%20~%203.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+Imprint 是一个在本机运行的连拍照片筛选工具。选一个照片文件夹，它会把相近时间拍下的照片分成连拍组，帮你从每组里挑出相对更清晰、曝光更合适的几张。
 
-Imprint 是一个运行在本地的连拍照片智能筛选与优选工具，基于 Tauri 2.0 与 Python 构建。
+没有被选中的照片不会删除，而是移到原文件夹里的 `审查_连拍淘汰` 目录。你可以慢慢检查，需要的话也能恢复。照片不会上传到云端，原图内容也不会被改动。
 
-主要面向人像、体育、生态、航空等高频连拍摄影场景。程序会自动根据拍摄时间与画面相似度对连拍进行分组，综合对焦清晰度（人脸优先）、曝光以及可选的美学模型选出每组中的最佳照片，并将多余废片整理到独立的审查目录中。
+适合用在拍人像、运动、鸟类、飞机这类一次拍很多张的场景。
 
----
+## 能做什么
 
-## 特性介绍
+- 按拍摄时间和画面相似度自动识别连拍；拍到一半停下来，或画面变化很大时，会尽量分成不同组。
+- 从清晰度、曝光和审美评分几个角度给同组照片排序，默认每组保留 1 张。
+- 支持在结果里查看缩略图，并手动把照片改为“保留”或“移入审查”。
+- RAW 和同名 JPG 会当作一套处理，不会只移动其中一个。
+- 支持常见 RAW（ARW、CR2、CR3、NEF、RAF、RW2、ORF、DNG 等），以及 JPG、PNG、WebP、TIFF、HEIC、HIF、JXL 等格式。
+- 可以用自己的“喜欢 / 不喜欢”样片训练一个本地审美模型。
 
-- **连拍自动分组**：结合 EXIF 亚秒级拍摄时间与图像感知哈希（dHash），精准识别连拍序列。支持长距离追焦移镜时自动拆分子组，避免三脚架定点延时被误合并。
-- **RAW + JPG 伴生文件绑定**：自动识别同一次快门生成的 RAW+JPG（如 `.ARW` + `.JPG`、`.CR3` + `.JPG`），在选优或移动时保持同步，绝不拆散。
-- **多维度选优评估**：
-  - **对焦清晰度**：自动检测人脸区域并优先计算面部/眼部清晰度，无人脸时基于中心主体区域计算。
-  - **曝光评估**：直方图高光与暗部统计，对不可挽回的高光死白施加扣分。
-  - **美学与构图打分（可选）**：基于轻量化 CLIP 视觉底座（ONNX Runtime 加速），量化画面构图。
-- **个人审美偏好微调**：只需提供 `like` 与 `dislike` 两个样本文件夹，即可在本地一键微调专属审美模型。
-- **全格式支持**：
-  - **相机 RAW**：索尼 (`.ARW`)、佳能 (`.CR2`/`.CR3`)、尼康 (`.NEF`)、富士 (`.RAF`)、松下/徕卡 (`.RW2`)、奥林巴斯 (`.ORF`)、DNG（含大疆/理光 GR/iPhone ProRAW）等。
-  - **高效格式**：索尼/佳能 10-bit `.HIF`、苹果 `.HEIC`、JPEG XL (`.JXL`)。
-  - **通用格式**：`.JPG`、`.JPEG`、`.PNG`、`.WebP`、`.TIFF` 等。
-- **安全与非破坏性**：仅读取照片缩略图与元数据，绝不修改原图；淘汰照片统一移动至子目录 `审查_连拍淘汰`，方便随时复核。
-- **现代化桌面体验**：支持深色模式 (Dark)、浅色模式 (Light) 与跟随系统自动切换，支持 Windows 11 Mica 材质与 macOS 毛玻璃效果。
+## 先知道这几件事
 
----
+- 程序会移动文件，但不会删除文件。建议第一次先拿一小部分照片试跑。
+- `审查_连拍淘汰` 是默认的审查文件夹，可以在界面或命令行中改名。
+- AI 的选择只是初筛结果，不一定符合每个人的取舍。处理完成后建议重点看一遍每组的保留照片。
+- 如果照片同时有 RAW 和 JPG，请把它们放在同一目录且保留相同文件名，程序才能正确配对。
 
-## 常用参数说明
+## 用桌面版
 
-| 参数项 | 说明 | 调节建议 |
-| :--- | :--- | :--- |
-| **连拍时间间隔 (秒)** | 相邻快门的最大时间间隔 | **默认 1.5 秒**。超过该停顿时间将自动开始新的一组。 |
-| **汉明距离 (构图容差)** | 画面结构感知哈希差异（1~64） | **默认 12**。调小（如 6~8）对构图变动更敏感；调大（如 16~20）允许甩镜头追焦仍保持同组。 |
-| **每组保留张数** | 每个连拍组中优选出的照片数量 | **默认 1 张**。可根据需要设为保留 2~3 张备选。 |
-| **并发分析线程数** | 多线程读取 RAW 预览与计算锐度 | 默认按 CPU 逻辑核心数的 80% 分配。 |
+打开应用后，按这个顺序就能完成一次筛选：
 
----
+1. 在“连拍优选”里选择照片所在文件夹。
+2. 确认每组要保留的张数；第一次用建议保持 1 张。
+3. 点击开始筛选，等待分析完成。
+4. 在结果中检查照片。点“保留”或“审查”可以随时调整。
+5. 没有保留的照片会进入照片目录下的 `审查_连拍淘汰` 文件夹。
 
-## 命令行模式 (CLI)
+界面里的常用设置：
 
-除了桌面客户端，也可以直接通过终端运行批处理：
+| 设置 | 默认值 | 什么时候调整 |
+| --- | --- | --- |
+| 连拍时间间隔 | 1.5 秒 | 两次快门相隔超过这个时间，通常会被视为新的一组。拍得更慢可调大，快速连拍可调小。 |
+| 构图容差 | 12 | 数值小，画面稍有变化就更容易拆组；数值大，追焦或甩镜头拍摄时更容易留在同一组。 |
+| 每组保留 | 1 张 | 想留备选就设为 2 或 3 张。 |
+| 审查目录名称 | `审查_连拍淘汰` | 只影响未保留照片被移动到的子文件夹名称。 |
 
-```bash
-# 1. 快速筛选指定照片目录
-python main.py /path/to/photos
+## 用自己的喜好训练模型（可选）
 
-# 2. 自定义参数运行
-python main.py /path/to/photos --gap 1.5 --hamming 12 --keep 1 --review-dir 审查_连拍淘汰
+如果你希望程序更接近自己的选片习惯，可以准备一个样片目录：
 
-# 3. 交互式终端模式
-python main.py --cli
-
-# 4. 下载/同步基础模型到本地 models/ 目录
-python main.py --download-models
-
-# 5. 导出 ONNX 模型
-python main.py --export-onnx
+```text
+我的样片/
+├── like/       # 你喜欢的照片
+└── dislike/    # 你不喜欢的照片
 ```
 
----
+然后打开“偏好训练”，选择 `我的样片` 这个目录并开始训练。训练完成后，到“模型管理”切换到个人模型即可。样片和训练过程都在本机，不会上传。
 
-## 本地开发与构建
+## 命令行用法
 
-### 环境要求
-- **Python**: 3.9 ~ 3.13（推荐 Conda Python 3.11）
-- **Node.js**: >= 18.0.0
-- **Rust**: 稳定版工具链（`cargo` / `rustc`）
+如果你更习惯终端，也可以直接运行。下面以 macOS / Linux 的 `python3` 为例；Windows 可以把它换成 `py` 或实际的 Python 命令。
 
-### 启动开发
 ```bash
-# 1. 克隆代码库
+# 筛选一个照片文件夹
+python3 main.py /path/to/photos
+
+# 每组保留 2 张，并指定审查目录名称
+python3 main.py /path/to/photos --keep 2 --review-dir 待检查
+
+# 交互式输入照片文件夹
+python3 main.py --cli
+```
+
+常用选项：
+
+```bash
+python3 main.py /path/to/photos \
+  --gap 1.5 \
+  --hamming 12 \
+  --keep 1 \
+  --workers 4 \
+  --no-gpu
+```
+
+- `--gap`：连拍时间间隔，单位是秒。
+- `--hamming`：构图容差，范围 1–64。
+- `--keep`：每个连拍组保留几张。
+- `--workers`：同时分析照片的线程数；不填则自动决定。
+- `--no-gpu`：关闭 GPU 加速。遇到显卡兼容问题时可以用它。
+
+首次需要下载视觉模型时，可以运行：
+
+```bash
+python3 main.py --download-models
+```
+
+## 从源码运行
+
+需要 Python 3.9 或更高版本、Node.js 18 或更高版本，以及 Rust 稳定版工具链。
+
+```bash
 git clone https://github.com/luqie0106/Imprint.git
 cd Imprint
 
-# 2. 安装 Python 核心依赖
+# 安装 Python 依赖
 pip install -r requirements.txt
 
-# 3. 安装前端依赖
+# 安装桌面端依赖并启动
 cd tauri-frontend
 npm install
-
-# 4. 启动开发模式（自动拉起桌面窗口与本地服务）
 npm run tauri dev
 ```
 
-### 构建打包
+构建安装包：
+
 ```bash
 cd tauri-frontend
 
-# 打包 Python Sidecar 二进制
+# 先打包 Python 后端
 npm run build:api
 
-# 构建桌面端安装包 (macOS .dmg / Windows .zip)
+# 再构建桌面端安装包
 npm run tauri build
 ```
 
----
+## 目录说明
 
-## 目录结构
-
-```
+```text
 Imprint/
-├── src/                               # 核心算法与 FastAPI Sidecar 服务端
-│   ├── app_api.py                     # FastAPI 后端 (RESTful & SSE 实时流)
-│   ├── burst_filter.py                # 连拍聚类、EXIF 与多维打分引擎
-│   ├── model_manager.py               # AI 视觉模型下载、激活与权重管理
-│   ├── onnx_exporter.py               # 权重微调与 ONNX 导出
-│   ├── exif_reader.py                 # EXIF 与亚秒时间提取
-│   └── config.py                      # 全局常量配置
-├── tauri-frontend/                    # Tauri 2.0 桌面端与 Vue 3 前端
-│   ├── src-tauri/                     # Rust 宿主（窗口管理、Sidecar 调度、主题渲染）
-│   ├── src/                           # Vue 3 页面组件与状态管理
-│   └── package.json                   # 前端构建配置
-├── models/                            # 本地 AI 模型与 ONNX 权重目录
-├── main.py                            # 纯命令行 CLI 批处理入口
-├── app_api.spec                       # PyInstaller Sidecar 打包配置
-├── requirements.txt                   # Python 运行依赖
-├── requirements-build.txt             # Python CI 打包依赖
-└── .github/workflows/build.yml        # GitHub Actions 跨平台自动构建流
+├── main.py                 # 命令行入口
+├── src/                    # 照片分组、评分、模型和本地服务
+├── tauri-frontend/         # 桌面端界面
+├── models/                 # 本地模型文件
+├── tests/                  # 测试
+└── requirements.txt        # Python 依赖
 ```
 
----
+## 遇到系统拦截
 
-## 常见问题 (FAQ)
+Windows 的 SmartScreen 提示可以点击“更多信息”后选择“仍要运行”。
 
-### 系统拦截提示如何处理？
+macOS 如果提示应用无法验证开发者，请到“系统设置 → 隐私与安全性”中选择“仍要打开”。若仍无法打开，可在确认应用来源可信后执行：
 
-- **Windows 用户（SmartScreen 提示）**：点击窗口中的「更多信息」→「仍要运行」即可。
-- **macOS 用户（提示无法验证开发者或已损坏）**：
-  - 前往「系统设置」→「隐私与安全性」，点击「仍要打开」；
-  - 或在终端执行解除隔离命令：
-    ```bash
-    xattr -cr /Applications/Imprint.app
-    ```
-
----
+```bash
+xattr -cr /Applications/Imprint.app
+```
 
 ## 开源协议
 
-本项目采用 [Apache 2.0](LICENSE) 协议开源。
+本项目使用 [Apache 2.0](LICENSE) 协议。
