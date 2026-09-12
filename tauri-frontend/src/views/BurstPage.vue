@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, onMounted } from "vue";
+import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSse } from "../composables/useSse";
 import { BASE_URL, isServerReady } from "../stores/api";
@@ -7,7 +7,7 @@ import {
   FolderOpen, Play, Square, SlidersHorizontal, CheckCircle2,
   AlertCircle, Cpu, Trash2, FileCheck2, ChevronDown,
   Images, ScanSearch, Layers3, ShieldCheck, Clock3,
-  Focus, ZoomIn, Trophy, BadgeCheck,
+  Focus, ZoomIn, Trophy, BadgeCheck, FolderInput, LoaderCircle,
 } from "lucide-vue-next";
 
 type FilterPreset = "conservative" | "balanced" | "aggressive" | "custom";
@@ -33,6 +33,14 @@ interface BurstPreviewGroup {
   shot_count: number;
   confidence_margin: number;
   needs_review: boolean;
+  weights: {
+    aesthetic: number;
+    sharpness: number;
+    exposure: number;
+  };
+  weight_reason: string;
+  sharpness_spread: number;
+  exposure_spread: number;
   shots: BurstPreviewShot[];
 }
 
@@ -56,6 +64,13 @@ const logContainer = ref<HTMLElement | null>(null);
 const keepSliderPosition = ref(0);
 const selectedGroupIndex = ref(0);
 const selectedPhotoId = ref<string | null>(null);
+const decisionPendingId = ref<string | null>(null);
+const decisionFeedback = ref("");
+const zoomViewport = ref<HTMLElement | null>(null);
+const zoomImage = ref<HTMLImageElement | null>(null);
+const reviewZoom = ref(1);
+const reviewPan = ref({ x: 0, y: 0 });
+let dragStart: { pointerX: number; pointerY: number; panX: number; panY: number } | null = null;
 const presetOptions: Array<{
   value: Exclude<FilterPreset, "custom">;
   label: string;
@@ -178,14 +193,128 @@ function selectPreviewGroup(index: number) {
     ?? null;
 }
 
-function previewUrl(photoId: string, kind: "full" | "focus") {
+async function focusSelectedThumbnail() {
+  await nextTick();
+  if (!selectedPhotoId.value) return;
+  document.querySelector<HTMLElement>(`[data-photo-id="${selectedPhotoId.value}"]`)
+    ?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+}
+
+function selectAdjacentPhoto(delta: number) {
+  const shots = selectedGroup.value?.shots ?? [];
+  if (!shots.length) return;
+  const currentIndex = Math.max(0, shots.findIndex((shot) => shot.photo_id === selectedPhotoId.value));
+  const nextIndex = Math.min(shots.length - 1, Math.max(0, currentIndex + delta));
+  selectedPhotoId.value = shots[nextIndex].photo_id;
+  void focusSelectedThumbnail();
+}
+
+function handleReviewKeydown(event: KeyboardEvent) {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+  if (!selectedGroup.value?.shots.length) return;
+  event.preventDefault();
+  selectAdjacentPhoto(event.key === "ArrowLeft" ? -1 : 1);
+}
+
+async function setPhotoDecision(shot: BurstPreviewShot, kept: boolean) {
+  if (shot.kept === kept || decisionPendingId.value || !BASE_URL.value) return;
+  const session = resultData.value?.preview_session;
+  if (!session) return;
+
+  decisionPendingId.value = shot.photo_id;
+  decisionFeedback.value = "";
+  try {
+    const response = await fetch(`${BASE_URL.value}/api/burst/decision/${session}/${shot.photo_id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kept }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法移动照片");
+
+    const wasKept = shot.kept;
+    shot.kept = Boolean(data.kept);
+    const changedFiles = Number(data.moved_files ?? shot.companion_count ?? 1);
+    if (resultData.value && wasKept !== shot.kept) {
+      const delta = shot.kept ? -changedFiles : changedFiles;
+      resultData.value.moved = Math.max(0, Number(resultData.value.moved || 0) + delta);
+    }
+    decisionFeedback.value = `${shot.name}：${data.message}`;
+    messages.value.push(`✓ ${decisionFeedback.value}`);
+  } catch (err) {
+    decisionFeedback.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    decisionPendingId.value = null;
+  }
+}
+
+function previewUrl(photoId: string, kind: "full" | "focus" | "review") {
   const session = resultData.value?.preview_session;
   if (!session || !BASE_URL.value) return "";
   return `${BASE_URL.value}/api/burst/preview/${session}/${photoId}?kind=${kind}`;
 }
 
+function clampReviewPan(x: number, y: number) {
+  const viewport = zoomViewport.value;
+  const image = zoomImage.value;
+  if (!viewport || !image?.naturalWidth || !image.naturalHeight) return { x: 0, y: 0 };
+  const maxX = Math.max(0, (image.naturalWidth * reviewZoom.value - viewport.clientWidth) / 2);
+  const maxY = Math.max(0, (image.naturalHeight * reviewZoom.value - viewport.clientHeight) / 2);
+  return {
+    x: Math.min(maxX, Math.max(-maxX, x)),
+    y: Math.min(maxY, Math.max(-maxY, y)),
+  };
+}
+
+function resetReviewZoom() {
+  reviewZoom.value = 1;
+  reviewPan.value = { x: 0, y: 0 };
+}
+
+async function setReviewZoom(nextZoom: number) {
+  reviewZoom.value = Math.min(4, Math.max(1, nextZoom));
+  await nextTick();
+  reviewPan.value = clampReviewPan(reviewPan.value.x, reviewPan.value.y);
+}
+
+function handleZoomWheel(event: WheelEvent) {
+  event.preventDefault();
+  void setReviewZoom(reviewZoom.value + (event.deltaY < 0 ? 0.25 : -0.25));
+}
+
+function startReviewDrag(event: PointerEvent) {
+  if (event.button !== 0) return;
+  dragStart = {
+    pointerX: event.clientX,
+    pointerY: event.clientY,
+    panX: reviewPan.value.x,
+    panY: reviewPan.value.y,
+  };
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+}
+
+function moveReviewDrag(event: PointerEvent) {
+  if (!dragStart) return;
+  reviewPan.value = clampReviewPan(
+    dragStart.panX + event.clientX - dragStart.pointerX,
+    dragStart.panY + event.clientY - dragStart.pointerY,
+  );
+}
+
+function stopReviewDrag(event: PointerEvent) {
+  dragStart = null;
+  const target = event.currentTarget as HTMLElement;
+  if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+}
+
 function scorePercent(value: number) {
   return `${Math.max(0, Math.min(100, value * 100))}%`;
+}
+
+function weightPercent(value: number | undefined) {
+  return `${Math.round((value ?? 0) * 100)}%`;
 }
 
 async function checkGpuAvailability() {
@@ -240,7 +369,11 @@ function clearLogs() {
   messages.value = [];
 }
 
-onMounted(checkGpuAvailability);
+onMounted(() => {
+  checkGpuAvailability();
+  window.addEventListener("keydown", handleReviewKeydown);
+});
+onBeforeUnmount(() => window.removeEventListener("keydown", handleReviewKeydown));
 watch(() => isServerReady.value, (ready) => ready && checkGpuAvailability());
 watch(() => messages.value.length, async () => {
   await nextTick();
@@ -249,6 +382,7 @@ watch(() => messages.value.length, async () => {
 watch(() => resultData.value, (result) => {
   if (result?.groups?.length) selectPreviewGroup(0);
 });
+watch(selectedPhotoId, resetReviewZoom);
 </script>
 
 <template>
@@ -283,7 +417,7 @@ watch(() => resultData.value, (result) => {
               </span>
             </button>
 
-            <div class="flex min-h-[260px] flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
+            <div class="order-3 flex min-h-[260px] flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
               <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
                 <div class="flex items-center gap-2 text-sm font-medium text-white">
                   <Images class="h-4 w-4 text-blue-400" /> 批处理流程
@@ -324,7 +458,7 @@ watch(() => resultData.value, (result) => {
               </div>
             </div>
 
-            <div v-if="isDone && resultData" class="rounded-xl border border-blue-200 bg-blue-50/70 p-5 dark:border-blue-900 dark:bg-blue-950/25">
+            <div v-if="isDone && resultData" class="order-2 rounded-xl border border-blue-200 bg-blue-50/70 p-5 dark:border-blue-900 dark:bg-blue-950/25">
               <div class="mb-4 flex items-center gap-2 font-semibold text-blue-950 dark:text-blue-100">
                 <CheckCircle2 class="h-5 w-5 text-blue-600 dark:text-blue-400" /> 本次筛选已完成
               </div>
@@ -339,7 +473,7 @@ watch(() => resultData.value, (result) => {
               </div>
             </div>
 
-            <div v-if="previewGroups.length" class="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+            <div v-if="previewGroups.length" class="order-1 overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
               <div class="flex flex-wrap items-center gap-3 border-b border-slate-200 px-5 py-4 dark:border-zinc-800">
                 <div class="flex items-center gap-2 font-semibold text-slate-900 dark:text-zinc-100">
                   <Images class="h-5 w-5 text-blue-600 dark:text-blue-400" />连拍组复核
@@ -375,18 +509,32 @@ watch(() => resultData.value, (result) => {
                     <div class="text-sm font-semibold text-slate-900 dark:text-zinc-100">第 {{ selectedGroup.index }} 组 · {{ selectedGroup.shot_count }} 次快门</div>
                     <div class="mt-1 text-xs text-slate-400">点击缩略图检查完整画面与局部清晰度</div>
                   </div>
-                  <span class="ml-auto rounded-md px-2 py-1 text-xs font-medium"
+                  <span class="ml-auto rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-400 dark:border-zinc-700">← → 切换照片</span>
+                  <span class="rounded-md px-2 py-1 text-xs font-medium"
                     :class="selectedGroup.needs_review ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'">
                     {{ selectedGroup.needs_review ? '建议复核' : '选择明确' }}
                   </span>
                 </div>
 
+                <div class="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50/70 px-3.5 py-3 text-xs text-blue-900 dark:border-blue-900/70 dark:bg-blue-950/25 dark:text-blue-200">
+                  <span class="font-semibold">智能权重</span>
+                  <span class="text-blue-700/80 dark:text-blue-300/80">{{ selectedGroup.weight_reason }}</span>
+                  <div class="ml-auto flex flex-wrap gap-1.5 tabular-nums">
+                    <span class="rounded bg-white/80 px-2 py-1 dark:bg-zinc-900/60">审美 {{ weightPercent(selectedGroup.weights?.aesthetic) }}</span>
+                    <span class="rounded bg-white/80 px-2 py-1 dark:bg-zinc-900/60">清晰 {{ weightPercent(selectedGroup.weights?.sharpness) }}</span>
+                    <span class="rounded bg-white/80 px-2 py-1 dark:bg-zinc-900/60">曝光 {{ weightPercent(selectedGroup.weights?.exposure) }}</span>
+                  </div>
+                </div>
+
                 <div class="flex gap-3 overflow-x-auto pb-3">
-                  <button
+                  <div
                     v-for="shot in selectedGroup.shots"
                     :key="shot.photo_id"
-                    type="button"
+                    :data-photo-id="shot.photo_id"
+                    role="button"
+                    tabindex="0"
                     @click="selectedPhotoId = shot.photo_id"
+                    @keydown.enter.prevent="selectedPhotoId = shot.photo_id"
                     class="group/photo relative w-40 shrink-0 overflow-hidden rounded-lg border-2 bg-slate-100 text-left transition dark:bg-zinc-800"
                     :class="selectedPhoto?.photo_id === shot.photo_id
                       ? 'border-blue-500 shadow-[0_6px_18px_rgba(37,99,235,0.16)]'
@@ -394,23 +542,72 @@ watch(() => resultData.value, (result) => {
                   >
                     <div class="relative aspect-[3/2] overflow-hidden bg-slate-200 dark:bg-zinc-800">
                       <img :src="previewUrl(shot.photo_id, 'full')" :alt="shot.name" loading="lazy" class="h-full w-full object-cover" />
-                      <span v-if="shot.kept" class="absolute left-2 top-2 flex items-center gap-1 rounded bg-blue-600 px-1.5 py-1 text-[10px] font-semibold text-white"><BadgeCheck class="h-3 w-3" />保留</span>
-                      <span v-else class="absolute left-2 top-2 rounded bg-slate-950/70 px-1.5 py-1 text-[10px] text-white">审查</span>
+                      <button type="button" @click.stop="setPhotoDecision(shot, !shot.kept)" :disabled="decisionPendingId !== null"
+                        :title="shot.kept ? '点击移入审查目录' : '点击恢复到原目录'"
+                        class="absolute left-2 top-2 flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold text-white transition hover:ring-2 hover:ring-white/70 disabled:opacity-60"
+                        :class="shot.kept ? 'bg-blue-600' : 'bg-slate-950/70'">
+                        <LoaderCircle v-if="decisionPendingId === shot.photo_id" class="h-3 w-3 animate-spin" />
+                        <BadgeCheck v-else-if="shot.kept" class="h-3 w-3" />
+                        {{ shot.kept ? '保留' : '审查' }}
+                      </button>
                       <span class="absolute bottom-2 right-2 rounded bg-slate-950/75 px-1.5 py-1 text-[10px] font-semibold tabular-nums text-white">{{ Math.round(shot.score * 100) }}</span>
                     </div>
                     <div class="truncate px-2.5 py-2 text-[11px] text-slate-600 dark:text-zinc-300">{{ shot.name }}</div>
-                  </button>
+                    <div class="grid grid-cols-2 border-t border-slate-200 dark:border-zinc-700">
+                      <button type="button" @click.stop="setPhotoDecision(shot, true)"
+                        :disabled="shot.kept || decisionPendingId !== null"
+                        class="flex items-center justify-center gap-1 border-r border-slate-200 px-1 py-2 text-[10px] font-medium transition dark:border-zinc-700"
+                        :class="shot.kept ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'text-slate-500 hover:bg-blue-50 hover:text-blue-700 dark:text-zinc-400 dark:hover:bg-blue-950/30'">
+                        <LoaderCircle v-if="decisionPendingId === shot.photo_id" class="h-3 w-3 animate-spin" />
+                        <BadgeCheck v-else class="h-3 w-3" />保留
+                      </button>
+                      <button type="button" @click.stop="setPhotoDecision(shot, false)"
+                        :disabled="!shot.kept || decisionPendingId !== null"
+                        class="flex items-center justify-center gap-1 px-1 py-2 text-[10px] font-medium transition"
+                        :class="!shot.kept ? 'bg-slate-200 text-slate-700 dark:bg-zinc-700 dark:text-zinc-200' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-800 dark:text-zinc-400 dark:hover:bg-zinc-700'">
+                        <LoaderCircle v-if="decisionPendingId === shot.photo_id" class="h-3 w-3 animate-spin" />
+                        <FolderInput v-else class="h-3 w-3" />审查
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div v-if="selectedPhoto" class="mt-2 grid grid-cols-1 gap-4 border-t border-slate-200 pt-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(220px,0.65fr)] dark:border-zinc-800">
                   <div class="grid min-w-0 grid-cols-2 gap-3">
                     <div class="overflow-hidden rounded-lg bg-slate-950">
                       <div class="flex items-center gap-2 border-b border-white/10 px-3 py-2 text-xs text-slate-300"><Images class="h-3.5 w-3.5 text-blue-400" />完整画面</div>
-                      <div class="flex aspect-[3/2] items-center justify-center"><img :src="previewUrl(selectedPhoto.photo_id, 'full')" :alt="selectedPhoto.name" class="max-h-full max-w-full object-contain" /></div>
+                      <div class="flex aspect-[3/2] items-center justify-center"><img :src="previewUrl(selectedPhoto.photo_id, 'review')" :alt="selectedPhoto.name" class="max-h-full max-w-full object-contain" /></div>
                     </div>
                     <div class="overflow-hidden rounded-lg bg-slate-950">
-                      <div class="flex items-center gap-2 border-b border-white/10 px-3 py-2 text-xs text-slate-300"><ZoomIn class="h-3.5 w-3.5 text-blue-400" />人脸 / 中心清晰度区域</div>
-                      <div class="flex aspect-[3/2] items-center justify-center overflow-hidden"><img :src="previewUrl(selectedPhoto.photo_id, 'focus')" :alt="`${selectedPhoto.name} 清晰度区域`" class="h-full w-full object-cover" /></div>
+                      <div class="flex items-center gap-2 border-b border-white/10 px-3 py-1.5 text-xs text-slate-300">
+                        <ZoomIn class="h-3.5 w-3.5 text-blue-400" />1:1 细节检查
+                        <div class="ml-auto flex items-center gap-1">
+                          <button type="button" @click="setReviewZoom(reviewZoom - 0.25)" :disabled="reviewZoom <= 1" class="flex h-6 w-6 items-center justify-center rounded bg-white/5 text-sm hover:bg-white/10 disabled:opacity-30" aria-label="缩小">−</button>
+                          <button type="button" @click="resetReviewZoom" class="min-w-12 rounded bg-white/5 px-1.5 py-1 text-[10px] tabular-nums hover:bg-white/10">{{ Math.round(reviewZoom * 100) }}%</button>
+                          <button type="button" @click="setReviewZoom(reviewZoom + 0.25)" :disabled="reviewZoom >= 4" class="flex h-6 w-6 items-center justify-center rounded bg-white/5 text-sm hover:bg-white/10 disabled:opacity-30" aria-label="放大">+</button>
+                        </div>
+                      </div>
+                      <div ref="zoomViewport"
+                        class="relative aspect-[3/2] touch-none select-none overflow-hidden bg-slate-950 cursor-grab active:cursor-grabbing"
+                        @wheel="handleZoomWheel"
+                        @pointerdown="startReviewDrag"
+                        @pointermove="moveReviewDrag"
+                        @pointerup="stopReviewDrag"
+                        @pointercancel="stopReviewDrag"
+                        @dblclick="resetReviewZoom"
+                      >
+                        <img ref="zoomImage" :src="previewUrl(selectedPhoto.photo_id, 'review')" :alt="`${selectedPhoto.name} 1:1 细节`" draggable="false"
+                          @load="reviewPan = clampReviewPan(reviewPan.x, reviewPan.y)"
+                          class="pointer-events-none absolute max-w-none"
+                          :style="{
+                            left: `calc(50% + ${reviewPan.x}px)`,
+                            top: `calc(50% + ${reviewPan.y}px)`,
+                            transform: `translate(-50%, -50%) scale(${reviewZoom})`,
+                            transformOrigin: 'center center',
+                          }"
+                        />
+                        <div class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded bg-black/55 px-2 py-1 text-[10px] text-white/75">按住拖动 · 滚轮缩放 · 双击复位</div>
+                      </div>
                     </div>
                   </div>
 
@@ -434,27 +631,39 @@ watch(() => resultData.value, (result) => {
                       <span v-if="selectedPhoto.aesthetic_best" class="flex items-center gap-1 rounded bg-violet-50 px-2 py-1 text-[10px] font-medium text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"><Trophy class="h-3 w-3" />审美最高</span>
                       <span v-if="selectedPhoto.companion_count > 1" class="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-600 dark:bg-zinc-800 dark:text-zinc-300">含 {{ selectedPhoto.companion_count }} 个伴生文件</span>
                     </div>
+                    <div class="mt-auto grid grid-cols-2 gap-2 pt-4">
+                      <button type="button" @click="setPhotoDecision(selectedPhoto, true)"
+                        :disabled="selectedPhoto.kept || decisionPendingId !== null"
+                        class="flex items-center justify-center gap-1.5 rounded-lg border border-blue-200 px-3 py-2.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50 disabled:cursor-default disabled:bg-blue-50 disabled:opacity-55 dark:border-blue-900 dark:text-blue-300 dark:hover:bg-blue-950/40 dark:disabled:bg-blue-950/30">
+                        <BadgeCheck class="h-3.5 w-3.5" />保留在原目录
+                      </button>
+                      <button type="button" @click="setPhotoDecision(selectedPhoto, false)"
+                        :disabled="!selectedPhoto.kept || decisionPendingId !== null"
+                        class="flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-default disabled:bg-slate-100 disabled:opacity-55 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:disabled:bg-zinc-800">
+                        <LoaderCircle v-if="decisionPendingId === selectedPhoto.photo_id" class="h-3.5 w-3.5 animate-spin" />
+                        <FolderInput v-else class="h-3.5 w-3.5" />移入审查目录
+                      </button>
+                    </div>
                   </div>
                 </div>
+                <div v-if="decisionFeedback" class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-zinc-800 dark:text-zinc-300">{{ decisionFeedback }}</div>
               </div>
             </div>
 
-            <div v-if="error" class="flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+            <div v-if="error" class="order-4 flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
               <AlertCircle class="h-5 w-5 shrink-0" /> {{ error }}
             </div>
 
-            <details class="group rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-              <div class="flex items-center">
-                <summary class="flex min-w-0 flex-1 cursor-pointer list-none items-center gap-3 px-5 py-3.5 text-sm font-medium text-slate-700 dark:text-zinc-300">
-                  <Clock3 class="h-4 w-4 text-slate-400" />处理记录
-                  <span class="text-xs font-normal text-slate-400">{{ messages.length ? `${messages.length} 条` : '暂无记录' }}</span>
-                  <ChevronDown class="ml-auto h-4 w-4 text-slate-400 transition group-open:rotate-180" />
-                </summary>
+            <details class="order-5 group rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+              <summary class="flex min-w-0 cursor-pointer list-none items-center gap-3 px-5 py-3.5 text-sm font-medium text-slate-700 dark:text-zinc-300">
+                <Clock3 class="h-4 w-4 text-slate-400" />处理记录
+                <span class="text-xs font-normal text-slate-400">{{ messages.length ? `${messages.length} 条` : '暂无记录' }}</span>
+                <ChevronDown class="ml-auto h-4 w-4 text-slate-400 transition group-open:rotate-180" />
                 <button v-if="messages.length" type="button" @click.stop="clearLogs"
-                  class="mr-4 flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200">
+                  class="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200">
                   <Trash2 class="h-3.5 w-3.5" />清空
                 </button>
-              </div>
+              </summary>
               <div class="border-t border-slate-200 dark:border-zinc-800">
                 <div ref="logContainer" class="max-h-44 min-h-24 overflow-y-auto bg-slate-950 px-5 py-4 font-mono text-[11px] leading-5 text-slate-300 select-text">
                   <div v-if="!messages.length" class="py-4 text-center text-slate-600">处理进度和异常信息会显示在这里</div>
@@ -476,6 +685,17 @@ watch(() => resultData.value, (result) => {
         <div class="mb-6 flex items-center gap-2">
           <SlidersHorizontal class="h-5 w-5 text-blue-600 dark:text-blue-400" />
           <div><h3 class="font-semibold text-slate-950 dark:text-white">筛选方案</h3><p class="mt-0.5 text-xs text-slate-400">控制归组范围与保留数量</p></div>
+        </div>
+        <div class="sticky top-0 z-20 -mx-2 mb-6 rounded-xl border border-blue-100 bg-white/95 p-2 shadow-[0_10px_28px_rgba(15,23,42,0.10)] backdrop-blur dark:border-blue-950 dark:bg-zinc-900/95">
+          <button v-if="!isRunning" type="button" @click="handleStart"
+            :disabled="!inputDir || isWorkersExceeded || !isServerReady"
+            class="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
+            <Play class="h-4 w-4 fill-white" />开始筛选
+          </button>
+          <button v-else type="button" @click="cancel"
+            class="flex w-full items-center justify-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+            <Square class="h-4 w-4 fill-current" />停止接收进度
+          </button>
         </div>
         <div class="space-y-7">
           <div>
@@ -566,6 +786,10 @@ watch(() => resultData.value, (result) => {
               <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400"><Layers3 class="h-4 w-4" /></span>
               <div class="min-w-0"><div class="text-xs font-semibold text-slate-800 dark:text-zinc-200">当前美学模型</div><div class="mt-0.5 truncate text-[11px] text-slate-400">使用“模型管理”中的活跃模型</div></div>
             </div>
+            <div class="mt-3 flex items-center gap-2 border-t border-slate-100 pt-3 text-[11px] text-slate-500 dark:border-zinc-800 dark:text-zinc-400">
+              <CheckCircle2 class="h-3.5 w-3.5 shrink-0 text-blue-500" />
+              <span>智能权重已开启，按每组实际差异自动调整</span>
+            </div>
           </div>
 
           <details class="group rounded-lg border border-slate-200 dark:border-zinc-700">
@@ -589,15 +813,6 @@ watch(() => resultData.value, (result) => {
             <div class="flex gap-2"><ShieldCheck class="mt-0.5 h-4 w-4 shrink-0" /><span>淘汰照片会移入审查目录，不会删除文件或修改原图内容。</span></div>
           </div>
 
-          <button v-if="!isRunning" type="button" @click="handleStart"
-            :disabled="!inputDir || isWorkersExceeded || !isServerReady"
-            class="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(37,99,235,0.22)] transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none">
-            <Play class="h-4 w-4 fill-white" />开始筛选
-          </button>
-          <button v-else type="button" @click="cancel"
-            class="flex w-full items-center justify-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
-            <Square class="h-4 w-4 fill-current" />停止接收进度
-          </button>
         </div>
       </aside>
     </div>

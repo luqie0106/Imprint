@@ -196,17 +196,15 @@ watch(() => messages.value.length, async () => {
             <div v-if="error" class="flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"><AlertCircle class="h-5 w-5 shrink-0" />{{ error }}</div>
 
             <details class="group rounded-xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-              <div class="flex items-center">
-                <summary class="flex min-w-0 flex-1 cursor-pointer list-none items-center gap-3 px-5 py-3.5 text-sm font-medium text-slate-700 dark:text-zinc-300">
-                  <Clock3 class="h-4 w-4 text-slate-400" />训练记录
-                  <span class="text-xs font-normal text-slate-400">{{ messages.length ? `${messages.length} 条` : '暂无记录' }}</span>
-                  <ChevronDown class="ml-auto h-4 w-4 text-slate-400 transition group-open:rotate-180" />
-                </summary>
+              <summary class="flex min-w-0 cursor-pointer list-none items-center gap-3 px-5 py-3.5 text-sm font-medium text-slate-700 dark:text-zinc-300">
+                <Clock3 class="h-4 w-4 text-slate-400" />训练记录
+                <span class="text-xs font-normal text-slate-400">{{ messages.length ? `${messages.length} 条` : '暂无记录' }}</span>
+                <ChevronDown class="ml-auto h-4 w-4 text-slate-400 transition group-open:rotate-180" />
                 <button v-if="messages.length" type="button" @click.stop="clearLogs"
-                  class="mr-4 flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200">
+                  class="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200">
                   <Trash2 class="h-3.5 w-3.5" />清空
                 </button>
-              </div>
+              </summary>
               <div class="border-t border-slate-200 dark:border-zinc-800">
                 <div ref="logContainer" class="max-h-48 min-h-24 overflow-y-auto bg-slate-950 px-5 py-4 font-mono text-[11px] leading-5 text-slate-300 select-text">
                   <div v-if="!messages.length" class="py-4 text-center text-slate-600">训练进度和指标会显示在这里</div>

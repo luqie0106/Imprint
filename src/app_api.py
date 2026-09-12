@@ -9,12 +9,14 @@ import asyncio
 import concurrent.futures
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
-from typing import AsyncGenerator, Literal, Optional
+from typing import Any, AsyncGenerator, Literal, Optional
 
 # 确保标准输出为 UTF-8 编码，防止 Windows GBK 环境下 Emoji 引发 UnicodeEncodeError
 if hasattr(sys.stdout, "reconfigure"):
@@ -74,8 +76,9 @@ app = FastAPI(title="Imprint API", version="2.1.0")
 
 # 最近几次筛选结果的缩略图访问表。只保存不可猜测的临时 ID 与本地路径映射，
 # 不把任意文件路径暴露为公开查询参数。
-_PREVIEW_SESSIONS: dict[str, dict[str, Path]] = {}
+_PREVIEW_SESSIONS: dict[str, dict[str, dict[str, Any]]] = {}
 _PREVIEW_CACHE: dict[tuple[str, str, str], bytes] = {}
+_PREVIEW_SESSION_LOCK = threading.Lock()
 _MAX_PREVIEW_SESSIONS = 3
 _MAX_PREVIEW_GROUPS = 40
 
@@ -112,6 +115,10 @@ class BurstRequest(BaseModel):
     include_previews: bool = False
 
 
+class BurstDecisionRequest(BaseModel):
+    kept: bool
+
+
 class DownloadModelRequest(BaseModel):
     model: Literal["clip_b32", "clip_l14"]
     use_mirror: bool = True
@@ -130,7 +137,7 @@ class TrainerRequest(BaseModel):
 
 def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
     session_id = uuid.uuid4().hex
-    path_map: dict[str, Path] = {}
+    path_map: dict[str, dict[str, Any]] = {}
     serialized: list[dict] = []
 
     # 优先展示低置信度组，其余按原始顺序补齐。
@@ -143,22 +150,97 @@ def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
         shots = []
         for shot_position, shot in enumerate(group.get("shots", [])):
             photo_id = f"g{group_position}-p{shot_position}-{uuid.uuid4().hex[:8]}"
-            path_map[photo_id] = Path(str(shot.get("path", "")))
+            current_paths = [Path(str(path)) for path in shot.get("paths", [])]
+            if not current_paths and shot.get("path"):
+                current_paths = [Path(str(shot["path"]))]
+            original_paths = [Path(str(path)) for path in shot.get("original_paths", [])]
+            if not original_paths:
+                original_paths = list(current_paths)
+            path_map[photo_id] = {
+                "current_paths": current_paths,
+                "original_paths": original_paths,
+                "review_dir": Path(str(group.get("review_dir", ""))),
+                "kept": bool(shot.get("kept")),
+            }
             shots.append({
-                key: value for key, value in shot.items() if key != "path"
+                key: value for key, value in shot.items()
+                if key not in {"path", "paths", "original_paths"}
             } | {"photo_id": photo_id})
         serialized.append({
-            key: value for key, value in group.items() if key != "shots"
+            key: value for key, value in group.items()
+            if key not in {"shots", "review_dir"}
         } | {"shots": shots})
 
-    _PREVIEW_SESSIONS[session_id] = path_map
-    while len(_PREVIEW_SESSIONS) > _MAX_PREVIEW_SESSIONS:
-        expired = next(iter(_PREVIEW_SESSIONS))
-        _PREVIEW_SESSIONS.pop(expired, None)
-        for cache_key in [key for key in _PREVIEW_CACHE if key[0] == expired]:
-            _PREVIEW_CACHE.pop(cache_key, None)
+    with _PREVIEW_SESSION_LOCK:
+        _PREVIEW_SESSIONS[session_id] = path_map
+        while len(_PREVIEW_SESSIONS) > _MAX_PREVIEW_SESSIONS:
+            expired = next(iter(_PREVIEW_SESSIONS))
+            _PREVIEW_SESSIONS.pop(expired, None)
+            for cache_key in [key for key in _PREVIEW_CACHE if key[0] == expired]:
+                _PREVIEW_CACHE.pop(cache_key, None)
 
     return session_id, serialized
+
+
+def _review_destination(review_dir: Path, original_path: Path, current_path: Path) -> Path:
+    """为审查目录生成不覆盖现有文件的目标路径。"""
+    candidate = review_dir / original_path.name
+    if candidate == current_path or not candidate.exists():
+        return candidate
+    index = 1
+    while True:
+        candidate = review_dir / f"{original_path.stem}_dup{index}{original_path.suffix}"
+        if candidate == current_path or not candidate.exists():
+            return candidate
+        index += 1
+
+
+def _apply_preview_decision(record: dict[str, Any], kept: bool) -> int:
+    """在原目录与审查目录之间移动照片及伴生文件，失败时尽量回滚。"""
+    if bool(record.get("kept")) == kept:
+        return 0
+
+    current_paths = [Path(path) for path in record.get("current_paths", [])]
+    original_paths = [Path(path) for path in record.get("original_paths", [])]
+    review_dir_value = record.get("review_dir")
+    review_dir = Path(review_dir_value) if review_dir_value else Path()
+    if not current_paths or len(current_paths) != len(original_paths):
+        raise ValueError("照片伴生文件记录不完整")
+    if not kept and not review_dir_value:
+        raise ValueError("审查目录无效")
+
+    targets: list[Path] = []
+    for current_path, original_path in zip(current_paths, original_paths):
+        if not current_path.exists():
+            raise FileNotFoundError(f"照片不存在: {current_path.name}")
+        if kept:
+            target = original_path
+            if target != current_path and target.exists():
+                raise FileExistsError(f"原目录已存在同名文件: {target.name}")
+        else:
+            target = _review_destination(review_dir, original_path, current_path)
+        targets.append(target)
+
+    moved_pairs: list[tuple[Path, Path]] = []
+    try:
+        for current_path, target in zip(current_paths, targets):
+            if current_path == target:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(current_path), str(target))
+            moved_pairs.append((current_path, target))
+    except Exception:
+        for original_location, moved_location in reversed(moved_pairs):
+            try:
+                if moved_location.exists() and not original_location.exists():
+                    shutil.move(str(moved_location), str(original_location))
+            except Exception:
+                pass
+        raise
+
+    record["current_paths"] = targets
+    record["kept"] = kept
+    return len(moved_pairs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -248,14 +330,44 @@ async def run_burst(req: BurstRequest):
     )
 
 
+@app.post("/api/burst/decision/{session_id}/{photo_id}")
+def set_burst_decision(
+    session_id: str,
+    photo_id: str,
+    decision: BurstDecisionRequest,
+):
+    """人工复核时立即改变一张照片的去留，并同步移动其 RAW/JPG 伴生文件。"""
+    with _PREVIEW_SESSION_LOCK:
+        record = _PREVIEW_SESSIONS.get(session_id, {}).get(photo_id)
+        if record is None:
+            return JSONResponse(status_code=404, content={"error": "复核会话已失效"})
+        try:
+            moved_files = _apply_preview_decision(record, decision.kept)
+        except FileExistsError as exc:
+            return JSONResponse(status_code=409, content={"error": str(exc)})
+        except FileNotFoundError as exc:
+            return JSONResponse(status_code=404, content={"error": str(exc)})
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"error": f"移动照片失败: {exc}"})
+
+    return {
+        "ok": True,
+        "kept": decision.kept,
+        "moved_files": moved_files,
+        "message": "已恢复到原目录" if decision.kept else "已移入审查目录",
+    }
+
+
 @app.get("/api/burst/preview/{session_id}/{photo_id}")
 def get_burst_preview(
     session_id: str,
     photo_id: str,
-    kind: Literal["full", "focus"] = "full",
+    kind: Literal["full", "focus", "review"] = "full",
 ):
     """按不可猜测的会话 ID 返回筛选结果缩略图或清晰度检查裁切。"""
-    path = _PREVIEW_SESSIONS.get(session_id, {}).get(photo_id)
+    record = _PREVIEW_SESSIONS.get(session_id, {}).get(photo_id)
+    current_paths = record.get("current_paths", []) if record else []
+    path = Path(current_paths[0]) if current_paths else None
     if path is None or not path.exists() or not path.is_file():
         return JSONResponse(status_code=404, content={"error": "预览已失效或照片不存在"})
 
@@ -290,10 +402,20 @@ def get_burst_preview(
             image_rgb = image_rgb[top:top + side, left:left + side]
 
         image = Image.fromarray(image_rgb).convert("RGB")
-        target_size = (260, 260) if kind == "focus" else (360, 220)
+        if kind == "review":
+            target_size = (2048, 2048)
+        elif kind == "focus":
+            target_size = (260, 260)
+        else:
+            target_size = (360, 220)
         image.thumbnail(target_size, Image.Resampling.LANCZOS)
         output = io.BytesIO()
-        image.save(output, format="JPEG", quality=84, optimize=True)
+        image.save(
+            output,
+            format="JPEG",
+            quality=90 if kind == "review" else 84,
+            optimize=True,
+        )
         payload = output.getvalue()
         _PREVIEW_CACHE[cache_key] = payload
         return Response(

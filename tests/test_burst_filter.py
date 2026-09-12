@@ -27,6 +27,8 @@ from burst_filter import (  # noqa: E402
     RawExifReader,
     RawEvaluator,
     ScoredPhoto,
+    _relative_sharpness_scores,
+    _resolve_dynamic_weights,
 )
 
 
@@ -86,6 +88,44 @@ class TestRawEvaluator:
         flat = np.full((128, 128, 3), 128, dtype=np.uint8)
         score = self.scorer.sharpness(flat)
         assert score < 1.0, f"均一图像的得分应接近0，实际={score}"
+
+    def test_landscape_uses_nine_region_profile(self):
+        """无人脸风景图应返回九宫格清晰度数据。"""
+        evaluator = RawEvaluator()
+        with patch.object(evaluator, "_face_regions", return_value=[]):
+            mode, regions = evaluator.sharpness_profile(_make_sharp_image())
+        assert mode == "grid"
+        assert len(regions) == 9
+        assert all(score >= 0 for score in regions)
+
+
+class TestDynamicLandscapeWeights:
+    def test_small_sharpness_difference_is_treated_as_equal(self):
+        scores, spread = _relative_sharpness_scores([100.0, 96.0, 93.0])
+        assert scores == [1.0, 1.0, 1.0]
+        assert spread < 0.08
+
+    def test_obvious_blur_receives_low_score(self):
+        scores, spread = _relative_sharpness_scores([100.0, 82.0, 55.0])
+        assert scores[0] == 1.0
+        assert 0.0 < scores[1] < 1.0
+        assert scores[2] == 0.0
+        assert spread > 0.25
+
+    def test_similar_group_prefers_aesthetic_weight(self):
+        weights, reason = _resolve_dynamic_weights(0.04, 0.01)
+        assert weights["aesthetic"] == pytest.approx(0.70)
+        assert weights["sharpness"] == pytest.approx(0.25)
+        assert weights["exposure"] == pytest.approx(0.05)
+        assert "审美" in reason
+
+    def test_clear_difference_raises_technical_weights_but_keeps_aesthetic_floor(self):
+        weights, reason = _resolve_dynamic_weights(0.30, 0.20)
+        assert weights["aesthetic"] >= 0.45
+        assert weights["sharpness"] > 0.30
+        assert weights["exposure"] > 0.15
+        assert sum(weights.values()) == pytest.approx(1.0)
+        assert "技术质量" in reason
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -250,6 +290,10 @@ class TestBurstFilter:
         assert result.moved == 2
         assert result.review_dir is not None
         assert result.review_dir.exists()
+        assert result.groups[0]["weights"]["sharpness"] > 0.30
+        assert result.groups[0]["weight_reason"]
+        assert all(len(shot["paths"]) == 1 for shot in result.groups[0]["shots"])
+        assert all(len(shot["original_paths"]) == 1 for shot in result.groups[0]["shots"])
 
         # paths[1]（最清晰）应留在原位
         assert paths[1].exists(), "最优片应保留在原目录"
@@ -411,5 +455,3 @@ class TestBurstFilter:
         assert (result.review_dir / "DSC_0001.JPG").exists()
         assert (result.review_dir / "DSC_0003.NEF").exists()
         assert (result.review_dir / "DSC_0003.JPG").exists()
-
-

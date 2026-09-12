@@ -100,6 +100,78 @@ DEFAULT_MAX_HAMMING_DISTANCE: int = 12   # dHash 64 位中允许的最大不同�
 DEFAULT_REVIEW_SUBDIR: str = "审查_连拍淘汰"
 
 _CENTER_CROP_RATIO: float = 0.6
+_SHARPNESS_EQUAL_RATIO: float = 0.92
+_SHARPNESS_POOR_RATIO: float = 0.75
+
+
+def _smoothstep(value: float, low: float, high: float) -> float:
+    """将组内差异平滑映射到 0~1，避免权重在阈值附近突然跳变。"""
+    if high <= low:
+        return float(value >= high)
+    x = float(np.clip((value - low) / (high - low), 0.0, 1.0))
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _relative_sharpness_scores(values: Sequence[float]) -> tuple[list[float], float]:
+    """
+    相对组内最佳清晰度评分。
+
+    达到最佳值 92% 的照片视为同样清晰；75%~92% 之间平滑降分，
+    低于 75% 才视为明显的虚焦或抖动。
+    """
+    if not values:
+        return [], 0.0
+    best = max(float(value) for value in values)
+    if best <= 1e-9:
+        return [1.0 for _ in values], 0.0
+
+    ratios = [max(0.0, float(value) / best) for value in values]
+    scores: list[float] = []
+    for ratio in ratios:
+        if ratio >= _SHARPNESS_EQUAL_RATIO:
+            scores.append(1.0)
+        elif ratio <= _SHARPNESS_POOR_RATIO:
+            scores.append(0.0)
+        else:
+            scores.append(_smoothstep(ratio, _SHARPNESS_POOR_RATIO, _SHARPNESS_EQUAL_RATIO))
+    return scores, max(0.0, 1.0 - min(ratios))
+
+
+def _resolve_dynamic_weights(
+    sharpness_spread: float,
+    exposure_spread: float,
+) -> tuple[dict[str, float], str]:
+    """风景优先的组内动态权重，审美权重始终不低于 45%。"""
+    sharp_signal = _smoothstep(sharpness_spread, 0.08, 0.25)
+    exposure_signal = _smoothstep(exposure_spread, 0.03, 0.15)
+
+    sharpness_weight = 0.25 + 0.15 * sharp_signal
+    exposure_weight = 0.05 + 0.20 * exposure_signal
+
+    # 技术质量总权重最高 55%，避免选片退化为“只挑最锐”。
+    technical_weight = sharpness_weight + exposure_weight
+    if technical_weight > 0.55:
+        scale = 0.55 / technical_weight
+        sharpness_weight *= scale
+        exposure_weight *= scale
+        aesthetic_weight = 0.45
+    else:
+        aesthetic_weight = 1.0 - technical_weight
+
+    if sharp_signal >= 0.45 and exposure_signal >= 0.45:
+        reason = "清晰度与曝光差异明显，已提高技术质量权重"
+    elif sharp_signal >= 0.45:
+        reason = "检测到清晰度差异，已提高对焦与细节权重"
+    elif exposure_signal >= 0.45:
+        reason = "检测到曝光差异，已提高高光与暗部保护权重"
+    else:
+        reason = "组内技术质量接近，以审美表现为主"
+
+    return {
+        "aesthetic": aesthetic_weight,
+        "sharpness": sharpness_weight,
+        "exposure": exposure_weight,
+    }, reason
 
 # ── 动态加载 ONNX Runtime ───────────────────────────────────────────────────
 try:
@@ -306,13 +378,36 @@ class RawEvaluator:
     # ── 人脸优先的锐度计算 ────────────────────────────────────────────────────
 
     def sharpness(self, img_rgb: np.ndarray) -> float:
-        """计算锐度：优先在人脸框内计算，无人脸则中心裁剪。"""
+        """计算锐度：人脸优先；无人脸时使用九宫格中细节最充足的区域。"""
+        _, regions = self.sharpness_profile(img_rgb)
+        return self._aggregate_sharpness_regions(regions)
+
+    def sharpness_profile(self, img_rgb: np.ndarray) -> tuple[str, list[float]]:
+        """返回检测模式和各区域的原始清晰度，供连拍组选择相同位置比较。"""
         gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
         regions = self._face_regions(gray)
         if regions:
             scores = [self._region_sharpness(gray, x, y, w, h) for x, y, w, h in regions]
-            return float(np.mean(scores))
-        return self._center_sharpness(gray)
+            return "face", scores
+
+        height, width = gray.shape
+        scores: list[float] = []
+        for row in range(3):
+            for col in range(3):
+                x0 = round(width * col / 3)
+                x1 = round(width * (col + 1) / 3)
+                y0 = round(height * row / 3)
+                y1 = round(height * (row + 1) / 3)
+                scores.append(self._region_sharpness(gray, x0, y0, x1 - x0, y1 - y0))
+        return "grid", scores
+
+    @staticmethod
+    def _aggregate_sharpness_regions(scores: Sequence[float]) -> float:
+        """取细节最充足的最多 5 个区域的中位数，自动忽略天空、水面等纯色区。"""
+        if not scores:
+            return 0.0
+        informative = sorted((float(score) for score in scores), reverse=True)[:5]
+        return float(np.median(informative))
 
     @staticmethod
     def _face_regions(gray: np.ndarray) -> list[tuple[int, int, int, int]]:
@@ -886,10 +981,7 @@ class BurstFilter:
         对连拍组内所有照片实体进行多维度评估，综合加权后保留前 keep_count 张。
         若某照片包含 RAW+JPG 伴生文件，保留时全部保留在原目录，淘汰时全部移动至审查目录。
 
-        各维度权重：
-          AI 美学概率   : 0.6
-          归一化锐度    : 0.3
-          曝光评分      : 0.1
+        组内差异越明显，对应的技术质量权重越高；差异很小时以审美为主。
         """
         @dataclass
         class _EvaluatedShot:
@@ -898,6 +990,8 @@ class BurstFilter:
             exposure: float  = 1.0
             aesthetic: float = 1.0
             failed: bool     = False
+            _sharp_mode: str = "fallback"
+            _sharp_profile: list[float] = field(default_factory=list)
             _norm_sharp: float = 0.0
             final_score: float = -1.0
 
@@ -919,7 +1013,8 @@ class BurstFilter:
             try:
                 # 优先使用 primary_path（RAW 优先）提取预览与多维度打分
                 preview = self._scorer.extract_preview(shot.primary_path)
-                es.sharpness = self._scorer.sharpness(preview)
+                es._sharp_mode, es._sharp_profile = self._scorer.sharpness_profile(preview)
+                es.sharpness = self._scorer._aggregate_sharpness_regions(es._sharp_profile)
                 es.exposure  = self._scorer.exposure_score(preview)
                 es.aesthetic = self._aesthetic_scorer.score(preview)
                 return es
@@ -953,22 +1048,38 @@ class BurstFilter:
 
         # ── 阶段 2：组内归一化锐度（避免绝对值量纲差异主导结果）─────────────
         valid = [es for es in evaluated_list if not es.failed]
-        if valid:
-            max_s = max(es.sharpness for es in valid)
-            min_s = min(es.sharpness for es in valid)
-            span  = max_s - min_s + 1e-6
+        grid_profiles = [
+            es._sharp_profile for es in valid
+            if es._sharp_mode == "grid" and len(es._sharp_profile) == 9
+        ]
+        if valid and len(grid_profiles) == len(valid):
+            group_profile = np.asarray(grid_profiles, dtype=np.float64)
+            median_texture = np.median(group_profile, axis=0)
+            informative_indices = np.argsort(median_texture)[-5:]
             for es in valid:
-                es._norm_sharp = (es.sharpness - min_s) / span
-        for es in evaluated_list:
-            if not hasattr(es, '_norm_sharp'):
-                es._norm_sharp = 0.0
+                es.sharpness = float(np.median(
+                    np.asarray(es._sharp_profile, dtype=np.float64)[informative_indices]
+                ))
+
+        normalized_sharpness, sharpness_spread = _relative_sharpness_scores(
+            [es.sharpness for es in valid]
+        )
+        for es, normalized in zip(valid, normalized_sharpness):
+            es._norm_sharp = normalized
 
         # ── 阶段 3：计算综合得分并排序 ────────────────────────────────────────
+        exposure_spread = (
+            max(es.exposure for es in valid) - min(es.exposure for es in valid)
+            if valid else 0.0
+        )
+        weights, weight_reason = _resolve_dynamic_weights(
+            sharpness_spread, exposure_spread
+        )
         for es in valid:
             es.final_score = (
-                es.aesthetic     * 0.6
-                + es._norm_sharp * 0.3
-                + es.exposure    * 0.1
+                es.aesthetic     * weights["aesthetic"]
+                + es._norm_sharp * weights["sharpness"]
+                + es.exposure    * weights["exposure"]
             )
         for es in evaluated_list:
             if not hasattr(es, 'final_score'):
@@ -987,8 +1098,14 @@ class BurstFilter:
                 sorted_valid[keep_n - 1].final_score - sorted_valid[keep_n].final_score,
             )
         needs_review = bool(errors) or confidence_margin < 0.08
-        sharpest_shot = max(valid, key=lambda x: x._norm_sharp).shot if valid else None
+        sharpest_shot = max(valid, key=lambda x: x.sharpness).shot if valid else None
         aesthetic_best_shot = max(valid, key=lambda x: x.aesthetic).shot if valid else None
+        original_paths: dict[PhotoShot, list[Path]] = {
+            es.shot: list(es.shot.all_paths) for es in evaluated_list
+        }
+        final_paths: dict[PhotoShot, list[Path]] = {
+            es.shot: list(es.shot.all_paths) for es in evaluated_list
+        }
         final_primary_paths: dict[PhotoShot, Path] = {
             es.shot: es.shot.primary_path for es in evaluated_list
         }
@@ -998,7 +1115,7 @@ class BurstFilter:
         for es in evaluated_list:
             if es.shot in top_shots or es.failed:
                 continue
-            for fpath in es.shot.all_paths:
+            for path_index, fpath in enumerate(es.shot.all_paths):
                 if not fpath.exists():
                     continue
                 try:
@@ -1006,6 +1123,7 @@ class BurstFilter:
                     if dest.exists():
                         dest = review_dir / f"{fpath.stem}_dup{fpath.suffix}"
                     shutil.move(str(fpath), str(dest))
+                    final_paths[es.shot][path_index] = dest
                     if fpath == es.shot.primary_path:
                         final_primary_paths[es.shot] = dest
                     moved += 1
@@ -1017,12 +1135,21 @@ class BurstFilter:
         ranks = {es.shot: rank for rank, es in enumerate(sorted_valid, 1)}
         group_detail = {
             "shot_count": len(shots),
+            "review_dir": str(review_dir),
             "confidence_margin": round(float(confidence_margin), 4),
             "needs_review": needs_review,
+            "weights": {
+                key: round(float(value), 4) for key, value in weights.items()
+            },
+            "weight_reason": weight_reason,
+            "sharpness_spread": round(float(sharpness_spread), 4),
+            "exposure_spread": round(float(exposure_spread), 4),
             "shots": [
                 {
                     "name": es.shot.primary_path.name,
                     "path": str(final_primary_paths[es.shot]),
+                    "paths": [str(path) for path in final_paths[es.shot]],
+                    "original_paths": [str(path) for path in original_paths[es.shot]],
                     "companion_count": len(es.shot.all_paths),
                     "kept": es.shot in top_shots,
                     "failed": es.failed,
