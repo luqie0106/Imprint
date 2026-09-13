@@ -61,6 +61,8 @@ const reviewSubdir = ref("审查_连拍淘汰");
 const preset = ref<FilterPreset>("balanced");
 const reviewMode = ref<ReviewMode>("auto");
 const logContainer = ref<HTMLElement | null>(null);
+const settingsScroll = ref<HTMLElement | null>(null);
+const isStickyActionPinned = ref(false);
 const keepSliderPosition = ref(0);
 const selectedGroupIndex = ref(0);
 const selectedPhotoId = ref<string | null>(null);
@@ -369,6 +371,11 @@ function clearLogs() {
   messages.value = [];
 }
 
+function updateStickyActionState() {
+  const scroller = settingsScroll.value;
+  isStickyActionPinned.value = Boolean(scroller && scroller.scrollTop > 1);
+}
+
 onMounted(() => {
   checkGpuAvailability();
   window.addEventListener("keydown", handleReviewKeydown);
@@ -417,14 +424,14 @@ watch(selectedPhotoId, resetReviewZoom);
               </span>
             </button>
 
-            <div class="order-3 flex min-h-[260px] flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
-              <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
+            <div class="order-3 flex h-[260px] shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
+              <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
                 <div class="flex items-center gap-2 text-sm font-medium text-white">
                   <Images class="h-4 w-4 text-blue-400" /> 批处理流程
                 </div>
                 <span class="text-[11px] text-slate-400">本地处理 · 原图内容不修改</span>
               </div>
-              <div class="grid flex-1 grid-cols-2 gap-px bg-white/10 md:grid-cols-4">
+              <div class="grid min-h-0 flex-1 grid-cols-2 gap-px bg-white/10 md:grid-cols-4">
                 <div v-for="(stage, index) in ['扫描文件', '识别连拍', '质量评估', '整理结果']"
                   :key="stage" class="relative bg-slate-900 px-5 py-6">
                   <div class="mb-3 flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold"
@@ -443,7 +450,7 @@ watch(selectedPhotoId, resetReviewZoom);
                   <div v-if="index < 3" class="absolute right-0 top-10 hidden h-px w-5 translate-x-1/2 bg-slate-700 md:block"></div>
                 </div>
               </div>
-              <div class="border-t border-white/10 bg-slate-950/50 px-5 py-3">
+              <div class="shrink-0 border-t border-white/10 bg-slate-950/50 px-5 py-3">
                 <div class="flex items-center gap-3">
                   <span class="h-2 w-2 shrink-0 rounded-full"
                     :class="error ? 'bg-rose-500' : isRunning ? 'animate-pulse bg-blue-400' : isDone ? 'bg-emerald-400' : 'bg-slate-600'"></span>
@@ -681,12 +688,15 @@ watch(selectedPhotoId, resetReviewZoom);
         </footer>
       </section>
 
-      <aside class="settings-scroll min-h-0 bg-white px-7 py-6 dark:bg-zinc-900">
+      <aside ref="settingsScroll" class="settings-scroll min-h-0 bg-white px-7 py-6 dark:bg-zinc-900"
+        @scroll.passive="updateStickyActionState">
         <div class="mb-6 flex items-center gap-2">
           <SlidersHorizontal class="h-5 w-5 text-blue-600 dark:text-blue-400" />
           <div><h3 class="font-semibold text-slate-950 dark:text-white">筛选方案</h3><p class="mt-0.5 text-xs text-slate-400">控制归组范围与保留数量</p></div>
         </div>
-        <div class="sticky top-0 z-20 -mx-2 mb-6 rounded-xl border border-blue-100 bg-white/95 p-2 shadow-[0_10px_28px_rgba(15,23,42,0.10)] backdrop-blur dark:border-blue-950 dark:bg-zinc-900/95">
+        <div class="sticky-action sticky top-0 z-20 -mx-2 mb-6 rounded-xl border border-blue-100 bg-white p-2 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:border-blue-950 dark:bg-zinc-900"
+          :class="{ 'is-pinned': isStickyActionPinned }">
+          <span v-if="isStickyActionPinned" class="sticky-glass" aria-hidden="true"></span>
           <button v-if="!isRunning" type="button" @click="handleStart"
             :disabled="!inputDir || isWorkersExceeded || !isServerReady"
             class="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
@@ -823,6 +833,39 @@ watch(selectedPhotoId, resetReviewZoom);
 .settings-scroll {
   overflow-y: scroll;
   scrollbar-gutter: stable;
+}
+
+.sticky-action.is-pinned {
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.sticky-glass {
+  position: absolute;
+  z-index: 0;
+  top: -240px;
+  right: -28px;
+  bottom: -30px;
+  left: -28px;
+  display: block;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.42) calc(100% - 24px), rgba(255, 255, 255, 0.16) 100%);
+  -webkit-backdrop-filter: blur(28px) saturate(1.35);
+  backdrop-filter: blur(28px) saturate(1.35);
+  transform: translateZ(0);
+  will-change: backdrop-filter;
+}
+
+.sticky-action > button {
+  position: relative;
+  z-index: 1;
+}
+
+:global(.dark) .sticky-action.is-pinned {
+  background: rgba(24, 24, 27, 0.78);
+}
+
+:global(.dark) .sticky-glass {
+  background: linear-gradient(to bottom, rgba(24, 24, 27, 0.48) 0%, rgba(24, 24, 27, 0.48) calc(100% - 24px), rgba(24, 24, 27, 0.2) 100%);
 }
 
 .keep-slider {

@@ -157,12 +157,12 @@ watch(() => messages.value.length, async () => {
               </div>
             </div>
 
-            <div class="flex min-h-[280px] flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
-              <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
+            <div class="flex h-[260px] shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
+              <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
                 <div class="flex items-center gap-2 text-sm font-medium text-white"><ScanSearch class="h-4 w-4 text-blue-400" />训练流程</div>
                 <span class="text-[11px] text-slate-400">纯本地 · 自动生成 ONNX</span>
               </div>
-              <div class="grid flex-1 grid-cols-2 gap-px bg-white/10 md:grid-cols-4">
+              <div class="grid min-h-0 flex-1 grid-cols-2 gap-px bg-white/10 md:grid-cols-4">
                 <div v-for="(stage, index) in ['扫描样本', '提取特征', '偏好训练', '生成模型']" :key="stage" class="relative bg-slate-900 px-5 py-6">
                   <div class="mb-3 flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold"
                     :class="trainingStage > index
@@ -177,7 +177,7 @@ watch(() => messages.value.length, async () => {
                   <div v-if="index < 3" class="absolute right-0 top-10 hidden h-px w-5 translate-x-1/2 bg-slate-700 md:block"></div>
                 </div>
               </div>
-              <div class="border-t border-white/10 bg-slate-950/50 px-5 py-3">
+              <div class="shrink-0 border-t border-white/10 bg-slate-950/50 px-5 py-3">
                 <div class="flex items-center gap-3">
                   <span class="h-2 w-2 shrink-0 rounded-full" :class="error ? 'bg-rose-500' : isRunning ? 'animate-pulse bg-blue-400' : isDone ? 'bg-emerald-400' : 'bg-slate-600'"></span>
                   <span class="min-w-0 flex-1 truncate text-xs text-slate-300">{{ progressLabel }}</span>

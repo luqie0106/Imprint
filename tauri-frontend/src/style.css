@@ -40,7 +40,7 @@ html, body, #app {
 /* 主内容在内容增高前就预留滚动条槽，避免展开卡片时左右分栏跳动。 */
 .workspace-main-scroll {
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
   scrollbar-gutter: stable;
 }
 
