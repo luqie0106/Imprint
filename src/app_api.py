@@ -72,7 +72,7 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="Imprint API", version="2.1.0")
+app = FastAPI(title="Imprint API", version="2.1.1")
 
 # 最近几次筛选结果的缩略图访问表。只保存不可猜测的临时 ID 与本地路径映射，
 # 不把任意文件路径暴露为公开查询参数。
