@@ -37,6 +37,13 @@ html, body, #app {
   background: rgba(150, 150, 150, 0.5);
 }
 
+/* 主内容在内容增高前就预留滚动条槽，避免展开卡片时左右分栏跳动。 */
+.workspace-main-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
 /* 高分辨率桌面屏上，10–12px 的辅助文字可读性不足。 */
 .workspace-readable .text-\[10px\] {
   font-size: 11.5px;
