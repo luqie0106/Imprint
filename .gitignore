@@ -34,8 +34,8 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-dist-python/*
-!dist-python/.gitkeep
+/dist-python/
+/tauri-frontend/dist-python/
 downloads/
 eggs/
 .eggs/
@@ -79,6 +79,7 @@ htmlcov/
 .ruff_cache/
 .pyre/
 .pytype/
+/tests/
 
 # ── Virtual Environments ───────────────────────────────────────────────────────
 .env

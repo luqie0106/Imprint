@@ -860,12 +860,22 @@ watch(selectedPhotoId, resetReviewZoom);
   z-index: 1;
 }
 
-:global(.dark) .sticky-action.is-pinned {
-  background: rgba(24, 24, 27, 0.78);
+html.dark .sticky-action.is-pinned {
+  /* 黑色毛玻璃：压暗亮色内容，但保留底下界面的轮廓和色彩。 */
+  background: rgba(18, 18, 21, 0.78);
+  border-color: rgba(63, 63, 70, 0.72);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.38);
 }
 
-:global(.dark) .sticky-glass {
-  background: linear-gradient(to bottom, rgba(24, 24, 27, 0.48) 0%, rgba(24, 24, 27, 0.48) calc(100% - 24px), rgba(24, 24, 27, 0.2) 100%);
+html.dark .sticky-glass {
+  background: linear-gradient(
+    to bottom,
+    rgba(18, 18, 21, 0.78) 0%,
+    rgba(18, 18, 21, 0.78) calc(100% - 24px),
+    rgba(18, 18, 21, 0.62) 100%
+  );
+  -webkit-backdrop-filter: blur(32px) saturate(0.9) brightness(0.72);
+  backdrop-filter: blur(32px) saturate(0.9) brightness(0.72);
 }
 
 .keep-slider {
