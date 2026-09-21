@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Literal, Optional
@@ -52,6 +54,9 @@ from model_manager import (
     get_resolved_standard_l14_onnx_path,
 )
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
+from dehaze import DehazeParams, apply_dehaze
+from dng_writer import write_linear_dng
+from image_io import OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES, read_image, scan_photo_directory, to_uint16
 
 import io
 import cv2
@@ -81,6 +86,14 @@ _PREVIEW_CACHE: dict[tuple[str, str, str], bytes] = {}
 _PREVIEW_SESSION_LOCK = threading.Lock()
 _MAX_PREVIEW_SESSIONS = 3
 _MAX_PREVIEW_GROUPS = 40
+
+# 去朦胧使用完全独立的会话、预览缓存和后台任务；会话中保存真实路径，HTTP
+# 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
+_ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
+_ENHANCE_PREVIEW_CACHE: dict[tuple[str, str, str, int, str], bytes] = {}
+_ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
+_ENHANCE_LOCK = threading.RLock()
+_MAX_ENHANCE_SESSIONS = 8
 
 # 配置 CORS 中间件，允许 Tauri 桌面端以及本地开发环境请求
 app.add_middleware(
@@ -133,6 +146,43 @@ class TrainerRequest(BaseModel):
     model_type: Literal["standard", "l14", "b32", "standard_l14", "custom_l14"] = "standard"
     epochs: int = 15
     lr: float = 1e-3
+
+
+class EnhanceParamsRequest(BaseModel):
+    strength: float = Field(default=0.45, ge=0.0, le=1.0)
+    naturalness: float = Field(default=0.70, ge=0.0, le=1.0)
+    fog_retention: float = Field(default=0.55, ge=0.0, le=1.0)
+    local_contrast: float = Field(default=0.25, ge=0.0, le=1.0)
+    color_protection: float = Field(default=0.80, ge=0.0, le=1.0)
+    highlight_protection: float = Field(default=0.75, ge=0.0, le=1.0)
+    shadow_protection: float = Field(default=0.75, ge=0.0, le=1.0)
+
+    def to_params(self) -> DehazeParams:
+        return DehazeParams(**self.model_dump())
+
+
+class EnhanceSessionRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list)
+    input_dir: str = ""
+
+
+class EnhancePreviewRequest(BaseModel):
+    session_id: str
+    photo_id: str
+    params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
+    max_edge: int = Field(default=1800, ge=320, le=3000)
+    mode: Literal["original", "dehazed"] = "dehazed"
+
+
+class EnhanceRevealRequest(BaseModel):
+    session_id: str
+    photo_id: str
+
+
+class EnhanceRunRequest(BaseModel):
+    session_id: str
+    output_dir: str = ""
+    params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
 
 
 def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
@@ -255,8 +305,15 @@ async def run_burst(req: BurstRequest):
     """
     queue: asyncio.Queue[dict] = asyncio.Queue()
     loop = asyncio.get_running_loop()
+    last_progress = ""
+    progress_lock = threading.Lock()
 
     def on_progress(msg: str):
+        nonlocal last_progress
+        with progress_lock:
+            if msg == last_progress:
+                return
+            last_progress = msg
         loop.call_soon_threadsafe(queue.put_nowait, {"type": "progress", "msg": msg})
 
     async def run_in_thread():
@@ -425,6 +482,222 @@ def get_burst_preview(
         )
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": f"生成预览失败: {exc}"})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 独立功能：去朦胧会话、参数化预览与可取消批处理
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _enhance_public_job(job: dict[str, Any]) -> dict[str, Any]:
+    return copy.deepcopy({key: value for key, value in job.items() if key not in {"_cancel", "_thread"}})
+
+
+def _encode_preview(image_rgb: np.ndarray) -> bytes:
+    if image_rgb.dtype == np.uint16:
+        image_rgb = np.clip(np.rint(image_rgb.astype(np.float32) / 257.0), 0, 255).astype(np.uint8)
+    stream = io.BytesIO()
+    Image.fromarray(image_rgb, "RGB").save(stream, "JPEG", quality=91, optimize=True)
+    return stream.getvalue()
+
+
+@app.post("/api/enhance/reveal")
+def reveal_enhance_original(req: EnhanceRevealRequest):
+    with _ENHANCE_LOCK:
+        path = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
+    if path is None:
+        return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
+    try:
+        current_path = Path(path).resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError):
+        return JSONResponse(status_code=404, content={"error": "当前原图不存在"})
+    if not current_path.is_file():
+        return JSONResponse(status_code=404, content={"error": "当前原图不存在"})
+    return {"path": str(current_path)}
+
+
+@app.post("/api/enhance/session")
+def create_enhance_session(req: EnhanceSessionRequest):
+    try:
+        if req.input_dir.strip():
+            source_dir = Path(req.input_dir.strip().strip('\"\'')).expanduser().resolve()
+            sources = scan_photo_directory(source_dir)
+            default_output = (source_dir / OUTPUT_DIR_NAME).resolve()
+        else:
+            sources = []
+            seen: set[Path] = set()
+            for raw_path in req.paths:
+                path = Path(raw_path.strip().strip('\"\'')).expanduser().resolve()
+                if path in seen:
+                    continue
+                if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                    continue
+                if OUTPUT_DIR_NAME in path.parts:
+                    continue
+                seen.add(path)
+                sources.append(path)
+            default_output = (sources[0].parent / OUTPUT_DIR_NAME).resolve() if sources else Path()
+        if not sources:
+            return JSONResponse(status_code=400, content={"error": "没有找到可处理的照片"})
+        if len(sources) > 5000:
+            return JSONResponse(status_code=400, content={"error": "单次最多处理 5000 张照片"})
+
+        session_id = uuid.uuid4().hex
+        records: dict[str, Path] = {}
+        files: list[dict[str, Any]] = []
+        for index, path in enumerate(sources):
+            photo_id = f"p{index}-{uuid.uuid4().hex[:10]}"
+            records[photo_id] = path
+            files.append({"photo_id": photo_id, "name": path.name, "extension": path.suffix.lower()})
+        with _ENHANCE_LOCK:
+            _ENHANCE_SESSIONS[session_id] = {
+                "files": records,
+                "created": time.time(),
+            }
+            while len(_ENHANCE_SESSIONS) > _MAX_ENHANCE_SESSIONS:
+                expired = next(iter(_ENHANCE_SESSIONS))
+                _ENHANCE_SESSIONS.pop(expired, None)
+                for key in [key for key in _ENHANCE_PREVIEW_CACHE if key[0] == expired]:
+                    _ENHANCE_PREVIEW_CACHE.pop(key, None)
+        return {
+            "session_id": session_id,
+            "count": len(files),
+            "files": files,
+            "default_output_dir": str(default_output),
+            "output_format": "16-bit Linear/Demosaiced DNG",
+        }
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": f"创建去朦胧会话失败: {exc}"})
+
+
+@app.post("/api/enhance/preview")
+def create_enhance_preview(req: EnhancePreviewRequest):
+    with _ENHANCE_LOCK:
+        path = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
+    if path is None or not Path(path).is_file():
+        return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
+    params = req.params.to_params()
+    token = params.cache_token()
+    cache_key = (req.session_id, req.photo_id, token, req.max_edge, req.mode)
+    with _ENHANCE_LOCK:
+        cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
+    if cached is not None:
+        return Response(content=cached, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+    try:
+        image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
+        if req.mode == "dehazed":
+            image = apply_dehaze(image, params)
+        payload = _encode_preview(image)
+        with _ENHANCE_LOCK:
+            if len(_ENHANCE_PREVIEW_CACHE) >= 128:
+                _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)
+            _ENHANCE_PREVIEW_CACHE[cache_key] = payload
+        return Response(
+            content=payload,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "X-Image-Width": str(metadata.width),
+                "X-Image-Height": str(metadata.height),
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"生成去朦胧预览失败: {exc}"})
+
+
+def _run_enhance_job(job_id: str, session_id: str, output_dir: Path, params: DehazeParams) -> None:
+    with _ENHANCE_LOCK:
+        job = _ENHANCE_JOBS[job_id]
+        records = list(_ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).items())
+        job["status"] = "running"
+    for photo_id, path in records:
+        with _ENHANCE_LOCK:
+            cancel_event: threading.Event = job["_cancel"]
+            if cancel_event.is_set():
+                job["status"] = "cancelled"
+                break
+            item = next(item for item in job["files"] if item["photo_id"] == photo_id)
+            item["status"] = "processing"
+            job["current_file"] = Path(path).name
+        try:
+            image, metadata = read_image(path, preview=False)
+            enhanced = apply_dehaze(to_uint16(image), params)
+            if cancel_event.is_set():
+                with _ENHANCE_LOCK:
+                    item["status"] = "cancelled"
+                    job["status"] = "cancelled"
+                break
+            output_path = write_linear_dng(enhanced, path, output_dir, metadata.exif)
+            with _ENHANCE_LOCK:
+                item.update({"status": "success", "output": str(output_path)})
+                job["success"] += 1
+        except Exception as exc:
+            with _ENHANCE_LOCK:
+                item.update({"status": "failed", "error": str(exc)})
+                job["failed"] += 1
+        finally:
+            with _ENHANCE_LOCK:
+                job["processed"] += 1
+                job["progress"] = round(job["processed"] / max(1, job["total"]), 4)
+    with _ENHANCE_LOCK:
+        if job["status"] != "cancelled":
+            job["status"] = "completed"
+        job["current_file"] = ""
+
+
+@app.post("/api/enhance/run")
+def run_enhance(req: EnhanceRunRequest):
+    with _ENHANCE_LOCK:
+        session = _ENHANCE_SESSIONS.get(req.session_id)
+    if session is None:
+        return JSONResponse(status_code=404, content={"error": "去朦胧会话已失效"})
+    records = list(session["files"].items())
+    first_path = Path(records[0][1])
+    output_dir = Path(req.output_dir.strip().strip('\"\'')) if req.output_dir.strip() else first_path.parent / OUTPUT_DIR_NAME
+    try:
+        output_dir = output_dir.expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": f"输出目录不可用: {exc}"})
+    job_id = uuid.uuid4().hex
+    job: dict[str, Any] = {
+        "job_id": job_id, "status": "queued", "total": len(records), "processed": 0,
+        "success": 0, "failed": 0, "progress": 0.0, "current_file": "",
+        "output_dir": str(output_dir),
+        "files": [{"photo_id": photo_id, "name": Path(path).name, "status": "waiting"} for photo_id, path in records],
+        "_cancel": threading.Event(),
+    }
+    thread = threading.Thread(
+        target=_run_enhance_job,
+        args=(job_id, req.session_id, output_dir, req.params.to_params()),
+        name=f"enhance-{job_id[:8]}", daemon=True,
+    )
+    job["_thread"] = thread
+    with _ENHANCE_LOCK:
+        _ENHANCE_JOBS[job_id] = job
+    thread.start()
+    return _enhance_public_job(job)
+
+
+@app.get("/api/enhance/job/{job_id}")
+def get_enhance_job(job_id: str):
+    with _ENHANCE_LOCK:
+        job = _ENHANCE_JOBS.get(job_id)
+        if job is None:
+            return JSONResponse(status_code=404, content={"error": "任务不存在或已过期"})
+        return _enhance_public_job(job)
+
+
+@app.post("/api/enhance/cancel/{job_id}")
+def cancel_enhance_job(job_id: str):
+    with _ENHANCE_LOCK:
+        job = _ENHANCE_JOBS.get(job_id)
+        if job is None:
+            return JSONResponse(status_code=404, content={"error": "任务不存在或已过期"})
+        job["_cancel"].set()
+        if job["status"] == "queued":
+            job["status"] = "cancelled"
+        return {"ok": True, "message": "已请求停止；当前照片完成后不会再处理下一张"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

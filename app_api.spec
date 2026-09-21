@@ -10,6 +10,9 @@ datas = [
     ('src/onnx_exporter.py',  'src'),
     ('src/exif_reader.py',    'src'),
     ('src/config.py',         'src'),
+    ('src/dehaze.py',         'src'),
+    ('src/image_io.py',       'src'),
+    ('src/dng_writer.py',     'src'),
 ]
 # 打包标准 ONNX 模型（如果存在）
 for model_rel in [
@@ -30,6 +33,9 @@ a = Analysis(
         'onnx_exporter',
         'exif_reader',
         'config',
+        'dehaze',
+        'image_io',
+        'dng_writer',
         'uvicorn',
         'uvicorn.logging',
         'uvicorn.loops',
