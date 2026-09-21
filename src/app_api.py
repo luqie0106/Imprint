@@ -153,6 +153,7 @@ class EnhanceParamsRequest(BaseModel):
     naturalness: float = Field(default=0.70, ge=0.0, le=1.0)
     fog_retention: float = Field(default=0.55, ge=0.0, le=1.0)
     local_contrast: float = Field(default=0.25, ge=0.0, le=1.0)
+    color_recovery: float = Field(default=0.35, ge=0.0, le=1.0)
     color_protection: float = Field(default=0.80, ge=0.0, le=1.0)
     highlight_protection: float = Field(default=0.75, ge=0.0, le=1.0)
     shadow_protection: float = Field(default=0.75, ge=0.0, le=1.0)

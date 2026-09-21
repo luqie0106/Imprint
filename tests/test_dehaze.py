@@ -220,3 +220,135 @@ def test_dark_majority_cannot_suppress_high_strength():
 
     assert float(high_change[midtones].mean()) > float(low_change[midtones].mean()) * 2.0
     assert float(high_change[midtones].mean()) >= 0.04
+
+
+def _chroma_spread(rgb: np.ndarray) -> float:
+    values = rgb.astype(np.float32)
+    return float((values.max(axis=2) - values.min(axis=2)).mean())
+
+
+def test_neutral_haze_is_not_given_a_purple_or_green_cast():
+    # The blue sky makes the global atmospheric-light estimate chromatic.  A
+    # neutral patch must use its own low-chroma source as the colour anchor.
+    source = np.full((80, 120, 3), 0.52, dtype=np.float32)
+    source[:, :60] = (0.72, 0.82, 0.92)
+    source = np.rint(source * 255).astype(np.uint8)
+
+    for recovery in (0.35, 1.0):
+        result = apply_dehaze(
+            source,
+            DehazeParams(strength=1.0, color_recovery=recovery, local_contrast=0),
+        )
+        neutral = result[40, 90].astype(np.int16)
+        assert int(neutral.max() - neutral.min()) <= 1
+
+
+def test_color_recovery_does_not_rotate_source_hue():
+    source_rgb = np.array((0.60, 0.30, 0.20), dtype=np.float32)
+    source = np.tile(np.rint(source_rgb * 255).astype(np.uint8), (40, 40, 1))
+    result = apply_dehaze(
+        source,
+        DehazeParams(strength=1.0, color_recovery=1.0, local_contrast=0),
+    )[20, 20].astype(np.float32) / 255.0
+
+    source_chroma = source_rgb - float(source_rgb @ np.array((0.2126, 0.7152, 0.0722)))
+    result_luma = float(result @ np.array((0.2126, 0.7152, 0.0722)))
+    result_chroma = result - result_luma
+    cosine = float(
+        (source_chroma @ result_chroma)
+        / (np.linalg.norm(source_chroma) * np.linalg.norm(result_chroma))
+    )
+    # Staying in the same broad colour sector is not enough: a red-orange
+    # source must remain on effectively the same hue ray after recovery.
+    assert cosine >= 0.995
+    assert result[0] > result[1] > result[2]
+
+
+def test_color_recovery_increases_trusted_midtone_chroma_without_clipping():
+    source = np.full((32, 32, 3), (0.55, 0.30, 0.22), dtype=np.float32)
+    source = np.rint(source * 255).astype(np.uint8)
+    low = apply_dehaze(
+        source,
+        DehazeParams(strength=1.0, color_recovery=0.0, local_contrast=0),
+    )
+    high = apply_dehaze(
+        source,
+        DehazeParams(strength=1.0, color_recovery=1.0, local_contrast=0),
+    )
+
+    assert _chroma_spread(high) >= _chroma_spread(low) - 1.0 / 255.0
+    # This source is safely below the highlight guard.  Recovery must not
+    # hard-clip one channel to the dtype maximum or the saturation cap.
+    assert int(high.max()) < int(0.97 * 255)
+
+
+def test_low_saturation_sky_and_sea_show_visible_recovery_without_hue_rotation():
+    # Representative blue-grey sky/sea values are deliberately below strong
+    # saturation.  They must still expose the recovery slider at the default
+    # strength, while remaining on the source pixel's hue ray.
+    height, width = 120, 200
+    scene = np.empty((height, width, 3), dtype=np.float32)
+    scene[:70] = (0.46, 0.52, 0.58)
+    scene[70:] = (0.43, 0.50, 0.54)
+    scene[:70] += np.linspace(-0.015, 0.015, width, dtype=np.float32)[None, :, None]
+    scene[70:] += np.array((0.015, 0.010, -0.005), dtype=np.float32)
+    scene[:15] = (0.72, 0.78, 0.84)
+    source = np.clip(np.rint(scene * 255), 0, 255).astype(np.uint8)
+
+    low = apply_dehaze(
+        source,
+        DehazeParams(strength=0.45, color_recovery=0.0, local_contrast=0),
+    )
+    high = apply_dehaze(
+        source,
+        DehazeParams(strength=0.45, color_recovery=1.0, local_contrast=0),
+    )
+    low_float = low.astype(np.float32) / 255.0
+    high_float = high.astype(np.float32) / 255.0
+    source_float = source.astype(np.float32) / 255.0
+    assert float(np.mean(np.abs(high_float - low_float))) >= 0.02
+    assert _chroma_spread(high) >= _chroma_spread(low) * 1.15
+    assert int(high.max()) < int(0.97 * 255)
+
+    weights = np.array((0.2126, 0.7152, 0.0722), dtype=np.float32)
+    source_chroma = source_float - (source_float @ weights)[..., None]
+    result_chroma = high_float - (high_float @ weights)[..., None]
+    denominator = np.linalg.norm(source_chroma, axis=2) * np.linalg.norm(result_chroma, axis=2)
+    cosine = np.sum(source_chroma * result_chroma, axis=2) / np.maximum(denominator, 1e-6)
+    assert float(np.min(cosine)) >= 0.995
+
+
+def test_color_recovery_uint16_finite_params_and_spatial_consistency():
+    source = _synthetic_haze(np.uint16)
+    untouched = source.copy()
+    result = apply_dehaze(
+        source,
+        DehazeParams(
+            strength=1.0,
+            color_recovery=float("inf"),
+            local_contrast=0.5,
+        ),
+    )
+    assert result.dtype == np.uint16
+    assert np.isfinite(result).all()
+    assert np.array_equal(source, untouched)
+
+    # Equal source samples receive the same output even when placed at
+    # different coordinates and beside different neighbouring content.
+    target = np.array((0.32, 0.35, 0.38), dtype=np.float32)
+    scene = np.zeros((80, 120, 3), dtype=np.float32)
+    scene[:40] = (0.75, 0.84, 0.92)
+    scene[40:] = (0.08, 0.10, 0.13)
+    scene[15:23, 20:28] = target
+    scene[37:45, 80:88] = target
+    scene = np.rint(scene * 255).astype(np.uint8)
+    equal = apply_dehaze(
+        scene,
+        DehazeParams(strength=1.0, color_recovery=1.0, local_contrast=0.7),
+    )
+    assert np.array_equal(equal[17:21, 22:26], equal[39:43, 82:86])
+
+    # NaN is normalized to a disabled recovery rather than leaking into the
+    # output; this also exercises the finite-value guard in parameter parsing.
+    nan_result = apply_dehaze(source, DehazeParams(color_recovery=float("nan")))
+    assert np.isfinite(nan_result).all()

@@ -18,7 +18,7 @@ interface EnhanceJob {
 
 const defaults = {
   strength: 0.45, naturalness: 0.70, fog_retention: 0.55,
-  local_contrast: 0.25, color_protection: 0.80,
+  local_contrast: 0.25, color_recovery: 0.35, color_protection: 0.80,
   highlight_protection: 0.75, shadow_protection: 0.75,
 };
 const params = ref({ ...defaults });
@@ -512,7 +512,7 @@ onBeforeUnmount(() => {
           <div v-if="advancedOpen" class="mt-3 space-y-3">
             <label v-for="item in [
               ['naturalness','自然度'],['fog_retention','雾气保留'],['local_contrast','局部对比度'],
-              ['color_protection','色彩保护'],['highlight_protection','高光保护'],['shadow_protection','暗部保护']
+              ['color_recovery','颜色恢复'],['color_protection','色彩保护'],['highlight_protection','高光保护'],['shadow_protection','暗部保护']
             ]" :key="item[0]" class="block text-[11px]">
               <span class="flex justify-between"><span>{{ item[1] }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item[0] as keyof typeof params] * 100) }}</span></span>
               <input v-model.number="params[item[0] as keyof typeof params]" class="mt-1 w-full accent-blue-600" type="range" min="0" max="1" step="0.01" />

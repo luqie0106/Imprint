@@ -9,7 +9,7 @@ import json
 import numpy as np
 
 
-ALGORITHM_VERSION = "natural-global-v5-highlight-rolloff"
+ALGORITHM_VERSION = "natural-global-v7-source-hue"
 
 
 @dataclass(frozen=True)
@@ -18,12 +18,18 @@ class DehazeParams:
     naturalness: float = 0.70
     fog_retention: float = 0.55
     local_contrast: float = 0.25
+    color_recovery: float = 0.35
     color_protection: float = 0.80
     highlight_protection: float = 0.75
     shadow_protection: float = 0.75
 
     def normalized(self) -> "DehazeParams":
-        values = {key: float(np.clip(value, 0.0, 1.0)) for key, value in asdict(self).items()}
+        values = {}
+        for key, value in asdict(self).items():
+            value = float(value)
+            if not np.isfinite(value):
+                value = 1.0 if value > 0.0 else 0.0
+            values[key] = float(np.clip(value, 0.0, 1.0))
         return DehazeParams(**values)
 
     def cache_token(self) -> str:
@@ -51,6 +57,44 @@ def _atmospheric_light(image: np.ndarray) -> np.ndarray:
     luminance = candidates @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
     brightest = candidates[np.argsort(luminance)[-max(1, count // 8):]]
     return np.clip(np.median(brightest, axis=0), 0.35, 1.0).astype(np.float32)
+
+
+def _smooth_chroma_gamut(image: np.ndarray) -> np.ndarray:
+    """Keep a per-pixel chroma vector inside RGB gamut without channel cuts.
+
+    The luminance is kept fixed while the complete chroma vector is scaled by
+    one smooth factor.  This is intentionally a scalar operation on each
+    pixel: it preserves the chroma direction and cannot create a colour seam
+    at an image edge.
+    """
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luminance = image @ weights
+    chroma = image - luminance[..., None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        positive_room = np.where(chroma > 1e-7, (1.0 - luminance[..., None]) / chroma, np.inf)
+        negative_room = np.where(chroma < -1e-7, luminance[..., None] / (-chroma), np.inf)
+    limit = np.min(np.minimum(positive_room, negative_room), axis=2)
+    limit = np.where(np.isfinite(limit), limit, 1.0)
+    # Smooth-min(1, limit), with a very small epsilon so the unconstrained
+    # case remains numerically indistinguishable from an identity transform.
+    scale = 0.5 * (1.0 + limit - np.sqrt((1.0 - limit) ** 2 + 1e-10))
+    scale = np.clip(scale, 0.0, 1.0)
+    return luminance[..., None] + chroma * scale[..., None]
+
+
+def _smooth_chroma_caps(image: np.ndarray, caps: np.ndarray) -> np.ndarray:
+    """Scale chroma smoothly to per-channel caps while retaining luminance."""
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luminance = image @ weights
+    chroma = image - luminance[..., None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        positive_room = np.where(chroma > 1e-7, (caps - luminance[..., None]) / chroma, np.inf)
+        negative_room = np.where(chroma < -1e-7, luminance[..., None] / (-chroma), np.inf)
+    limit = np.min(np.minimum(positive_room, negative_room), axis=2)
+    limit = np.where(np.isfinite(limit), limit, 1.0)
+    scale = 0.5 * (1.0 + limit - np.sqrt((1.0 - limit) ** 2 + 1e-10))
+    scale = np.clip(scale, 0.0, 1.0)
+    return luminance[..., None] + chroma * scale[..., None]
 
 
 def apply_dehaze(image_rgb: np.ndarray, params: DehazeParams | None = None) -> np.ndarray:
@@ -110,6 +154,83 @@ def apply_dehaze(image_rgb: np.ndarray, params: DehazeParams | None = None) -> n
     chroma_mix = p.color_protection * (0.72 + 0.28 * p.naturalness)
     natural = natural * (1.0 - chroma_mix) + luma_only * chroma_mix
 
+    if p.color_recovery > 1e-6:
+        # Anchor only the added colour recovery to the source pixel's own
+        # chroma direction.  A low-chroma source has no reliable hue, so its
+        # recovery target smoothly approaches neutral instead of inheriting a
+        # purple/green cast from the atmospheric-light estimate.
+        source_chroma = source - luminance[..., None]
+        source_chroma_norm = np.sqrt(np.sum(source_chroma * source_chroma, axis=2))
+        # Low-saturation blue-grey skies and yellow-grey water still carry a
+        # useful source hue.  Keep only a very small neutral dead-zone, then
+        # ramp confidence over a narrow range so the recovery slider remains
+        # visible before the source becomes strongly saturated.
+        confidence = np.clip((source_chroma_norm - 0.006) / 0.084, 0.0, 1.0)
+        confidence = confidence * confidence * (3.0 - 2.0 * confidence)
+        source_direction = source_chroma / np.maximum(source_chroma_norm[..., None], 1e-6)
+
+        natural_luma = natural @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+        natural_chroma = natural - natural_luma[..., None]
+        natural_chroma_norm = np.sqrt(np.sum(natural_chroma * natural_chroma, axis=2))
+
+        # The target remains on the source hue line.  Retaining at least the
+        # aligned current chroma avoids making a strongly coloured source look
+        # flatter as recovery is increased; the small boost is the actual
+        # conservative colour-recovery contribution.
+        aligned_chroma = np.sum(natural_chroma * source_direction, axis=2)
+        aligned_chroma = np.maximum(aligned_chroma, 0.0)
+        recovery_amount = p.color_recovery * p.strength
+        # The strength slider already gates how much of this target is mixed
+        # below.  Do not multiply it into the target gain a second time: that
+        # made 100% colour recovery nearly indistinguishable from 0% at the
+        # default strength.  Confidence attenuates the natural/atmospheric
+        # term, while the source chroma itself remains the stable hue anchor;
+        # its magnitude is already tiny for a near-neutral pixel.
+        source_target_norm = source_chroma_norm * (1.0 + 1.80 * p.color_recovery * confidence)
+        natural_target_norm = natural_chroma_norm * (
+            1.0 + 0.30 * recovery_amount * confidence
+        ) * confidence
+        target_chroma_norm = np.maximum(
+            np.maximum(aligned_chroma * confidence, natural_target_norm),
+            source_target_norm,
+        )
+        target_chroma = source_direction * target_chroma_norm[..., None]
+
+        # High-light and shadow protection reduce chroma recovery smoothly;
+        # they use only the source pixel's luminance and cannot form seams.
+        highlight_position = np.clip((luminance - 0.58) / 0.40, 0.0, 1.0)
+        highlight_position = highlight_position * highlight_position * (3.0 - 2.0 * highlight_position)
+        shadow_position = np.clip((0.26 - luminance) / 0.26, 0.0, 1.0)
+        shadow_position = shadow_position * shadow_position * (3.0 - 2.0 * shadow_position)
+        protection = (
+            (1.0 - highlight_position * p.highlight_protection)
+            * (1.0 - shadow_position * p.shadow_protection)
+        )
+        requested_recovery = np.clip(
+            recovery_amount * protection * (0.95 + 0.35 * (1.0 - confidence)),
+            0.0,
+            0.95,
+        )
+        # Neutral pixels need protection even at the conservative default
+        # recovery setting.  Otherwise a chromatic atmosphere estimate can
+        # leave a faint invented cast unless the user turns recovery to 100.
+        # This guard only removes unsupported chroma; it never adds a hue.
+        neutral_guard = (
+            p.color_protection
+            * (1.0 - confidence)
+            * (1.08 + 0.12 * p.naturalness)
+            * protection
+        )
+        correction_strength = np.maximum(requested_recovery, neutral_guard)
+        correction_strength = np.clip(correction_strength, 0.0, 0.95)
+        natural = natural_luma[..., None] + (
+            natural_chroma * (1.0 - correction_strength[..., None])
+            + target_chroma * correction_strength[..., None]
+        )
+        # Limit the recovery by scaling the complete chroma vector, rather
+        # than clipping individual channels and rotating the source hue.
+        natural = _smooth_chroma_gamut(natural)
+
     if p.local_contrast > 1e-6:
         luma = natural @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
         # A fixed-endpoint, global S-curve provides a smooth highlight
@@ -144,7 +265,11 @@ def apply_dehaze(image_rgb: np.ndarray, params: DehazeParams | None = None) -> n
     luma_scale = np.minimum(1.0, luma_cap / np.maximum(final_luma, 1e-4))
     natural *= luma_scale[..., None]
     channel_cap = np.where(source < saturation_threshold, saturation_limit, 1.0)
-    natural = np.minimum(natural, channel_cap)
+    if p.color_recovery > 1e-6:
+        natural = _smooth_chroma_caps(natural, channel_cap)
+    else:
+        # Keep the legacy zero-recovery path byte-for-byte compatible.
+        natural = np.minimum(natural, channel_cap)
 
     result = np.nan_to_num(natural, nan=0.0, posinf=1.0, neginf=0.0)
     return np.clip(np.rint(result * peak), 0, peak).astype(image_rgb.dtype)
