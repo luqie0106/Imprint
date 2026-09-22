@@ -394,11 +394,48 @@ watch(selectedPhotoId, resetReviewZoom);
 
 <template>
   <div class="workspace-readable h-full min-h-0 bg-[#f5f7fa] dark:bg-zinc-950">
-    <div class="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_clamp(360px,24vw,430px)]">
-      <section class="flex min-h-0 flex-col border-r border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-950">
+    <div class="workspace-wide-frame wide-workspace-grid grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_clamp(360px,24vw,430px)]">
+      <aside class="wide-workspace-sidebar hidden min-h-0 flex-col gap-5 border-r border-slate-200 bg-[#f8fafc] px-5 py-6 dark:border-zinc-800 dark:bg-zinc-950">
+        <header>
+          <div class="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-600 dark:text-blue-400">
+            <ScanSearch class="h-3.5 w-3.5" />
+            Batch culling workspace
+          </div>
+          <h2 class="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">连拍优选</h2>
+          <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-zinc-400">自动识别连拍序列，挑出最佳画面</p>
+        </header>
+
+        <button type="button" @click="selectDirectory"
+          class="group flex w-full items-start gap-3 rounded-xl border border-slate-200 bg-white p-3.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition hover:border-blue-300 hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-blue-700">
+          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400">
+            <FolderOpen class="h-4 w-4" />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-xs font-semibold text-slate-900 dark:text-zinc-100">{{ folderName }}</span>
+            <span v-if="inputDir" class="mt-1 block break-all text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ inputDir }}</span>
+            <span v-else class="mt-1 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">RAW、JPG、HEIC、HIF 等常见格式</span>
+            <span class="mt-2 block text-[10px] font-medium text-blue-600 dark:text-blue-400">{{ inputDir ? "更换目录" : "浏览选择" }}</span>
+          </span>
+        </button>
+
+        <section class="rounded-xl border border-slate-200 bg-white p-3.5 dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="mb-3 flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-zinc-200">
+            <ShieldCheck class="h-4 w-4 text-blue-600 dark:text-blue-400" />任务概览
+          </div>
+          <div class="space-y-2.5 text-[11px] text-slate-500 dark:text-zinc-400">
+            <div class="flex items-center gap-2"><CheckCircle2 class="h-3.5 w-3.5 shrink-0 text-emerald-500" />本地处理，不上传照片</div>
+            <div class="flex items-center gap-2"><ShieldCheck class="h-3.5 w-3.5 shrink-0 text-blue-500" />原图不修改、不删除</div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="flex min-w-0 min-h-0 flex-col border-r border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-950">
         <div class="workspace-main-scroll flex-1 px-7 py-6">
           <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col gap-5">
-            <header>
+            <p class="wide-workspace-description hidden text-sm text-slate-500 dark:text-zinc-400">
+              自动识别连拍序列，从清晰度、曝光与审美表现中挑出最佳画面
+            </p>
+            <header class="wide-workspace-header">
               <div class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-blue-600 dark:text-blue-400">
                 <ScanSearch class="h-3.5 w-3.5" />
                 Batch culling workspace
@@ -410,7 +447,7 @@ watch(selectedPhotoId, resetReviewZoom);
             </header>
 
             <button type="button" @click="selectDirectory"
-              class="group flex w-full items-center gap-4 rounded-xl border border-slate-200 bg-white px-5 py-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition hover:border-blue-300 hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-blue-700">
+              class="wide-workspace-directory group flex w-full items-center gap-4 rounded-xl border border-slate-200 bg-white px-5 py-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition hover:border-blue-300 hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-blue-700">
               <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400">
                 <FolderOpen class="h-5 w-5" />
               </span>
@@ -424,14 +461,14 @@ watch(selectedPhotoId, resetReviewZoom);
               </span>
             </button>
 
-            <div class="order-3 flex h-[260px] shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
+            <div class="wide-workspace-flow order-3 flex h-[260px] shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-[0_12px_36px_rgba(15,23,42,0.12)] dark:border-zinc-800">
               <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
                 <div class="flex items-center gap-2 text-sm font-medium text-white">
                   <Images class="h-4 w-4 text-blue-400" /> 批处理流程
                 </div>
                 <span class="text-[11px] text-slate-400">本地处理 · 原图内容不修改</span>
               </div>
-              <div class="grid min-h-0 flex-1 grid-cols-2 gap-px bg-white/10 md:grid-cols-4">
+              <div class="wide-workspace-flow-grid grid min-h-0 flex-1 grid-cols-2 gap-px bg-white/10 md:grid-cols-4">
                 <div v-for="(stage, index) in ['扫描文件', '识别连拍', '质量评估', '整理结果']"
                   :key="stage" class="relative bg-slate-900 px-5 py-6">
                   <div class="mb-3 flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold"
@@ -447,7 +484,7 @@ watch(selectedPhotoId, resetReviewZoom);
                   <div class="mt-1 text-[11px] leading-5 text-slate-500">
                     {{ ['读取格式与 EXIF', '按时间和画面归组', '清晰度 · 曝光 · 审美', '保留优选并移动淘汰项'][index] }}
                   </div>
-                  <div v-if="index < 3" class="absolute right-0 top-10 hidden h-px w-5 translate-x-1/2 bg-slate-700 md:block"></div>
+                  <div v-if="index < 3" class="wide-workspace-connector absolute right-0 top-10 hidden h-px w-5 translate-x-1/2 bg-slate-700 md:block"></div>
                 </div>
               </div>
               <div class="shrink-0 border-t border-white/10 bg-slate-950/50 px-5 py-3">
@@ -769,8 +806,8 @@ watch(selectedPhotoId, resetReviewZoom);
                 min="0"
                 max="1000"
                 step="1"
-                class="keep-slider block w-full"
-                :style="{ '--slider-progress': `${keepSliderPosition / 10}%` }"
+                class="app-range block w-full"
+                :style="{ '--range-progress': `${keepSliderPosition / 10}%` }"
                 aria-label="每组保留照片数量，1 到 20 张"
                 :aria-valuetext="`${keepCount} 张`"
               />
@@ -835,6 +872,37 @@ watch(selectedPhotoId, resetReviewZoom);
   scrollbar-gutter: stable;
 }
 
+@media (min-aspect-ratio: 3 / 2) {
+  .wide-workspace-grid {
+    grid-template-columns: 270px minmax(0, 1fr) clamp(360px, 24vw, 430px);
+  }
+
+  .wide-workspace-sidebar {
+    display: flex;
+  }
+
+  .wide-workspace-description {
+    display: block;
+  }
+
+  .wide-workspace-header,
+  .wide-workspace-directory {
+    display: none;
+  }
+
+  .wide-workspace-flow {
+    height: 390px;
+  }
+
+  .wide-workspace-flow-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .wide-workspace-connector {
+    display: none;
+  }
+}
+
 .sticky-action.is-pinned {
   background: rgba(255, 255, 255, 0.48);
 }
@@ -878,72 +946,4 @@ html.dark .sticky-glass {
   backdrop-filter: blur(32px) saturate(0.9) brightness(0.72);
 }
 
-.keep-slider {
-  --slider-progress: 0%;
-  height: 18px;
-  appearance: none;
-  -webkit-appearance: none;
-  cursor: pointer;
-  background: transparent;
-}
-
-.keep-slider::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 999px;
-  background: linear-gradient(
-    to right,
-    #2563eb 0,
-    #2563eb var(--slider-progress),
-    #cbd5e1 var(--slider-progress),
-    #cbd5e1 100%
-  );
-}
-
-.keep-slider::-webkit-slider-thumb {
-  width: 18px;
-  height: 18px;
-  margin-top: -7px;
-  appearance: none;
-  -webkit-appearance: none;
-  border: 3px solid #2563eb;
-  border-radius: 999px;
-  background: #ffffff;
-  box-shadow: 0 1px 4px rgb(15 23 42 / 0.22);
-}
-
-.keep-slider::-moz-range-track {
-  height: 4px;
-  border-radius: 999px;
-  background: #cbd5e1;
-}
-
-.keep-slider::-moz-range-progress {
-  height: 4px;
-  border-radius: 999px;
-  background: #2563eb;
-}
-
-.keep-slider::-moz-range-thumb {
-  width: 13px;
-  height: 13px;
-  border: 3px solid #2563eb;
-  border-radius: 999px;
-  background: #ffffff;
-  box-shadow: 0 1px 4px rgb(15 23 42 / 0.22);
-}
-
-:global(.dark) .keep-slider::-webkit-slider-runnable-track {
-  background: linear-gradient(
-    to right,
-    #3b82f6 0,
-    #3b82f6 var(--slider-progress),
-    #52525b var(--slider-progress),
-    #52525b 100%
-  );
-}
-
-:global(.dark) .keep-slider::-webkit-slider-thumb {
-  border-color: #60a5fa;
-  background: #18181b;
-}
 </style>

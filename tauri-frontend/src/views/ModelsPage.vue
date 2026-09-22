@@ -166,7 +166,7 @@ onMounted(fetchStatus);
 
 <template>
   <div class="workspace-readable h-full min-h-0 bg-[#f5f7fa] dark:bg-zinc-950">
-    <div class="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_clamp(360px,24vw,430px)]">
+    <div class="workspace-wide-frame grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_clamp(360px,24vw,430px)]">
       <section class="flex min-h-0 flex-col border-r border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-950">
         <div class="workspace-main-scroll flex-1 px-7 py-6">
           <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col gap-5">

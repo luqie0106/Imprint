@@ -84,6 +84,7 @@ htmlcov/
 /tests/*
 !/tests/test_dehaze.py
 !/tests/test_dng_writer.py
+!/tests/test_enhance_api.py
 
 # ── Virtual Environments ───────────────────────────────────────────────────────
 .env

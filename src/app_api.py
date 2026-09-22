@@ -18,7 +18,8 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Literal, Optional
+from types import MappingProxyType
+from typing import Any, AsyncGenerator, Literal, Mapping, Optional
 
 # 确保标准输出为 UTF-8 编码，防止 Windows GBK 环境下 Emoji 引发 UnicodeEncodeError
 if hasattr(sys.stdout, "reconfigure"):
@@ -91,9 +92,11 @@ _MAX_PREVIEW_GROUPS = 40
 # 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
 _ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
 _ENHANCE_PREVIEW_CACHE: dict[tuple[str, str, str, int, str], bytes] = {}
+_ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str], bytes] = {}
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _ENHANCE_LOCK = threading.RLock()
 _MAX_ENHANCE_SESSIONS = 8
+_MAX_ENHANCE_THUMBNAILS = 256
 
 # 配置 CORS 中间件，允许 Tauri 桌面端以及本地开发环境请求
 app.add_middleware(
@@ -157,6 +160,7 @@ class EnhanceParamsRequest(BaseModel):
     color_protection: float = Field(default=0.80, ge=0.0, le=1.0)
     highlight_protection: float = Field(default=0.75, ge=0.0, le=1.0)
     shadow_protection: float = Field(default=0.75, ge=0.0, le=1.0)
+    brightness_protection: float = Field(default=0.70, ge=0.0, le=1.0)
 
     def to_params(self) -> DehazeParams:
         return DehazeParams(**self.model_dump())
@@ -184,6 +188,7 @@ class EnhanceRunRequest(BaseModel):
     session_id: str
     output_dir: str = ""
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
+    params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
 
 
 def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
@@ -560,6 +565,8 @@ def create_enhance_session(req: EnhanceSessionRequest):
                 _ENHANCE_SESSIONS.pop(expired, None)
                 for key in [key for key in _ENHANCE_PREVIEW_CACHE if key[0] == expired]:
                     _ENHANCE_PREVIEW_CACHE.pop(key, None)
+                for key in [key for key in _ENHANCE_THUMBNAIL_CACHE if key[0] == expired]:
+                    _ENHANCE_THUMBNAIL_CACHE.pop(key, None)
         return {
             "session_id": session_id,
             "count": len(files),
@@ -606,7 +613,80 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         return JSONResponse(status_code=500, content={"error": f"生成去朦胧预览失败: {exc}"})
 
 
-def _run_enhance_job(job_id: str, session_id: str, output_dir: Path, params: DehazeParams) -> None:
+@app.get("/api/enhance/thumbnail/{session_id}/{photo_id}")
+def get_enhance_thumbnail(session_id: str, photo_id: str):
+    """Return a small, cached JPEG for a photo in an active enhance session."""
+    cache_key = (session_id, photo_id)
+    with _ENHANCE_LOCK:
+        path = _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).get(photo_id)
+        cached = _ENHANCE_THUMBNAIL_CACHE.get(cache_key)
+    if path is None:
+        return JSONResponse(status_code=404, content={"error": "去朦胧缩略图会话已失效"})
+    if not Path(path).is_file():
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    if cached is not None:
+        return Response(
+            content=cached,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    try:
+        image, _metadata = read_image(path, preview=True, max_edge=360)
+        payload = _encode_preview(image)
+        with _ENHANCE_LOCK:
+            current_path = _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).get(photo_id)
+            if current_path is None or Path(current_path) != Path(path):
+                return JSONResponse(status_code=404, content={"error": "去朦胧缩略图会话已失效"})
+            if len(_ENHANCE_THUMBNAIL_CACHE) >= _MAX_ENHANCE_THUMBNAILS:
+                _ENHANCE_THUMBNAIL_CACHE.pop(next(iter(_ENHANCE_THUMBNAIL_CACHE)), None)
+            _ENHANCE_THUMBNAIL_CACHE[cache_key] = payload
+        return Response(
+            content=payload,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "生成缩略图失败"})
+
+
+def _snapshot_enhance_params(
+    req: EnhanceRunRequest,
+    photo_ids: set[str] | None = None,
+) -> tuple[DehazeParams, Mapping[str, DehazeParams]]:
+    """Freeze request parameters before a background job starts.
+
+    Only photo IDs from the active session are retained.  ``DehazeParams`` is
+    frozen itself, and the mapping proxy prevents a caller from changing the
+    selection while the worker is processing the batch.
+    """
+    default_params = req.params.to_params()
+    scoped_params = {
+        photo_id: photo_params.to_params()
+        for photo_id, photo_params in req.params_by_photo.items()
+        if photo_ids is None or photo_id in photo_ids
+    }
+    return default_params, MappingProxyType(scoped_params)
+
+
+def _select_enhance_params(
+    photo_id: str,
+    params_by_photo: Mapping[str, DehazeParams],
+    default_params: DehazeParams,
+) -> DehazeParams:
+    """Return a per-photo snapshot, falling back to the batch default."""
+    return params_by_photo.get(photo_id, default_params)
+
+
+def _run_enhance_job(
+    job_id: str,
+    session_id: str,
+    output_dir: Path,
+    default_params: DehazeParams,
+    params_by_photo: Mapping[str, DehazeParams],
+) -> None:
     with _ENHANCE_LOCK:
         job = _ENHANCE_JOBS[job_id]
         records = list(_ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).items())
@@ -622,7 +702,8 @@ def _run_enhance_job(job_id: str, session_id: str, output_dir: Path, params: Deh
             job["current_file"] = Path(path).name
         try:
             image, metadata = read_image(path, preview=False)
-            enhanced = apply_dehaze(to_uint16(image), params)
+            photo_params = _select_enhance_params(photo_id, params_by_photo, default_params)
+            enhanced = apply_dehaze(to_uint16(image), photo_params)
             if cancel_event.is_set():
                 with _ENHANCE_LOCK:
                     item["status"] = "cancelled"
@@ -653,6 +734,10 @@ def run_enhance(req: EnhanceRunRequest):
     if session is None:
         return JSONResponse(status_code=404, content={"error": "去朦胧会话已失效"})
     records = list(session["files"].items())
+    default_params, params_by_photo = _snapshot_enhance_params(
+        req,
+        {photo_id for photo_id, _ in records},
+    )
     first_path = Path(records[0][1])
     output_dir = Path(req.output_dir.strip().strip('\"\'')) if req.output_dir.strip() else first_path.parent / OUTPUT_DIR_NAME
     try:
@@ -670,7 +755,7 @@ def run_enhance(req: EnhanceRunRequest):
     }
     thread = threading.Thread(
         target=_run_enhance_job,
-        args=(job_id, req.session_id, output_dir, req.params.to_params()),
+        args=(job_id, req.session_id, output_dir, default_params, params_by_photo),
         name=f"enhance-{job_id[:8]}", daemon=True,
     )
     job["_thread"] = thread

@@ -73,3 +73,105 @@ html, body, #app {
     font-size: 13.5px;
   }
 }
+
+/* 三栏/双栏工作区在宽屏上保持可读的内容宽度，小窗口仍然占满可用空间。 */
+.workspace-wide-frame {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (min-width: 1440px) {
+  .workspace-wide-frame {
+    max-width: 1500px;
+    margin-inline: auto;
+  }
+}
+
+/* 统一的参数滑杆：进度由调用方通过 --range-progress 提供。 */
+.app-range {
+  --range-progress: 0%;
+  height: 18px;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  background: transparent;
+}
+
+.app-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    #2563eb 0,
+    #2563eb var(--range-progress),
+    #cbd5e1 var(--range-progress),
+    #cbd5e1 100%
+  );
+}
+
+.app-range::-webkit-slider-thumb {
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 3px solid #2563eb;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgb(15 23 42 / 0.22);
+}
+
+.app-range::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.app-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.app-range::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 3px solid #2563eb;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgb(15 23 42 / 0.22);
+}
+
+.app-range:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 3px;
+}
+
+.dark .app-range::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to right,
+    #3b82f6 0,
+    #3b82f6 var(--range-progress),
+    #52525b var(--range-progress),
+    #52525b 100%
+  );
+}
+
+.dark .app-range::-webkit-slider-thumb {
+  border-color: #60a5fa;
+  background: #18181b;
+}
+
+.dark .app-range::-moz-range-track {
+  background: #52525b;
+}
+
+.dark .app-range::-moz-range-progress {
+  background: #3b82f6;
+}
+
+.dark .app-range::-moz-range-thumb {
+  border-color: #60a5fa;
+  background: #18181b;
+}

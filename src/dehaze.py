@@ -9,7 +9,7 @@ import json
 import numpy as np
 
 
-ALGORITHM_VERSION = "natural-global-v7-source-hue"
+ALGORITHM_VERSION = "natural-global-v8-source-hue-brightness-guard"
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class DehazeParams:
     color_protection: float = 0.80
     highlight_protection: float = 0.75
     shadow_protection: float = 0.75
+    brightness_protection: float = 0.70
 
     def normalized(self) -> "DehazeParams":
         values = {}
@@ -95,6 +96,76 @@ def _smooth_chroma_caps(image: np.ndarray, caps: np.ndarray) -> np.ndarray:
     scale = 0.5 * (1.0 + limit - np.sqrt((1.0 - limit) ** 2 + 1e-10))
     scale = np.clip(scale, 0.0, 1.0)
     return luminance[..., None] + chroma * scale[..., None]
+
+
+def _apply_brightness_protection(
+    source: np.ndarray,
+    image: np.ndarray,
+    strength: float,
+    protection: float,
+) -> np.ndarray:
+    """Compensate for an unusually large global midtone brightness loss.
+
+    The comparison is deliberately made on one source-luminance-selected
+    pixel set and uses medians rather than a whole-image mean.  This keeps a
+    bright sky or a large dark foreground from controlling the guard.  A
+    single compensation EV is then applied to every pixel, so equal RGB
+    values remain spatially consistent and no local seam can be introduced.
+    """
+    if protection <= 1e-6:
+        return image
+
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    source_luma = source @ weights
+    image_luma = image @ weights
+    valid = (
+        np.isfinite(source_luma)
+        & np.isfinite(image_luma)
+        & (source_luma > 0.08)
+        & (source_luma < 0.88)
+    )
+    if int(np.count_nonzero(valid)) < 8:
+        return image
+
+    source_median = float(np.median(source_luma[valid]))
+    image_median = float(np.median(image_luma[valid]))
+    if (
+        not np.isfinite(source_median)
+        or not np.isfinite(image_median)
+        or source_median <= 1e-5
+        or image_median <= 1e-5
+    ):
+        return image
+
+    brightness_drop_ev = float(np.log2(source_median / image_median))
+    if not np.isfinite(brightness_drop_ev):
+        return image
+    allowed_drop_ev = 0.08 + 0.22 * float(np.clip(strength, 0.0, 1.0))
+    excess_drop_ev = max(0.0, brightness_drop_ev - allowed_drop_ev)
+    compensation_ev = min(0.40, excess_drop_ev * float(np.clip(protection, 0.0, 1.0)))
+    if not np.isfinite(compensation_ev) or compensation_ev <= 1e-6:
+        return image
+
+    gain = float(2.0 ** compensation_ev)
+    if not np.isfinite(gain):
+        return image
+
+    # This fixed-endpoint curve is monotonic and raises midtones while
+    # leaving exact black and white unchanged.  Convert the luma change into
+    # one scalar per pixel and apply it to all RGB channels to preserve hue.
+    curve_luma = image_luma * gain / (1.0 + (gain - 1.0) * image_luma)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        scale = np.divide(
+            curve_luma,
+            image_luma,
+            out=np.ones_like(image_luma),
+            where=image_luma > 1e-6,
+        )
+    scale = np.nan_to_num(scale, nan=1.0, posinf=1.0, neginf=1.0)
+    protected = image * scale[..., None]
+    protected = np.nan_to_num(protected, nan=0.0, posinf=1.0, neginf=0.0)
+    protected = np.clip(protected, 0.0, 1.0)
+    return _smooth_chroma_gamut(protected)
 
 
 def apply_dehaze(image_rgb: np.ndarray, params: DehazeParams | None = None) -> np.ndarray:
@@ -252,6 +323,16 @@ def apply_dehaze(image_rgb: np.ndarray, params: DehazeParams | None = None) -> n
     shadow_position = shadow_position * shadow_position * (3.0 - 2.0 * shadow_position)
     shadow_blend = np.clip(shadow_position * p.shadow_protection, 0.0, 1.0)
     natural = natural * (1.0 - shadow_blend[..., None]) + source * shadow_blend[..., None]
+
+    # Protect against a global, abnormal darkening introduced by the combined
+    # recovery/tone operations.  This runs before the final near-saturation
+    # guard and is intentionally disabled at zero for legacy compatibility.
+    natural = _apply_brightness_protection(
+        source,
+        natural,
+        p.strength,
+        p.brightness_protection,
+    )
 
     # Do not let tone recovery create a new near-saturated solar halo.  The
     # cap is below the comparison threshold by a small dtype-aware margin;

@@ -7,7 +7,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dehaze import DehazeParams, apply_dehaze
+from dehaze import DehazeParams, _apply_brightness_protection, apply_dehaze
 
 
 def _synthetic_haze(dtype: np.dtype) -> np.ndarray:
@@ -36,6 +36,59 @@ def test_zero_strength_is_exact_copy():
     result = apply_dehaze(source, DehazeParams(strength=0))
     assert np.array_equal(result, source)
     assert result is not source
+
+
+def test_brightness_protection_is_part_of_normalized_cache_parameters():
+    assert DehazeParams().normalized().brightness_protection == 0.70
+    assert DehazeParams(brightness_protection=0).cache_token() != (
+        DehazeParams(brightness_protection=1).cache_token()
+    )
+
+
+def test_brightness_protection_allows_natural_mid_tone_dimming():
+    source = np.full((20, 20, 3), 0.42, dtype=np.float32)
+    # 0.12 EV is below the default strength=0.45 allowance of about 0.18 EV.
+    current = source * (2.0 ** -0.12)
+    protected = _apply_brightness_protection(source, current, 0.45, 0.70)
+    assert np.allclose(protected, current, atol=1e-7)
+
+
+def test_brightness_protection_lifts_abnormal_dimming_without_restoring_all():
+    source = np.full((32, 32, 3), 0.20, dtype=np.float32)
+    # This deliberately exaggerated result is about 1 EV darker than source.
+    unprotected = source * 0.5
+    protected = _apply_brightness_protection(source, unprotected, 0.45, 0.70)
+    source_luma = float(source[0, 0, 0])
+    unprotected_luma = float(unprotected[0, 0, 0])
+    protected_luma = float(protected[0, 0, 0])
+    assert protected_luma > unprotected_luma + 0.01
+    assert protected_luma < source_luma - 0.01
+
+
+def test_brightness_protection_has_max_ev_and_preserves_endpoints():
+    source = np.full((12, 12, 3), 0.40, dtype=np.float32)
+    source[0, 0] = (0.0, 0.0, 0.0)
+    source[0, 1] = (1.0, 1.0, 1.0)
+    source[0, 2] = (0.98, 0.99, 1.0)
+    unprotected = source * 0.5
+    unprotected[0, 0] = (0.0, 0.0, 0.0)
+    unprotected[0, 1] = (1.0, 1.0, 1.0)
+    unprotected[0, 2] = (0.98, 0.99, 1.0)
+    protected = _apply_brightness_protection(source, unprotected, 0.45, 1.0)
+    gain_ev = float(np.log2(float(protected[4, 4, 0]) / float(unprotected[4, 4, 0])))
+
+    assert gain_ev <= 0.40 + 1e-6
+    assert np.array_equal(protected[0, 0], unprotected[0, 0])
+    assert np.array_equal(protected[0, 1], unprotected[0, 1])
+    assert np.isfinite(protected).all()
+    assert float(protected.max()) <= 1.0
+
+
+def test_zero_brightness_protection_matches_unprotected_path():
+    source = _synthetic_haze(np.uint8)
+    unprotected = apply_dehaze(source, DehazeParams(brightness_protection=0))
+    protected_off = apply_dehaze(source, DehazeParams(brightness_protection=0.0))
+    assert np.array_equal(unprotected, protected_off)
 
 
 def test_synthetic_haze_local_contrast_improves():

@@ -4,9 +4,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { BASE_URL } from "../stores/api";
 import {
-  AlertCircle, CheckCircle2, ChevronDown, FolderOpen, ImagePlus, Images,
+  AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
   LoaderCircle, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Square,
-  Maximize2, Minus, Plus,
+  Maximize2, Minus, Plus, Sparkles,
 } from "lucide-vue-next";
 
 interface SessionFile { photo_id: string; name: string; extension: string }
@@ -16,14 +16,48 @@ interface EnhanceJob {
   failed: number; progress: number; current_file: string; output_dir: string; files: JobFile[];
 }
 
-const defaults = {
+interface EnhanceParams {
+  strength: number;
+  naturalness: number;
+  fog_retention: number;
+  local_contrast: number;
+  color_recovery: number;
+  color_protection: number;
+  highlight_protection: number;
+  shadow_protection: number;
+  brightness_protection: number;
+}
+
+type PreviewMode = "original" | "compare" | "enhanced";
+type ThumbnailState = "loading" | "loaded" | "error";
+
+type AdvancedParamKey = Exclude<keyof EnhanceParams, "strength">;
+
+const defaults: EnhanceParams = {
   strength: 0.45, naturalness: 0.70, fog_retention: 0.55,
   local_contrast: 0.25, color_recovery: 0.35, color_protection: 0.80,
-  highlight_protection: 0.75, shadow_protection: 0.75,
+  highlight_protection: 0.75, shadow_protection: 0.75, brightness_protection: 0.70,
 };
-const params = ref({ ...defaults });
+const advancedParameters: Array<{ key: AdvancedParamKey; label: string; description?: string }> = [
+  { key: "naturalness", label: "自然度" },
+  { key: "fog_retention", label: "雾气保留" },
+  { key: "local_contrast", label: "局部对比度" },
+  { key: "color_recovery", label: "颜色恢复" },
+  { key: "color_protection", label: "色彩保护" },
+  { key: "highlight_protection", label: "高光保护" },
+  { key: "shadow_protection", label: "暗部保护" },
+  { key: "brightness_protection", label: "亮度保护", description: "仅在结果异常变暗时抬高中间调；0为关闭" },
+];
+
+function cloneParams(source: EnhanceParams = defaults): EnhanceParams {
+  return { ...source };
+}
+
+const paramsByPhoto = ref<Record<string, EnhanceParams>>({});
+const emptyParams = ref<EnhanceParams>(cloneParams());
 const sessionId = ref("");
 const files = ref<SessionFile[]>([]);
+const thumbnailStates = ref<Record<string, ThumbnailState>>({});
 const selectedId = ref("");
 const outputDir = ref("");
 const originalUrl = ref("");
@@ -43,6 +77,7 @@ const viewportHeight = ref(0);
 const imageWidth = ref(0);
 const imageHeight = ref(0);
 const isScrubbing = ref(false);
+const previewMode = ref<PreviewMode>("compare");
 let resizeObserver: ResizeObserver | undefined;
 let pointerDownX = 0;
 let pointerDownY = 0;
@@ -56,6 +91,14 @@ const revealBusy = ref(false);
 let previewTimer: number | undefined;
 let previewGeneration = 0;
 let pollTimer: number | undefined;
+
+const params = computed<EnhanceParams>(() => paramsByPhoto.value[selectedId.value] ?? emptyParams.value);
+const enhancedReady = computed(() => Boolean(enhancedUrl.value) && !previewLoading.value);
+const showComparePreview = computed(() => previewMode.value === "compare" && enhancedReady.value);
+const previewImageUrl = computed(() => {
+  if (previewMode.value !== "original" && enhancedReady.value) return enhancedUrl.value;
+  return originalUrl.value;
+});
 
 const fitWidth = computed(() => {
   if (!imageWidth.value || !imageHeight.value || !viewportWidth.value || !viewportHeight.value) {
@@ -86,6 +129,20 @@ const revealMenuLabel = computed(() => {
   if (/Win/i.test(platform)) return "在文件资源管理器中显示";
   return "在文件管理器中显示";
 });
+
+function thumbnailUrl(file: SessionFile) {
+  const baseUrl = BASE_URL.value;
+  if (!baseUrl || !sessionId.value || !file.photo_id) return "";
+  return `${baseUrl}/api/enhance/thumbnail/${encodeURIComponent(sessionId.value)}/${encodeURIComponent(file.photo_id)}`;
+}
+
+function thumbnailState(photoId: string): ThumbnailState {
+  return thumbnailStates.value[photoId] ?? "loading";
+}
+
+function setThumbnailState(photoId: string, state: ThumbnailState) {
+  thumbnailStates.value = { ...thumbnailStates.value, [photoId]: state };
+}
 
 function releaseUrl(url: string) {
   if (url) URL.revokeObjectURL(url);
@@ -271,6 +328,14 @@ async function createSession(payload: { paths?: string[]; input_dir?: string }) 
     if (!response.ok) throw new Error(data.error || "无法读取照片");
     sessionId.value = data.session_id;
     files.value = data.files;
+    thumbnailStates.value = Object.fromEntries(
+      (data.files as SessionFile[]).map((file) => [file.photo_id, "loading" as ThumbnailState]),
+    );
+    const nextParamsByPhoto: Record<string, EnhanceParams> = {};
+    for (const file of data.files as SessionFile[]) {
+      nextParamsByPhoto[file.photo_id] = cloneParams();
+    }
+    paramsByPhoto.value = nextParamsByPhoto;
     resetView();
     selectedId.value = data.files[0]?.photo_id ?? "";
     outputDir.value = data.default_output_dir;
@@ -353,8 +418,21 @@ function schedulePreview() {
 }
 
 function resetParams() {
-  params.value = { ...defaults };
+  if (selectedId.value) {
+    paramsByPhoto.value[selectedId.value] = cloneParams();
+  } else {
+    emptyParams.value = cloneParams();
+  }
   void refreshPreview(false);
+}
+
+function syncParamsToAll() {
+  if (files.value.length <= 1 || !selectedId.value) return;
+  const source = cloneParams(params.value);
+  for (const file of files.value) {
+    paramsByPhoto.value[file.photo_id] = cloneParams(source);
+  }
+  actionMessage.value = `已将当前参数同步到全部 ${files.value.length} 张照片`;
 }
 
 async function pollJob() {
@@ -380,9 +458,17 @@ async function startBatch() {
   if (!sessionId.value || isRunning.value || !BASE_URL.value) return;
   actionMessage.value = "正在创建导出任务…";
   try {
+    const paramsByPhotoPayload = Object.fromEntries(
+      files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? defaults)]),
+    );
     const response = await fetch(`${BASE_URL.value}/api/enhance/run`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId.value, output_dir: outputDir.value, params: params.value }),
+      body: JSON.stringify({
+        session_id: sessionId.value,
+        output_dir: outputDir.value,
+        params: cloneParams(params.value),
+        params_by_photo: paramsByPhotoPayload,
+      }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "任务启动失败");
@@ -409,7 +495,9 @@ watch(selectedId, () => {
   imageWidth.value = 0;
   imageHeight.value = 0;
   releaseUrl(originalUrl.value);
+  releaseUrl(enhancedUrl.value);
   originalUrl.value = "";
+  enhancedUrl.value = "";
   void refreshPreview(true);
 });
 watch(params, schedulePreview, { deep: true });
@@ -434,7 +522,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="h-full overflow-y-auto bg-slate-50 p-5 dark:bg-zinc-950">
+  <div class="enhance-scroll h-full bg-slate-50 p-5 dark:bg-zinc-950">
     <div class="mx-auto grid max-w-[1500px] gap-4 xl:grid-cols-[270px_minmax(0,1fr)_310px]">
       <aside class="space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -452,11 +540,21 @@ onBeforeUnmount(() => {
 
         <section v-if="files.length" class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="border-b border-slate-100 px-4 py-3 text-xs font-semibold dark:border-zinc-800">照片列表</div>
-          <div class="max-h-80 overflow-y-auto p-2">
+          <div class="photo-grid max-h-[420px] overflow-y-auto p-2">
             <button v-for="file in files" :key="file.photo_id" @click="selectedId = file.photo_id"
-              class="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs"
+              type="button" :title="file.name" :aria-label="file.name"
+              class="photo-card min-w-0 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
               :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
-              <Images class="h-3.5 w-3.5 shrink-0" /><span class="truncate">{{ file.name }}</span>
+              <span class="relative mb-1.5 block aspect-square w-full overflow-hidden rounded-lg bg-slate-100 dark:bg-zinc-800">
+                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-500">
+                  <ImageIcon class="h-6 w-6" />
+                </span>
+                <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async"
+                  class="absolute inset-0 block h-full w-full object-contain transition-opacity"
+                  :class="thumbnailState(file.photo_id) === 'loaded' ? 'opacity-100' : 'opacity-0'"
+                  @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
+              </span>
+              <span class="block truncate">{{ file.name }}</span>
             </button>
           </div>
         </section>
@@ -466,31 +564,41 @@ onBeforeUnmount(() => {
         <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-zinc-800">
             <div class="min-w-0"><div class="truncate text-sm font-semibold">{{ currentFile?.name || "去朦胧预览" }}</div><div class="mt-0.5 text-[11px] text-slate-400">{{ imageSize || "选择照片后生成参数化预览" }}</div></div>
-            <div class="flex items-center gap-1 rounded-lg bg-slate-50 p-1 dark:bg-zinc-800">
-              <button @click="zoomBy(-0.25)" :disabled="zoom <= 1" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
-              <button @click="resetView" title="适合窗口" aria-label="适合窗口" class="min-w-[3.8rem] rounded px-1.5 py-1 text-[11px] font-medium tabular-nums hover:bg-white dark:hover:bg-zinc-700">{{ Math.round(zoom * 100) }}%</button>
-              <button @click="resetView" title="适合窗口" aria-label="适合窗口" class="rounded p-1.5 hover:bg-white dark:hover:bg-zinc-700"><Maximize2 class="h-3.5 w-3.5" /></button>
-              <button @click="zoomBy(0.25)" :disabled="zoom >= 4" title="放大" aria-label="放大" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Plus class="h-3.5 w-3.5" /></button>
+            <div class="flex shrink-0 items-center gap-2">
+              <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="预览模式">
+                <button type="button" @click="previewMode = 'original'" :aria-pressed="previewMode === 'original'" title="仅原图" aria-label="仅原图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'original' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><ImageIcon class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="previewMode = 'compare'" :aria-pressed="previewMode === 'compare'" title="原图/效果图对比" aria-label="原图/效果图对比" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'compare' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="previewMode = 'enhanced'" :aria-pressed="previewMode === 'enhanced'" title="仅效果图" aria-label="仅效果图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'enhanced' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Sparkles class="h-3.5 w-3.5" /></button>
+              </div>
+              <div class="flex shrink-0 items-center gap-1 rounded-lg bg-slate-50 p-1 dark:bg-zinc-800">
+                <button @click="zoomBy(-0.25)" :disabled="zoom <= 1" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
+                <button @click="resetView" title="适合窗口" aria-label="适合窗口" class="min-w-[3.8rem] rounded px-1.5 py-1 text-[11px] font-medium tabular-nums hover:bg-white dark:hover:bg-zinc-700">{{ Math.round(zoom * 100) }}%</button>
+                <button @click="resetView" title="适合窗口" aria-label="适合窗口" class="rounded p-1.5 hover:bg-white dark:hover:bg-zinc-700"><Maximize2 class="h-3.5 w-3.5" /></button>
+                <button @click="zoomBy(0.25)" :disabled="zoom >= 4" title="放大" aria-label="放大" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Plus class="h-3.5 w-3.5" /></button>
+              </div>
             </div>
           </div>
           <div ref="previewViewport" class="relative flex min-h-[520px] items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in')) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel" @click="onPreviewClick" @contextmenu="onPreviewContextMenu">
             <template v-if="originalUrl">
               <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
                 <div class="preview-stage relative shrink-0" :style="imageStageStyle">
-                  <img :src="enhancedUrl || originalUrl" alt="去朦胧后" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
+                  <img :src="previewImageUrl" :alt="previewMode === 'enhanced' && enhancedReady ? '去朦胧后' : '原图'" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
                 </div>
               </div>
-              <div v-if="enhancedUrl" class="absolute inset-0 overflow-hidden" :style="{ clipPath: `inset(0 ${100 - split}% 0 0)` }">
+              <div v-if="showComparePreview" class="absolute inset-0 overflow-hidden" :style="{ clipPath: `inset(0 ${100 - split}% 0 0)` }">
                 <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
                   <div class="preview-stage relative shrink-0" :style="imageStageStyle">
                     <img :src="originalUrl" alt="原图" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
                   </div>
                 </div>
               </div>
-              <div v-if="enhancedUrl" class="pointer-events-none absolute inset-y-0 z-10 w-px bg-white shadow" :style="{ left: `${split}%`, transform: 'translateX(-50%)' }"></div>
-              <span class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">原图</span>
-              <span class="pointer-events-none absolute right-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">去朦胧后</span>
-              <input v-if="enhancedUrl" v-model.number="split" type="range" min="0" max="100" class="compare-split absolute bottom-4 z-20" aria-label="前后对比分割线" @pointerdown.stop @click.stop />
+              <div v-if="showComparePreview" class="pointer-events-none absolute inset-y-0 z-10 w-px bg-white shadow" :style="{ left: `${split}%`, transform: 'translateX(-50%)' }"></div>
+              <template v-if="showComparePreview">
+                <span class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">原图</span>
+                <span class="pointer-events-none absolute right-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">去朦胧后</span>
+                <input v-model.number="split" type="range" min="0" max="100" class="compare-split absolute bottom-4 z-20" aria-label="前后对比分割线" @pointerdown.stop @click.stop />
+              </template>
+              <span v-else class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">{{ previewMode === "enhanced" && enhancedReady ? "去朦胧后" : "原图" }}</span>
             </template>
             <div v-if="revealMenu" class="reveal-context-menu absolute z-40 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900" :style="{ left: `${revealMenu.left}px`, top: `${revealMenu.top}px` }" @click.stop @contextmenu.prevent.stop>
               <button type="button" class="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-left text-xs hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60 dark:hover:bg-zinc-800" :disabled="revealBusy" @click="revealOriginal">
@@ -506,18 +614,23 @@ onBeforeUnmount(() => {
 
       <aside class="space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button @click="resetParams" title="重置参数" class="rounded p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
-          <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="mt-2 w-full accent-blue-600" type="range" min="0" max="1" step="0.01" /></label>
-          <button @click="advancedOpen = !advancedOpen" class="mt-4 flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-medium dark:border-zinc-800">高级参数<ChevronDown class="h-3.5 w-3.5 transition" :class="advancedOpen ? 'rotate-180' : ''" /></button>
+          <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button type="button" @click="resetParams" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
+          <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-400">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
+          <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" /></label>
+          <button type="button" @click="advancedOpen = !advancedOpen" :aria-expanded="advancedOpen" class="mt-4 flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-medium dark:border-zinc-800">高级参数<ChevronDown class="h-3.5 w-3.5 transition" :class="advancedOpen ? 'rotate-180' : ''" /></button>
           <div v-if="advancedOpen" class="mt-3 space-y-3">
-            <label v-for="item in [
-              ['naturalness','自然度'],['fog_retention','雾气保留'],['local_contrast','局部对比度'],
-              ['color_recovery','颜色恢复'],['color_protection','色彩保护'],['highlight_protection','高光保护'],['shadow_protection','暗部保护']
-            ]" :key="item[0]" class="block text-[11px]">
-              <span class="flex justify-between"><span>{{ item[1] }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item[0] as keyof typeof params] * 100) }}</span></span>
-              <input v-model.number="params[item[0] as keyof typeof params]" class="mt-1 w-full accent-blue-600" type="range" min="0" max="1" step="0.01" />
+            <label v-for="item in advancedParameters" :key="item.key" class="block text-[11px]">
+              <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item.key] * 100) }}</span></span>
+              <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ item.description }}</span>
+              <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" />
             </label>
+            <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-blue-400">
+              收起高级参数 <ChevronUp class="h-3.5 w-3.5" />
+            </button>
           </div>
+          <button v-if="files.length > 1" type="button" @click="syncParamsToAll" class="mt-4 flex w-full items-center justify-center rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-blue-900/70 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:border-blue-800 dark:hover:bg-blue-900/50" aria-label="将当前照片参数同步到全部照片">
+            同步到全部照片（{{ files.length }}）
+          </button>
         </section>
 
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -545,6 +658,33 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.enhance-scroll {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.photo-card {
+  border-bottom: 1px solid rgb(226 232 240);
+  padding: 0.5rem;
+}
+
+.photo-card:nth-child(odd):not(:last-child) {
+  border-right: 1px solid rgb(226 232 240);
+}
+
+:global(.dark) .photo-card {
+  border-bottom-color: rgb(63 63 70);
+}
+
+:global(.dark) .photo-card:nth-child(odd):not(:last-child) {
+  border-right-color: rgb(63 63 70);
+}
+
 .preview-stage {
   transform-origin: center center;
   will-change: transform;
