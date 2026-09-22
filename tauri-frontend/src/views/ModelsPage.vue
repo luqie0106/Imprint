@@ -21,6 +21,8 @@ interface ModelStatusResponse {
   mlp_path: string;
   mlp_l14_ready: boolean;
   mlp_l14_path: string;
+  face_landmarker_ready: boolean;
+  face_landmarker_path: string;
 }
 
 const status = ref<ModelStatusResponse>({
@@ -35,6 +37,8 @@ const status = ref<ModelStatusResponse>({
   mlp_path: "",
   mlp_l14_ready: false,
   mlp_l14_path: "",
+  face_landmarker_ready: false,
+  face_landmarker_path: "",
 });
 
 const modelOptions: Array<{
@@ -149,9 +153,10 @@ async function setMode(mode: ModelMode) {
   }
 }
 
-async function triggerDownload(model: "clip_b32" | "clip_l14") {
+async function triggerDownload(model: "clip_b32" | "clip_l14" | "face_landmarker") {
   await startDownload({ model, use_mirror: useMirror.value });
   await fetchStatus();
+  window.dispatchEvent(new CustomEvent("imprint:model-status-changed"));
 }
 
 async function triggerFuse(modelType: "b32" | "l14") {
@@ -282,6 +287,14 @@ onMounted(fetchStatus);
             <button @click="triggerDownload('clip_l14')" :disabled="isDownloading"
               class="mt-4 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700 transition hover:border-blue-300 hover:text-blue-700 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
               <DownloadCloud class="h-3.5 w-3.5" />{{ status.clip_l14_ready ? '重新下载 / 校验' : '下载专业底座' }}
+            </button>
+          </div>
+          <div class="rounded-lg border border-slate-200 p-4 dark:border-zinc-700">
+            <div class="flex items-start justify-between gap-2"><div><div class="text-sm font-semibold text-slate-900 dark:text-zinc-100">人像与闭眼检测</div><div class="mt-1 text-[11px] text-slate-400">MediaPipe Face Landmarker · 可选</div></div><span class="mt-1 h-2 w-2 rounded-full" :class="status.face_landmarker_ready ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-zinc-600'"></span></div>
+            <p class="mt-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">在本机识别人脸与明显闭眼；不确定结果只提示复核。</p>
+            <button @click="triggerDownload('face_landmarker')" :disabled="isDownloading"
+              class="mt-4 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700 transition hover:border-blue-300 hover:text-blue-700 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              <DownloadCloud class="h-3.5 w-3.5" />{{ status.face_landmarker_ready ? '重新下载 / 校验' : '下载人像模型' }}
             </button>
           </div>
         </div>

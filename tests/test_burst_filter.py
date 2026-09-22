@@ -1,0 +1,569 @@
+"""
+tests/test_burst_filter.py — NEF 连拍优选核心逻辑单元测试
+
+注意：测试不依赖真实 NEF 文件，全部使用合成图像或 mock 对象。
+"""
+
+from __future__ import annotations
+
+import shutil
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import cv2
+import numpy as np
+import pytest
+import sys
+
+# ── 确保 src 在路径上 ─────────────────────────────────────────────────────────
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from burst_filter import (  # noqa: E402
+    ABSOLUTE_BLUR_THRESHOLD,
+    BurstFilter,
+    BurstGrouper,
+    PhotoShot,
+    RawExifReader,
+    RawEvaluator,
+    ScoredPhoto,
+    _normalize_custom_weights,
+    _relative_sharpness_scores,
+    _resolve_dynamic_weights,
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 工具函数
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _make_sharp_image(size: int = 256) -> np.ndarray:
+    """生成一张高频棋盘格图像（模拟清晰图）。"""
+    img = np.zeros((size, size, 3), dtype=np.uint8)
+    block = size // 16
+    for r in range(size // block):
+        for c in range(size // block):
+            if (r + c) % 2 == 0:
+                img[r * block:(r + 1) * block, c * block:(c + 1) * block] = 255
+    return img
+
+
+def _make_blurry_image(size: int = 256, blur_ksize: int = 51) -> np.ndarray:
+    """对棋盘格图像做大核高斯模糊（模拟糊片）。"""
+    sharp = _make_sharp_image(size)
+    return cv2.GaussianBlur(sharp, (blur_ksize, blur_ksize), 0)
+
+
+def _make_nef_placeholder(directory: Path, name: str) -> Path:
+    """在目录中创建一个占位的假 NEF 文件（仅用于路径测试）。"""
+    p = directory / name
+    p.write_bytes(b"\x00" * 16)
+    return p
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RawEvaluator 测试
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestRawEvaluator:
+    def setup_method(self):
+        self.scorer = RawEvaluator()
+
+    def test_sharp_image_scores_higher_than_blurry(self):
+        sharp = _make_sharp_image()
+        blurry = _make_blurry_image()
+        score_sharp = self.scorer.sharpness(sharp)
+        score_blurry = self.scorer.sharpness(blurry)
+        assert score_sharp > score_blurry, (
+            f"清晰图得分 {score_sharp:.2f} 应高于模糊图 {score_blurry:.2f}"
+        )
+
+    def test_score_returns_positive_float(self):
+        img = _make_sharp_image()
+        score = self.scorer.sharpness(img)
+        assert isinstance(score, float)
+        assert score >= 0.0
+
+    def test_uniform_image_scores_near_zero(self):
+        """全灰图像（无纹理）的锐度得分应接近 0。"""
+        flat = np.full((128, 128, 3), 128, dtype=np.uint8)
+        score = self.scorer.sharpness(flat)
+        assert score < 1.0, f"均一图像的得分应接近0，实际={score}"
+
+    def test_landscape_uses_nine_region_profile(self):
+        """无人脸风景图应返回九宫格清晰度数据。"""
+        evaluator = RawEvaluator()
+        with patch.object(evaluator, "_face_regions", return_value=[]):
+            mode, regions = evaluator.sharpness_profile(_make_sharp_image())
+        assert mode == "grid"
+        assert len(regions) == 9
+        assert all(score >= 0 for score in regions)
+
+    def test_absolute_quality_separates_clear_and_severely_blurred_images(self):
+        sharp = self.scorer.absolute_sharpness_quality(_make_sharp_image())
+        blurry = self.scorer.absolute_sharpness_quality(_make_blurry_image())
+        assert sharp > ABSOLUTE_BLUR_THRESHOLD
+        assert blurry < ABSOLUTE_BLUR_THRESHOLD
+        assert sharp > blurry
+
+
+class TestDynamicLandscapeWeights:
+    def test_custom_weights_are_normalized_and_invalid_values_fall_back(self):
+        weights = _normalize_custom_weights(
+            {"sharpness": 0.9, "aesthetic": 0.05, "exposure": 0.05}
+        )
+        assert weights == pytest.approx(
+            {"sharpness": 0.9, "aesthetic": 0.05, "exposure": 0.05}
+        )
+        assert _normalize_custom_weights(
+            {"sharpness": 0.0, "aesthetic": 0.0, "exposure": 0.0}
+        ) is None
+        assert _normalize_custom_weights(
+            {"sharpness": -1.0, "aesthetic": 1.0, "exposure": 1.0}
+        ) is None
+
+    def test_small_sharpness_difference_is_treated_as_equal(self):
+        scores, spread = _relative_sharpness_scores([100.0, 96.0, 93.0])
+        assert scores == [1.0, 1.0, 1.0]
+        assert spread < 0.08
+
+    def test_obvious_blur_receives_low_score(self):
+        scores, spread = _relative_sharpness_scores([100.0, 82.0, 55.0])
+        assert scores[0] == 1.0
+        assert 0.0 < scores[1] < 1.0
+        assert scores[2] == 0.0
+        assert spread > 0.25
+
+    def test_similar_group_prefers_aesthetic_weight(self):
+        weights, reason = _resolve_dynamic_weights(0.04, 0.01)
+        assert weights["aesthetic"] == pytest.approx(0.70)
+        assert weights["sharpness"] == pytest.approx(0.25)
+        assert weights["exposure"] == pytest.approx(0.05)
+        assert "审美" in reason
+
+    def test_clear_difference_raises_technical_weights_but_keeps_aesthetic_floor(self):
+        weights, reason = _resolve_dynamic_weights(0.30, 0.20)
+        assert weights["aesthetic"] >= 0.45
+        assert weights["sharpness"] > 0.30
+        assert weights["exposure"] > 0.15
+        assert sum(weights.values()) == pytest.approx(1.0)
+        assert "技术质量" in reason
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RawExifReader 测试
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestRawExifReader:
+    def test_fallback_to_mtime_on_exif_failure(self, tmp_path: Path):
+        """无法读取 EXIF 时，应回退到文件系统 mtime。"""
+        fake = tmp_path / "fake.NEF"
+        fake.write_bytes(b"\x00")
+        reader = RawExifReader()
+        dt = reader.read_datetime(fake)
+        assert isinstance(dt, datetime)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BurstGrouper 测试
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBurstGrouper:
+    """使用 mock 绕过真实 EXIF/rawpy，只测试分组逻辑。"""
+
+    def _make_grouper(self, times: list[datetime], similar: bool = True) -> tuple[BurstGrouper, list[Path]]:
+        """
+        构造一个 BurstGrouper：
+        - exif_reader.read_datetime 按索引返回对应时间
+        - _safe_dhash 被 mock：
+            similar=True  → 返回汉明距离=0（完全相同）
+            similar=False → 返回汉明距离=30（构图很不同）
+        """
+        mock_exif = MagicMock(spec=RawExifReader)
+        mock_scorer = MagicMock(spec=RawEvaluator)
+
+        paths = [Path(f"img_{i:03d}.NEF") for i in range(len(times))]
+        mock_exif.read_datetime.side_effect = lambda p: times[paths.index(p)]
+        mock_scorer.extract_preview.return_value = _make_sharp_image()
+
+        grouper = BurstGrouper(
+            exif_reader=mock_exif,
+            preview_extractor=mock_scorer,
+            gap_seconds=1.5,
+            max_hamming_distance=12,
+        )
+        # 通过 mock _safe_dhash 控制汉明距离：
+        # similar=True  → 所有帧哈希相同（距离=0）
+        # similar=False → 第二帧起返回不同哈希（距离=30 > 12）
+        identical_hash = np.ones((8, 8), dtype=bool)
+        different_hash = np.zeros((8, 8), dtype=bool)
+        call_count = [0]
+
+        def fake_dhash(path):
+            i = call_count[0]
+            call_count[0] += 1
+            if i == 0 or similar:
+                return identical_hash
+            return different_hash
+
+        grouper._safe_dhash = fake_dhash
+        return grouper, paths
+
+    def test_single_file_is_single_group(self):
+        times = [datetime(2024, 1, 1, 12, 0, 0)]
+        grouper, paths = self._make_grouper(times)
+        groups = grouper.group(paths)
+        assert len(groups) == 1
+        assert len(groups[0]) == 1
+
+    def test_two_close_similar_files_form_burst(self):
+        times = [datetime(2024, 1, 1, 12, 0, 0), datetime(2024, 1, 1, 12, 0, 1)]
+        grouper, paths = self._make_grouper(times, similar=True)
+        groups = grouper.group(paths)
+        assert len(groups) == 1
+        assert len(groups[0]) == 2
+
+    def test_two_files_beyond_gap_are_separate(self):
+        times = [datetime(2024, 1, 1, 12, 0, 0), datetime(2024, 1, 1, 12, 0, 3)]
+        grouper, paths = self._make_grouper(times)
+        groups = grouper.group(paths)
+        assert len(groups) == 2
+
+    def test_dissimilar_images_split_into_new_subgroup(self):
+        """时间满足但与锚点不相似：截断当前组，第二张作为新子组基准帧。"""
+        times = [datetime(2024, 1, 1, 12, 0, 0), datetime(2024, 1, 1, 12, 0, 1)]
+        grouper, paths = self._make_grouper(times, similar=False)
+        groups = grouper.group(paths)
+        # 锚点比对失败 → 截断 → 两个子组，每组 1 张
+        assert len(groups) == 2
+        assert all(len(g) == 1 for g in groups)
+
+    def test_three_consecutive_form_one_burst(self):
+        times = [
+            datetime(2024, 1, 1, 12, 0, 0),
+            datetime(2024, 1, 1, 12, 0, 1),
+            datetime(2024, 1, 1, 12, 0, 2),
+        ]
+        grouper, paths = self._make_grouper(times, similar=True)
+        groups = grouper.group(paths)
+        assert len(groups) == 1
+        assert len(groups[0]) == 3
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BurstFilter 集成测试（完全 mock，不需要真实 NEF）
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBurstFilter:
+    def _make_fake_nef_dir(self, tmp_path: Path, count: int) -> tuple[Path, list[Path]]:
+        nef_dir = tmp_path / "nefs"
+        nef_dir.mkdir()
+        paths = [_make_nef_placeholder(nef_dir, f"DSC_{i:04d}.NEF") for i in range(count)]
+        return nef_dir, paths
+
+    def test_single_shots_are_skipped(self, tmp_path: Path):
+        """所有照片都是单拍时，无文件被移动。"""
+        nef_dir, paths = self._make_fake_nef_dir(tmp_path, 3)
+
+        flt = BurstFilter()
+        # mock _grouper.group 返回所有单拍
+        flt._grouper.group = MagicMock(
+            return_value=[[p] for p in paths]
+        )
+
+        result = flt.run(nef_dir)
+
+        assert result.total == 3
+        assert result.skipped_single == 3
+        assert result.burst_groups == 0
+        assert result.moved == 0
+        assert result.review_dir is None
+        # 原文件仍然在原位
+        for p in paths:
+            assert p.exists()
+
+    def test_burst_group_keeps_best_moves_rest(self, tmp_path: Path):
+        """连拍组中最高分保留，其余移动到淘汰目录。"""
+        nef_dir, paths = self._make_fake_nef_dir(tmp_path, 3)
+
+        flt = BurstFilter(review_subdir="Burst_Review")
+
+        # mock 分组：3 张均为同一连拍组
+        flt._grouper.group = MagicMock(return_value=[paths])
+
+        # mock 打分：paths[1] 最清晰
+        sharp_img = _make_sharp_image()
+        blurry_img = _make_blurry_image()
+
+        def fake_extract(p: Path) -> np.ndarray:
+            if p == paths[1]:
+                return sharp_img
+            return blurry_img
+
+        flt._scorer.extract_preview = fake_extract
+        flt._scorer.sharpness = RawEvaluator().score  # 使用真实打分
+        flt._scorer.exposure_score = MagicMock(return_value=1.0)
+        # mock 美学评分：全部返回 1.0（全部通过初筛），测试纯锐度选优逻辑
+        flt._aesthetic_scorer.score = MagicMock(return_value=1.0)
+
+        result = flt.run(nef_dir)
+
+        assert result.burst_groups == 1
+        assert result.moved == 2
+        assert result.review_dir is not None
+        assert result.review_dir.exists()
+        assert result.groups[0]["weights"]["sharpness"] > 0.30
+        assert result.groups[0]["weight_reason"]
+        assert all(len(shot["paths"]) == 1 for shot in result.groups[0]["shots"])
+        assert all(len(shot["original_paths"]) == 1 for shot in result.groups[0]["shots"])
+
+        # paths[1]（最清晰）应留在原位
+        assert paths[1].exists(), "最优片应保留在原目录"
+        # paths[0] 和 paths[2] 应被移走
+        assert not paths[0].exists(), "淘汰片应已移出原目录"
+        assert not paths[2].exists(), "淘汰片应已移出原目录"
+
+    def test_no_nef_files_returns_empty_result(self, tmp_path: Path):
+        nef_dir = tmp_path / "empty"
+        nef_dir.mkdir()
+        result = BurstFilter().run(nef_dir)
+        assert result.total == 0
+        assert result.burst_groups == 0
+
+    def test_review_dir_created_inside_input_dir(self, tmp_path: Path):
+        nef_dir, paths = self._make_fake_nef_dir(tmp_path, 2)
+
+        flt = BurstFilter(review_subdir="审查_连拍淘汰")
+        flt._grouper.group = MagicMock(return_value=[paths])
+
+        sharp_img = _make_sharp_image()
+        blurry_img = _make_blurry_image()
+        flt._scorer.extract_preview = lambda p: sharp_img if p == paths[0] else blurry_img
+        flt._scorer.sharpness = RawEvaluator().score
+        flt._scorer.exposure_score = MagicMock(return_value=1.0)
+
+        result = flt.run(nef_dir)
+
+        assert result.review_dir == nef_dir / "审查_连拍淘汰"
+        assert result.review_dir.exists()
+
+    def test_multi_format_scanning(self, tmp_path: Path):
+        """测试扫描支持 RAW (NEF/ARW/CR2/CR3/RAF/DNG/RW2/ORF/PEF) 及 JPEG, HIF, JXL 等格式。"""
+        img_dir = tmp_path / "mixed"
+        img_dir.mkdir()
+
+        # 创建多种格式的假文件（包含 DNG, CR2, RW2 等）
+        test_files = [
+            "a.NEF", "b.jpg", "c.JPEG", "d.hif", "e.jxl", "f.cr3",
+            "g.cr2", "h.DNG", "i.rw2", "j.RAF", "k.orf", "l.png", "m.webp"
+        ]
+        for name in test_files:
+            (img_dir / name).write_bytes(b"\x00" * 16)
+        # 创建不支持的格式
+        (img_dir / "ignore.txt").write_text("hello")
+        (img_dir / "ignore.mp4").write_bytes(b"\x00" * 16)
+
+        flt = BurstFilter()
+        photos = flt._scan_photos(img_dir)
+        assert len(photos) == len(test_files)
+        names = {p.name for p in photos}
+        for tf in test_files:
+            assert tf in names
+        assert "ignore.txt" not in names
+        assert "ignore.mp4" not in names
+
+    def test_raw_suffixes_contains_dng_cr2_rw2(self):
+        """验证支持集合中包含 DNG, CR2, RW2 等关键 RAW 格式。"""
+        from burst_filter import RAW_SUFFIXES, SUPPORTED_PHOTO_SUFFIXES
+        for ext in [".dng", ".cr2", ".rw2", ".cr3", ".nef", ".arw", ".raf", ".orf", ".pef"]:
+            assert ext in RAW_SUFFIXES
+            assert ext in SUPPORTED_PHOTO_SUFFIXES
+
+    def test_raw_plus_jpg_companion_pairing(self, tmp_path: Path):
+        """测试同名 RAW + JPG 伴生文件自动聚合成一个 PhotoShot。"""
+        from burst_filter import BurstFilter, PhotoShot
+        img_dir = tmp_path / "pairs"
+        img_dir.mkdir()
+
+        (img_dir / "DSC_0001.NEF").write_bytes(b"\x00" * 16)
+        (img_dir / "DSC_0001.JPG").write_bytes(b"\x00" * 16)
+        (img_dir / "DSC_0002.ARW").write_bytes(b"\x00" * 16)
+        (img_dir / "DSC_0002.jpg").write_bytes(b"\x00" * 16)
+
+        flt = BurstFilter()
+        photos = flt._scan_photos(img_dir)
+        assert len(photos) == 4
+        shots = flt._pair_shots(photos)
+        assert len(shots) == 2
+        for shot in shots:
+            assert isinstance(shot, PhotoShot)
+            assert len(shot.all_paths) == 2
+            # 确认 RAW 优先作为主文件
+            assert shot.primary_path.suffix.lower() in [".nef", ".arw"]
+
+    def test_single_raw_plus_jpg_shot_is_skipped(self, tmp_path: Path):
+        """单次快门拍摄的 RAW + JPG 不会被误判为连拍组，双方都安全保留在原位。"""
+        from burst_filter import BurstFilter
+        img_dir = tmp_path / "single_pair"
+        img_dir.mkdir()
+
+        nef = img_dir / "DSC_0001.NEF"
+        jpg = img_dir / "DSC_0001.JPG"
+        nef.write_bytes(b"\x00" * 16)
+        jpg.write_bytes(b"\x00" * 16)
+
+        flt = BurstFilter()
+        result = flt.run(img_dir)
+
+        assert result.total == 2
+        assert result.burst_groups == 0
+        assert result.moved == 0
+        assert nef.exists()
+        assert jpg.exists()
+
+    def test_burst_raw_plus_jpg_keeps_and_moves_together(self, tmp_path: Path):
+        """连拍组中获胜的快门同时保留 RAW 与 JPG，淘汰的快门同时将 RAW 与 JPG 移至审查目录。"""
+        from burst_filter import BurstFilter
+        img_dir = tmp_path / "burst_pairs"
+        img_dir.mkdir()
+
+        # 创建 3 组 RAW+JPG 连拍（共 6 个文件）
+        files = []
+        for i in range(1, 4):
+            nef = img_dir / f"DSC_{i:04d}.NEF"
+            jpg = img_dir / f"DSC_{i:04d}.JPG"
+            nef.write_bytes(b"\x00" * 16)
+            jpg.write_bytes(b"\x00" * 16)
+            files.extend([nef, jpg])
+
+        flt = BurstFilter(keep_count=1)
+        shots = flt._pair_shots(files)
+        assert len(shots) == 3
+
+        # mock 分组：3 个 shot 归为一个连拍组
+        flt._grouper.group = MagicMock(return_value=[shots])
+
+        sharp_img = _make_sharp_image()
+        blurry_img = _make_blurry_image()
+
+        # 设置第 2 个 shot（DSC_0002）得分最高
+        def fake_extract(p: Path) -> np.ndarray:
+            if "0002" in p.name:
+                return sharp_img
+            return blurry_img
+
+        flt._scorer.extract_preview = fake_extract
+        flt._scorer.sharpness = RawEvaluator().score
+        flt._scorer.exposure_score = MagicMock(return_value=1.0)
+        flt._aesthetic_scorer.score = MagicMock(return_value=1.0)
+
+        result = flt.run(img_dir)
+
+        assert result.burst_groups == 1
+        assert result.moved == 4  # 淘汰的 2 组 shot，每组 2 个文件共 4 个文件被移动
+        assert result.review_dir is not None
+
+        # DSC_0002.NEF 和 DSC_0002.JPG（胜出）均保留在原目录
+        assert (img_dir / "DSC_0002.NEF").exists()
+        assert (img_dir / "DSC_0002.JPG").exists()
+
+        # DSC_0001 与 DSC_0003 明显虚焦，NEF + JPG 均进入明显废片目录。
+        assert not (img_dir / "DSC_0001.NEF").exists()
+        assert not (img_dir / "DSC_0001.JPG").exists()
+        assert not (img_dir / "DSC_0003.NEF").exists()
+        assert not (img_dir / "DSC_0003.JPG").exists()
+
+        assert result.defect_dir is not None
+        assert (result.defect_dir / "DSC_0001.NEF").exists()
+        assert (result.defect_dir / "DSC_0001.JPG").exists()
+        assert (result.defect_dir / "DSC_0003.NEF").exists()
+        assert (result.defect_dir / "DSC_0003.JPG").exists()
+
+
+def _configured_filter_for_process(*, action: str = "keep", absolute_quality: float = 0.01):
+    """Construct the narrow state needed by _process_group without loading models."""
+    flt = object.__new__(BurstFilter)
+    flt.keep_count = 1
+    flt.max_workers = 1
+    flt.weight_mode = "adaptive"
+    flt.custom_weights = None
+    flt.all_blurry_action = action
+    flt.defect_subdir = "审查_明显废片"
+    flt._eye_evaluator = None
+    flt._scorer = RawEvaluator()
+    flt._scorer.extract_preview = MagicMock(return_value=_make_blurry_image())
+    flt._scorer.absolute_sharpness_quality = MagicMock(return_value=absolute_quality)
+    flt._aesthetic_scorer = MagicMock()
+    flt._aesthetic_scorer.score.side_effect = [1.0, 0.7, 0.4]
+    return flt
+
+
+class TestDefectRouting:
+    @pytest.mark.parametrize(
+        ("action", "kept_count", "moved_count", "needs_review"),
+        [
+            ("keep", 1, 2, False),
+            ("review", 1, 2, True),
+            ("reject", 0, 3, False),
+        ],
+    )
+    def test_all_blurry_action_controls_whether_one_frame_survives(
+        self, tmp_path: Path, action: str, kept_count: int, moved_count: int, needs_review: bool
+    ):
+        source = tmp_path / "source"
+        review = source / "审查_连拍淘汰"
+        defect = source / "审查_明显废片"
+        source.mkdir()
+        paths = [_make_nef_placeholder(source, f"blur_{index}.NEF") for index in range(3)]
+        flt = _configured_filter_for_process(action=action)
+
+        moved, errors, detail = flt._process_group(paths, review, defect)
+
+        assert not errors
+        assert detail["all_blurry"] is True
+        assert detail["needs_review"] is needs_review
+        assert sum(shot["kept"] for shot in detail["shots"]) == kept_count
+        assert moved == moved_count
+        assert detail["defect_moved"] == moved_count
+        assert len(list(defect.glob("*.NEF"))) == moved_count
+
+    def test_companion_move_failure_rolls_back_the_whole_shot(self, tmp_path: Path):
+        source = tmp_path / "source"
+        review = source / "审查_连拍淘汰"
+        defect = source / "审查_明显废片"
+        source.mkdir()
+        winner = _make_nef_placeholder(source, "winner.NEF")
+        raw = _make_nef_placeholder(source, "loser.NEF")
+        jpg = source / "loser.JPG"
+        jpg.write_bytes(b"jpg")
+        loser = PhotoShot(primary_path=raw, all_paths=[raw, jpg])
+        flt = _configured_filter_for_process(absolute_quality=1.0)
+        flt._scorer.extract_preview = lambda path: (
+            _make_sharp_image() if path == winner else _make_blurry_image(blur_ksize=31)
+        )
+
+        real_move = shutil.move
+        call_count = 0
+
+        def fail_second_move(source_path, destination_path):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise OSError("simulated companion failure")
+            return real_move(source_path, destination_path)
+
+        with patch("burst_filter.shutil.move", side_effect=fail_second_move):
+            moved, errors, detail = flt._process_group([winner, loser], review, defect)
+
+        assert moved == 0
+        assert errors
+        assert winner.exists()
+        assert raw.exists()
+        assert jpg.exists()
+        loser_detail = next(shot for shot in detail["shots"] if shot["name"] == raw.name)
+        assert loser_detail["kept"] is True
+        assert loser_detail["category"] == "keep"
+        assert "move_failed" in loser_detail["reject_reasons"]
+        assert detail["needs_review"] is True

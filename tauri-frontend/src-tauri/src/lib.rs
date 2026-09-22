@@ -142,7 +142,7 @@ fn find_sidecar_or_script() -> (Option<PathBuf>, bool) {
         }
     }
 
-    // Windows 发行包使用 PyInstaller onefile，sidecar 直接位于 dist-python/ 下。
+    // 兼容旧版 onefile sidecar；当前发行包使用下方的 onedir 路径。
     for exe in &exe_names {
         sidecar_candidates.push(PathBuf::from("dist-python").join(exe));
         sidecar_candidates.push(PathBuf::from("../dist-python").join(exe));

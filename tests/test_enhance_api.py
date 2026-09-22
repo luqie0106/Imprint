@@ -5,12 +5,14 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+import rawpy
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import app_api
 from dehaze import DehazeParams
+from lens_correction import LensCorrectionResult, LensMatchError
 
 
 def test_enhance_params_request_accepts_and_converts_brightness_protection():
@@ -82,6 +84,7 @@ def test_enhance_job_uses_per_photo_params_and_default_fallback(monkeypatch, tmp
 
     class Metadata:
         exif = {}
+        bit_depth = 14
 
     def fake_read_image(path: Path, *, preview: bool = False):
         value = 1 if Path(path).name == first_path.name else 2
@@ -97,7 +100,7 @@ def test_enhance_job_uses_per_photo_params_and_default_fallback(monkeypatch, tmp
     monkeypatch.setattr(
         app_api,
         "write_linear_dng",
-        lambda image, source_path, output_dir, exif: output_dir / f"{int(image[0, 0, 0])}.dng",
+        lambda image, source_path, output_dir, exif, *, bits_per_sample: output_dir / f"{int(image[0, 0, 0])}.dng",
     )
 
     default_params = DehazeParams(strength=0.2)
@@ -182,3 +185,160 @@ def test_enhance_thumbnail_rejects_unknown_photo_id_without_reading(monkeypatch,
     finally:
         app_api._ENHANCE_SESSIONS.pop(session_id, None)
         app_api._ENHANCE_THUMBNAIL_CACHE.clear()
+
+
+def test_enhance_preview_maps_raw_unsupported_without_leaking_exception_or_path(monkeypatch, tmp_path: Path):
+    session_id = "unsupported-preview-session"
+    photo_id = "photo-1"
+    path = tmp_path / "nikon-he-star-nef"
+    path.touch()
+    app_api._ENHANCE_SESSIONS[session_id] = {
+        "files": {photo_id: path},
+        "created": 0.0,
+    }
+
+    def fail_read_image(*args, **kwargs):
+        raise rawpy.LibRawFileUnsupportedError(
+            b"Unsupported file format or not RAW file: /private/photos/secret.nef"
+        )
+
+    monkeypatch.setattr(app_api, "read_image", fail_read_image)
+    try:
+        response = app_api.create_enhance_preview(
+            app_api.EnhancePreviewRequest(session_id=session_id, photo_id=photo_id)
+        )
+        assert response.status_code == 422
+        body = response.body.decode("utf-8")
+        assert "当前 RAW 或压缩方式暂不受支持" in body
+        assert "Nikon NX Studio" in body
+        assert "Unsupported file format" not in body
+        assert "secret.nef" not in body
+        assert str(path) not in body
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+
+
+def test_enhance_job_stores_friendly_raw_error_for_failed_item(monkeypatch, tmp_path: Path):
+    session_id = "unsupported-job-session"
+    job_id = "unsupported-job"
+    path = tmp_path / "private-source.nef"
+    path.touch()
+    app_api._ENHANCE_SESSIONS[session_id] = {
+        "files": {"photo-1": path},
+        "created": 0.0,
+    }
+    app_api._ENHANCE_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "total": 1,
+        "processed": 0,
+        "success": 0,
+        "failed": 0,
+        "progress": 0.0,
+        "current_file": "",
+        "files": [{"photo_id": "photo-1", "name": path.name, "status": "waiting"}],
+        "_cancel": app_api.threading.Event(),
+    }
+
+    def fail_read_image(*args, **kwargs):
+        raise rawpy.LibRawFileUnsupportedError(
+            b"Unsupported file format or not RAW file: /private/photos/private-source.nef"
+        )
+
+    monkeypatch.setattr(app_api, "read_image", fail_read_image)
+    try:
+        app_api._run_enhance_job(
+            job_id,
+            session_id,
+            tmp_path,
+            DehazeParams(),
+            {},
+        )
+        item = app_api._ENHANCE_JOBS[job_id]["files"][0]
+        assert item["status"] == "failed"
+        assert "当前 RAW 或压缩方式暂不受支持" in item["error"]
+        assert "Unsupported file format" not in item["error"]
+        assert "private-source.nef" not in item["error"]
+        assert app_api._ENHANCE_JOBS[job_id]["failed"] == 1
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+        app_api._ENHANCE_JOBS.pop(job_id, None)
+
+
+def test_raw_export_requires_and_records_baked_lens_correction(monkeypatch, tmp_path: Path):
+    session_id = "corrected-raw-session"
+    job_id = "corrected-raw-job"
+    path = tmp_path / "source.nef"
+    path.touch()
+    app_api._ENHANCE_SESSIONS[session_id] = {
+        "files": {"photo-1": path},
+        "created": 0.0,
+    }
+    app_api._ENHANCE_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "total": 1,
+        "processed": 0,
+        "success": 0,
+        "failed": 0,
+        "progress": 0.0,
+        "current_file": "",
+        "files": [{"photo_id": "photo-1", "name": path.name, "status": "waiting"}],
+        "_cancel": app_api.threading.Event(),
+    }
+
+    class Metadata:
+        source_kind = "raw"
+        bit_depth = 14
+        exif = {"Make": "Nikon", "Model": "Z6_3", "LensModel": "NIKKOR Z 14-24mm f/2.8 S"}
+
+    require_values: list[bool] = []
+    written_metadata: dict = {}
+
+    def fake_correction(image, metadata, *, require_correction):
+        require_values.append(require_correction)
+        return image + 1, LensCorrectionResult(
+            applied=True,
+            camera_name="Nikon Z6_3",
+            lens_name="Nikkor Z 14-24mm f/2.8 S",
+            distortion_applied=True,
+            tca_applied=True,
+            vignetting_applied=False,
+            scale=0.0,
+        )
+
+    def fake_write(image, source_path, output_dir, metadata, *, bits_per_sample):
+        written_metadata.update(metadata)
+        assert int(image[0, 0, 0]) == 2
+        assert bits_per_sample == 14
+        return tmp_path / "output.dng"
+
+    monkeypatch.setattr(
+        app_api,
+        "read_image",
+        lambda *args, **kwargs: (np.ones((2, 2, 3), dtype=np.uint16), Metadata()),
+    )
+    monkeypatch.setattr(app_api, "apply_dehaze", lambda image, params: image)
+    monkeypatch.setattr(app_api, "apply_lens_correction", fake_correction)
+    monkeypatch.setattr(app_api, "write_linear_dng", fake_write)
+    try:
+        app_api._run_enhance_job(job_id, session_id, tmp_path, DehazeParams(), {})
+        item = app_api._ENHANCE_JOBS[job_id]["files"][0]
+        assert require_values == [True]
+        assert item["status"] == "success"
+        assert item["lens_correction"]["distortion"] is True
+        assert item["lens_correction"]["tca"] is True
+        assert written_metadata["LensCorrectionApplied"] is True
+        assert written_metadata["LensCorrectionOperations"] == "distortion,tca"
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+        app_api._ENHANCE_JOBS.pop(job_id, None)
+
+
+def test_lens_match_failure_never_reports_an_uncorrected_raw_success(monkeypatch, tmp_path: Path):
+    assert "未生成未校正的 DNG" in app_api._enhance_error_message(
+        LensMatchError("/private/photos/secret.nef")
+    )
+    assert "secret.nef" not in app_api._enhance_error_message(
+        LensMatchError("/private/photos/secret.nef")
+    )

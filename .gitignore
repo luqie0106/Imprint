@@ -79,12 +79,9 @@ htmlcov/
 .ruff_cache/
 .pyre/
 .pytype/
-/tests/
-!/tests/
-/tests/*
-!/tests/test_dehaze.py
-!/tests/test_dng_writer.py
-!/tests/test_enhance_api.py
+
+# Tests are source code and must stay tracked. Generated test output belongs in
+# the normal cache/build directories above or in a temporary directory.
 
 # ── Virtual Environments ───────────────────────────────────────────────────────
 .env
@@ -116,3 +113,38 @@ models/clip-vit-large-patch14/
 !app_api.spec
 
 .reasonix
+
+# ── Runtime telemetry/session leftovers ────────────────────────────────────────
+# ONNX Runtime may create this file on macOS when its telemetry store cannot be
+# opened from a sandboxed process.
+:memory:.ses
+
+# ── User photos and generated review/export folders ────────────────────────────
+去朦胧输出/
+审查_连拍淘汰/
+审查_明显废片/
+*.dng
+*.nef
+*.nrw
+*.arw
+*.srf
+*.sr2
+*.cr2
+*.cr3
+*.crw
+*.rw2
+*.raf
+*.orf
+*.ori
+*.pef
+*.ptx
+*.3fr
+*.fff
+*.iiq
+*.srw
+*.x3f
+*.mrw
+*.gpr
+*.erf
+*.mef
+*.mos

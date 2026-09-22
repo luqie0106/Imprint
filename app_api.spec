@@ -1,8 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-import os
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
-onefile = os.environ.get('IMPRINT_ONEFILE') == '1'
 
 datas = [
     ('src/burst_filter.py',   'src'),
@@ -13,7 +12,27 @@ datas = [
     ('src/dehaze.py',         'src'),
     ('src/image_io.py',       'src'),
     ('src/dng_writer.py',     'src'),
+    ('src/lens_correction.py', 'src'),
+    ('src/portrait_quality.py', 'src'),
+    ('third_party/lensfun-db', 'third_party/lensfun-db'),
+    ('third_party/licenses', 'third_party/licenses'),
+    ('THIRD_PARTY_NOTICES.md', '.'),
+    ('LICENSE', '.'),
 ]
+
+try:
+    lensfun_datas, lensfun_binaries, lensfun_hiddenimports = collect_all('lensfunpy')
+    datas.extend(lensfun_datas)
+except Exception:
+    lensfun_binaries = []
+    lensfun_hiddenimports = []
+
+try:
+    mediapipe_datas, mediapipe_binaries, mediapipe_hiddenimports = collect_all('mediapipe')
+    datas.extend(mediapipe_datas)
+except Exception:
+    mediapipe_binaries = []
+    mediapipe_hiddenimports = []
 # 打包标准 ONNX 模型（如果存在）
 for model_rel in [
     'models/standard_aesthetic_model.onnx',
@@ -25,7 +44,7 @@ for model_rel in [
 a = Analysis(
     ['src/app_api.py'],
     pathex=['src'],
-    binaries=[],
+    binaries=lensfun_binaries + mediapipe_binaries,
     datas=datas,
     hiddenimports=[
         'burst_filter',
@@ -36,6 +55,10 @@ a = Analysis(
         'dehaze',
         'image_io',
         'dng_writer',
+        'lens_correction',
+        'portrait_quality',
+        *lensfun_hiddenimports,
+        *mediapipe_hiddenimports,
         'uvicorn',
         'uvicorn.logging',
         'uvicorn.loops',
@@ -78,46 +101,29 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-if onefile:
-    # Windows 安装器只收集一个 sidecar，避免 NSIS 遍历和压缩上万个零散文件。
-    exe = EXE(
-        pyz,
-        a.scripts,
-        a.binaries,
-        a.datas,
-        [],
-        name='imprint_api',
-        debug=False,
-        strip=False,
-        upx=True,
-        console=True,
-        argv_emulation=False,
-        target_arch=None,
-        runtime_tmpdir=None,
-    )
-else:
-    # macOS 继续使用启动更快的 onedir，保持现有 DMG / PKG 打包方式。
-    exe = EXE(
-        pyz,
-        a.scripts,
-        [],
-        exclude_binaries=True,
-        name='imprint_api',
-        debug=False,
-        strip=False,
-        upx=True,
-        console=True,   # sidecar 需要 stdout 输出端口信息，必须 True
-        argv_emulation=False,
-        target_arch=None,
-    )
+# All release platforms use onedir. Besides faster startup, keeping Lensfun as a
+# separate shared library lets recipients replace/relink the LGPL component.
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='imprint_api',
+    debug=False,
+    strip=False,
+    upx=True,
+    console=True,   # sidecar needs stdout to announce its port
+    argv_emulation=False,
+    target_arch=None,
+)
 
-    coll = COLLECT(
-        exe,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        strip=False,
-        upx=True,
-        upx_exclude=[],
-        name='imprint_api',
-    )
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='imprint_api',
+)

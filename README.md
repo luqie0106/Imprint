@@ -1,6 +1,6 @@
 # Imprint
 
-Imprint 是一个在本机运行的连拍照片筛选工具。选一个照片文件夹，它会把相近时间拍下的照片分成连拍组，帮你从每组里挑出相对更清晰、曝光更合适的几张。
+Imprint 是一个本地优先的照片桌面工具，提供连拍优选、明显废片分流、个人偏好训练和自然去朦胧。照片解码、评分、增强和 DNG 导出默认都在本机完成。
 
 没有被选中的照片不会删除，而是移到原文件夹里的 `审查_连拍淘汰` 目录。你可以慢慢检查，需要的话也能恢复。照片不会上传到云端，原图内容也不会被改动。
 
@@ -14,6 +14,8 @@ Imprint 是一个在本机运行的连拍照片筛选工具。选一个照片文
 - RAW 和同名 JPG 会当作一套处理，不会只移动其中一个。
 - 支持常见 RAW（ARW、CR2、CR3、NEF、RAF、RW2、ORF、DNG 等），以及 JPG、PNG、WebP、TIFF、HEIC、HIF、JXL 等格式。
 - 可以用自己的“喜欢 / 不喜欢”样片训练一个本地审美模型。
+- 可以对 RAW 或普通图片进行自然去朦胧预览，并重新读取全分辨率原图导出 Linear/Demosaiced DNG。
+- RAW 导出会用 Lensfun 匹配机身和镜头，将畸变与横向色差校正实际烘焙进像素；不依赖 Camera Raw 是否愿意为 Linear DNG 匹配外部镜头配置。
 
 ## 先知道这几件事
 
@@ -21,6 +23,8 @@ Imprint 是一个在本机运行的连拍照片筛选工具。选一个照片文
 - `审查_连拍淘汰` 是默认的审查文件夹，可以在界面或命令行中改名。
 - AI 的选择只是初筛结果，不一定符合每个人的取舍。处理完成后建议重点看一遍每组的保留照片。
 - 如果照片同时有 RAW 和 JPG，请把它们放在同一目录且保留相同文件名，程序才能正确配对。
+- 原始照片不会被去朦胧功能修改、移动或覆盖；默认输出到输入目录下的 `去朦胧输出`。
+- 去朦胧导出是 RGB Linear/Demosaiced DNG，不是重新生成的 Bayer/CFA RAW。
 
 ## 用桌面版
 
@@ -52,6 +56,27 @@ Imprint 是一个在本机运行的连拍照片筛选工具。选一个照片文
 ```
 
 然后打开“偏好训练”，选择 `我的样片` 这个目录并开始训练。训练完成后，到“模型管理”切换到个人模型即可。样片和训练过程都在本机，不会上传。
+
+## 去朦胧与镜头校正
+
+在“自然去朦胧”页面选择照片后，可以先用低分辨率预览调整参数，再进行批量导出。正式导出会重新读取全分辨率文件，不会把预览图放大后保存。
+
+对于带有完整机身、镜头、焦距和光圈信息的 RAW，导出流程为：
+
+```text
+RAW 解码为 16-bit Linear RGB
+→ 自然去朦胧
+→ Lensfun 畸变、横向色差与自动裁边
+→ 写入 RGB Linear DNG
+```
+
+镜头校正直接作用于输出像素，并在 DNG 的 XMP 与 `ImageDescription` 中记录匹配到的机身、镜头和已执行项目。Camera Raw 打开文件时看到的就是校正后的像素；DNG 同时关闭二次镜头配置，避免重复变形。
+
+当前限制：
+
+- Lensfun 数据库没有相应配置，或 RAW 缺少可靠镜头信息时，RAW 导出会失败并给出提示，不会把未校正文件误报为成功。
+- 当前 uint16 路径执行畸变、横向色差和自动裁边；暗角暂不由 Lensfun 烘焙。
+- 普通 JPG、PNG 等已经处理过的 RGB 输入仍可导出 Linear DNG；没有镜头元数据时不会强制进行镜头匹配。
 
 ## 命令行用法
 
@@ -93,7 +118,7 @@ python3 main.py --download-models
 
 ## 从源码运行
 
-需要 Python 3.9 或更高版本、Node.js 18 或更高版本，以及 Rust 稳定版工具链。
+推荐使用 Python 3.11、Node.js 18 或更高版本，以及 Rust 稳定版工具链。
 
 ```bash
 git clone https://github.com/luqie0106/Imprint.git
@@ -129,6 +154,8 @@ Imprint/
 ├── tauri-frontend/         # 桌面端界面
 ├── models/                 # 本地模型文件
 ├── tests/                  # 测试
+├── third_party/            # Lensfun 数据库快照与第三方许可证
+├── THIRD_PARTY_NOTICES.md  # 第三方组件、版本、来源和许可证说明
 └── requirements.txt        # Python 依赖
 ```
 
@@ -144,4 +171,11 @@ xattr -cr /Applications/Imprint.app
 
 ## 开源协议
 
-本项目使用 [Apache 2.0](LICENSE) 协议。
+Imprint 自有代码使用 [Apache 2.0](LICENSE) 协议。镜头校正功能还使用以下独立第三方组件：
+
+- Lensfun 动态库：LGPL-3.0；Imprint 不修改该库。
+- Lensfun 镜头数据库：CC BY-SA 3.0。仓库内数据库由 Lensfun 官方工具转换为兼容格式，继续按相同许可证提供。
+- lensfunpy：MIT。
+
+这些许可证不会改变 Imprint 自有代码的 Apache-2.0 许可证，也不会对用户的照片或导出 DNG 施加开源要求。完整版本、来源、转换说明和许可证文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 [`third_party/licenses`](third_party/licenses)。
+发布包会把 Lensfun 保留为可替换的独立动态库，不会合并进单文件可执行程序。

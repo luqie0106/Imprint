@@ -12,6 +12,8 @@ import {
 
 type FilterPreset = "conservative" | "balanced" | "aggressive" | "custom";
 type ReviewMode = "auto" | "review";
+type WeightMode = "adaptive" | "custom";
+type AllBlurryAction = "keep" | "review" | "reject";
 
 interface BurstPreviewShot {
   photo_id: string;
@@ -26,6 +28,11 @@ interface BurstPreviewShot {
   score: number;
   sharpest: boolean;
   aesthetic_best: boolean;
+  category?: "keep" | "review" | "defect";
+  reject_reasons?: string[];
+  absolute_sharpness?: number;
+  face_count?: number;
+  closed_face_count?: number;
 }
 
 interface BurstPreviewGroup {
@@ -58,6 +65,12 @@ const useGpu = ref(true);
 const gpuDetected = ref(false);
 const gpuDeviceName = ref("");
 const reviewSubdir = ref("审查_连拍淘汰");
+const defectSubdir = ref("审查_明显废片");
+const allBlurryAction = ref<AllBlurryAction>("keep");
+const weightMode = ref<WeightMode>("adaptive");
+const customWeights = ref({ sharpness: 0.9, aesthetic: 0.05, exposure: 0.05 });
+const eyeDetection = ref(false);
+const eyeModelReady = ref(false);
 const preset = ref<FilterPreset>("balanced");
 const reviewMode = ref<ReviewMode>("auto");
 const logContainer = ref<HTMLElement | null>(null);
@@ -238,6 +251,7 @@ async function setPhotoDecision(shot: BurstPreviewShot, kept: boolean) {
 
     const wasKept = shot.kept;
     shot.kept = Boolean(data.kept);
+    shot.category = data.category ?? (shot.kept ? "keep" : shot.category ?? "review");
     const changedFiles = Number(data.moved_files ?? shot.companion_count ?? 1);
     if (resultData.value && wasKept !== shot.kept) {
       const delta = shot.kept ? -changedFiles : changedFiles;
@@ -319,6 +333,24 @@ function weightPercent(value: number | undefined) {
   return `${Math.round((value ?? 0) * 100)}%`;
 }
 
+function setCustomWeight(key: "sharpness" | "aesthetic" | "exposure", percent: number) {
+  const next = Math.min(100, Math.max(0, Number(percent))) / 100;
+  const keys = (["sharpness", "aesthetic", "exposure"] as const).filter((item) => item !== key);
+  const remaining = 1 - next;
+  const otherTotal = keys.reduce((total, item) => total + customWeights.value[item], 0);
+  customWeights.value[key] = next;
+  for (const item of keys) {
+    customWeights.value[item] = otherTotal > 0
+      ? remaining * customWeights.value[item] / otherTotal
+      : remaining / keys.length;
+  }
+}
+
+function applyClarityPreset() {
+  customWeights.value = { sharpness: 0.9, aesthetic: 0.05, exposure: 0.05 };
+  weightMode.value = "custom";
+}
+
 async function checkGpuAvailability() {
   if (!BASE_URL.value) return;
   try {
@@ -328,6 +360,8 @@ async function checkGpuAvailability() {
     gpuDetected.value = Boolean(data.gpu_available);
     gpuDeviceName.value = data.gpu_name || "CPU 多核心并行计算";
     useGpu.value = gpuDetected.value;
+    eyeModelReady.value = Boolean(data.face_landmarker_ready);
+    if (!eyeModelReady.value) eyeDetection.value = false;
   } catch (err) {
     console.error("检测 GPU 状态失败:", err);
   }
@@ -360,10 +394,15 @@ async function handleStart() {
     gap_seconds: Number(gapSeconds.value),
     max_hamming_distance: Number(maxHammingDistance.value),
     review_subdir: reviewSubdir.value,
+    defect_subdir: defectSubdir.value,
     keep_count: Number(keepCount.value),
     max_workers: Number(maxWorkers.value),
     use_gpu: Boolean(useGpu.value),
     include_previews: reviewMode.value === "review",
+    weight_mode: weightMode.value,
+    custom_weights: weightMode.value === "custom" ? customWeights.value : null,
+    all_blurry_action: allBlurryAction.value,
+    eye_detection: eyeDetection.value && eyeModelReady.value,
   });
 }
 
@@ -379,8 +418,12 @@ function updateStickyActionState() {
 onMounted(() => {
   checkGpuAvailability();
   window.addEventListener("keydown", handleReviewKeydown);
+  window.addEventListener("imprint:model-status-changed", checkGpuAvailability);
 });
-onBeforeUnmount(() => window.removeEventListener("keydown", handleReviewKeydown));
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleReviewKeydown);
+  window.removeEventListener("imprint:model-status-changed", checkGpuAvailability);
+});
 watch(() => isServerReady.value, (ready) => ready && checkGpuAvailability());
 watch(() => messages.value.length, async () => {
   await nextTick();
@@ -509,11 +552,14 @@ watch(selectedPhotoId, resetReviewZoom);
               <div class="grid grid-cols-2 divide-x divide-blue-200 md:grid-cols-4 dark:divide-blue-900">
                 <div class="px-4 first:pl-0"><div class="text-2xl font-bold tabular-nums text-slate-950 dark:text-white">{{ resultData.total }}</div><div class="mt-1 text-xs text-slate-500 dark:text-zinc-400">扫描文件</div></div>
                 <div class="px-4"><div class="text-2xl font-bold tabular-nums text-slate-950 dark:text-white">{{ resultData.burst_groups }}</div><div class="mt-1 text-xs text-slate-500 dark:text-zinc-400">连拍组</div></div>
-                <div class="px-4"><div class="text-2xl font-bold tabular-nums text-blue-700 dark:text-blue-300">{{ resultData.moved }}</div><div class="mt-1 text-xs text-slate-500 dark:text-zinc-400">移入审查</div></div>
+                <div class="px-4"><div class="text-2xl font-bold tabular-nums text-blue-700 dark:text-blue-300">{{ resultData.moved }}</div><div class="mt-1 text-xs text-slate-500 dark:text-zinc-400">共移出原目录</div><div v-if="resultData.defect_moved" class="mt-1 text-[10px] text-rose-500">明显废片 {{ resultData.defect_moved }}</div></div>
                 <div class="px-4"><div class="text-2xl font-bold tabular-nums text-slate-950 dark:text-white">{{ resultData.skipped_single }}</div><div class="mt-1 text-xs text-slate-500 dark:text-zinc-400">单张跳过</div></div>
               </div>
               <div v-if="resultData.review_dir" class="mt-4 flex items-center gap-2 border-t border-blue-200 pt-3 text-xs text-blue-800 dark:border-blue-900 dark:text-blue-300">
                 <FileCheck2 class="h-4 w-4 shrink-0" /><span class="truncate">审查目录：{{ resultData.review_dir }}</span>
+              </div>
+              <div v-if="resultData.defect_dir" class="mt-2 flex items-center gap-2 text-xs text-rose-700 dark:text-rose-300">
+                <Trash2 class="h-4 w-4 shrink-0" /><span class="truncate">明显废片目录：{{ resultData.defect_dir }}</span>
               </div>
             </div>
 
@@ -561,7 +607,7 @@ watch(selectedPhotoId, resetReviewZoom);
                 </div>
 
                 <div class="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50/70 px-3.5 py-3 text-xs text-blue-900 dark:border-blue-900/70 dark:bg-blue-950/25 dark:text-blue-200">
-                  <span class="font-semibold">智能权重</span>
+                  <span class="font-semibold">实际权重</span>
                   <span class="text-blue-700/80 dark:text-blue-300/80">{{ selectedGroup.weight_reason }}</span>
                   <div class="ml-auto flex flex-wrap gap-1.5 tabular-nums">
                     <span class="rounded bg-white/80 px-2 py-1 dark:bg-zinc-900/60">审美 {{ weightPercent(selectedGroup.weights?.aesthetic) }}</span>
@@ -592,7 +638,7 @@ watch(selectedPhotoId, resetReviewZoom);
                         :class="shot.kept ? 'bg-blue-600' : 'bg-slate-950/70'">
                         <LoaderCircle v-if="decisionPendingId === shot.photo_id" class="h-3 w-3 animate-spin" />
                         <BadgeCheck v-else-if="shot.kept" class="h-3 w-3" />
-                        {{ shot.kept ? '保留' : '审查' }}
+                        {{ shot.kept ? '保留' : shot.category === 'defect' ? '废片' : '审查' }}
                       </button>
                       <span class="absolute bottom-2 right-2 rounded bg-slate-950/75 px-1.5 py-1 text-[10px] font-semibold tabular-nums text-white">{{ Math.round(shot.score * 100) }}</span>
                     </div>
@@ -658,7 +704,7 @@ watch(selectedPhotoId, resetReviewZoom);
                   <div class="flex flex-col rounded-lg border border-slate-200 p-4 dark:border-zinc-700">
                     <div class="mb-3 flex items-start justify-between gap-3">
                       <div class="min-w-0"><div class="truncate text-sm font-semibold text-slate-900 dark:text-zinc-100">{{ selectedPhoto.name }}</div><div class="mt-1 text-xs text-slate-400">综合排名 #{{ selectedPhoto.rank ?? '—' }}</div></div>
-                      <span class="shrink-0 rounded-md px-2 py-1 text-xs font-semibold" :class="selectedPhoto.kept ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-300'">{{ selectedPhoto.kept ? '已保留' : '已移入审查' }}</span>
+                      <span class="shrink-0 rounded-md px-2 py-1 text-xs font-semibold" :class="selectedPhoto.kept ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300' : selectedPhoto.category === 'defect' ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300' : 'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-300'">{{ selectedPhoto.kept ? '已保留' : selectedPhoto.category === 'defect' ? '已移入明显废片' : '已移入审查' }}</span>
                     </div>
                     <div class="space-y-3">
                       <div v-for="metric in [
@@ -673,6 +719,8 @@ watch(selectedPhotoId, resetReviewZoom);
                     <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-3 dark:border-zinc-700">
                       <span v-if="selectedPhoto.sharpest" class="flex items-center gap-1 rounded bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300"><Focus class="h-3 w-3" />本组最清晰</span>
                       <span v-if="selectedPhoto.aesthetic_best" class="flex items-center gap-1 rounded bg-violet-50 px-2 py-1 text-[10px] font-medium text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"><Trophy class="h-3 w-3" />审美最高</span>
+                      <span v-if="selectedPhoto.reject_reasons?.includes('severe_blur')" class="rounded bg-rose-50 px-2 py-1 text-[10px] text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">严重虚焦</span>
+                      <span v-if="selectedPhoto.reject_reasons?.includes('closed_eyes')" class="rounded bg-rose-50 px-2 py-1 text-[10px] text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">检测到闭眼</span>
                       <span v-if="selectedPhoto.companion_count > 1" class="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-600 dark:bg-zinc-800 dark:text-zinc-300">含 {{ selectedPhoto.companion_count }} 个伴生文件</span>
                     </div>
                     <div class="mt-auto grid grid-cols-2 gap-2 pt-4">
@@ -786,6 +834,23 @@ watch(selectedPhotoId, resetReviewZoom);
           </div>
 
           <div>
+            <label class="mb-3 block text-xs font-semibold text-slate-700 dark:text-zinc-300">整组全糊时</label>
+            <div class="grid grid-cols-3 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800">
+              <button v-for="option in [
+                { value: 'keep', label: '保守', hint: '仍保留最佳' },
+                { value: 'review', label: '复核', hint: '保留并提醒' },
+                { value: 'reject', label: '激进', hint: '整组移出' },
+              ]" :key="option.value" type="button" @click="allBlurryAction = option.value as AllBlurryAction"
+                class="rounded-md px-1 py-2 text-center transition"
+                :class="allBlurryAction === option.value ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200 dark:bg-zinc-700 dark:text-blue-300 dark:ring-zinc-600' : 'text-slate-500 dark:text-zinc-400'">
+                <span class="block text-xs font-semibold">{{ option.label }}</span>
+                <span class="mt-0.5 block text-[9px]">{{ option.hint }}</span>
+              </button>
+            </div>
+            <p class="mt-2 text-[10px] leading-4 text-slate-400">“移出”表示移动到明显废片目录，不会真正删除。</p>
+          </div>
+
+          <div>
             <div class="mb-3 flex items-center justify-between">
               <label for="keep-count-slider" class="text-xs font-semibold text-slate-700 dark:text-zinc-300">每组保留</label>
               <output for="keep-count-slider" class="rounded-md bg-blue-50 px-2 py-1 text-xs font-bold tabular-nums text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
@@ -833,9 +898,20 @@ watch(selectedPhotoId, resetReviewZoom);
               <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400"><Layers3 class="h-4 w-4" /></span>
               <div class="min-w-0"><div class="text-xs font-semibold text-slate-800 dark:text-zinc-200">当前美学模型</div><div class="mt-0.5 truncate text-[11px] text-slate-400">使用“模型管理”中的活跃模型</div></div>
             </div>
-            <div class="mt-3 flex items-center gap-2 border-t border-slate-100 pt-3 text-[11px] text-slate-500 dark:border-zinc-800 dark:text-zinc-400">
-              <CheckCircle2 class="h-3.5 w-3.5 shrink-0 text-blue-500" />
-              <span>智能权重已开启，按每组实际差异自动调整</span>
+            <div class="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-slate-50 p-1 dark:bg-zinc-800">
+              <button type="button" @click="weightMode = 'adaptive'" class="rounded-md px-2 py-2 text-[11px] font-semibold" :class="weightMode === 'adaptive' ? 'bg-white text-blue-700 shadow-sm dark:bg-zinc-700 dark:text-blue-300' : 'text-slate-500'">智能自适应</button>
+              <button type="button" @click="weightMode = 'custom'" class="rounded-md px-2 py-2 text-[11px] font-semibold" :class="weightMode === 'custom' ? 'bg-white text-blue-700 shadow-sm dark:bg-zinc-700 dark:text-blue-300' : 'text-slate-500'">自定义权重</button>
+            </div>
+            <div v-if="weightMode === 'custom'" class="mt-3 space-y-3 border-t border-slate-100 pt-3 dark:border-zinc-800">
+              <div v-for="item in [
+                { key: 'sharpness', label: '清晰度' },
+                { key: 'aesthetic', label: '审美' },
+                { key: 'exposure', label: '曝光' },
+              ]" :key="item.key">
+                <div class="mb-1 flex justify-between text-[10px] text-slate-500"><span>{{ item.label }}</span><span class="tabular-nums">{{ Math.round(customWeights[item.key as keyof typeof customWeights] * 100) }}%</span></div>
+                <input type="range" min="0" max="100" step="1" :value="Math.round(customWeights[item.key as keyof typeof customWeights] * 100)" @input="setCustomWeight(item.key as 'sharpness' | 'aesthetic' | 'exposure', Number(($event.target as HTMLInputElement).value))" class="app-range block w-full" :style="{ '--range-progress': `${customWeights[item.key as keyof typeof customWeights] * 100}%` }" />
+              </div>
+              <button type="button" @click="applyClarityPreset" class="w-full rounded-md border border-blue-200 px-2 py-2 text-[10px] font-semibold text-blue-700 hover:bg-blue-50 dark:border-blue-900 dark:text-blue-300">应用“清晰优先” 90 / 5 / 5</button>
             </div>
           </div>
 
@@ -849,6 +925,11 @@ watch(selectedPhotoId, resetReviewZoom);
               <label class="block"><span class="mb-1.5 block text-[11px] text-slate-500 dark:text-zinc-400">构图相似度（汉明距离）</span><input v-model.number="maxHammingDistance" @input="syncPresetFromHamming" type="number" min="1" max="64" class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/10 dark:border-zinc-700 dark:bg-zinc-800" /></label>
               <label class="block"><span class="mb-1.5 flex justify-between text-[11px] text-slate-500 dark:text-zinc-400"><span>工作线程</span><span>上限 {{ maxCpus }}</span></span><input v-model.number="maxWorkers" type="number" min="1" :max="maxCpus" class="w-full rounded-lg border bg-slate-50 px-3 py-2 text-sm outline-none focus:ring-2 dark:bg-zinc-800" :class="isWorkersExceeded ? 'border-rose-400 focus:ring-rose-500/10' : 'border-slate-200 focus:border-blue-400 focus:ring-blue-500/10 dark:border-zinc-700'" /></label>
               <label class="block"><span class="mb-1.5 block text-[11px] text-slate-500 dark:text-zinc-400">审查目录名称</span><input v-model="reviewSubdir" type="text" class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/10 dark:border-zinc-700 dark:bg-zinc-800" /></label>
+              <label class="block"><span class="mb-1.5 block text-[11px] text-slate-500 dark:text-zinc-400">明显废片目录名称</span><input v-model="defectSubdir" type="text" class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/10 dark:border-zinc-700 dark:bg-zinc-800" /></label>
+              <label class="flex cursor-pointer items-start gap-3 rounded-lg bg-slate-50 p-3 dark:bg-zinc-800" :class="!eyeModelReady ? 'opacity-60' : ''">
+                <input v-model="eyeDetection" type="checkbox" :disabled="!eyeModelReady" class="mt-0.5 h-4 w-4 rounded accent-blue-600" />
+                <span><span class="block text-xs font-medium text-slate-700 dark:text-zinc-300">人像闭眼检测</span><span class="mt-1 block text-[10px] leading-4 text-slate-400">{{ eyeModelReady ? '明确闭眼的照片移入明显废片' : '请先在模型管理中下载人像模型' }}</span></span>
+              </label>
               <label class="flex cursor-pointer items-start gap-3 rounded-lg bg-slate-50 p-3 dark:bg-zinc-800">
                 <input v-model="useGpu" type="checkbox" :disabled="!gpuDetected" class="mt-0.5 h-4 w-4 rounded accent-blue-600" />
                 <span class="min-w-0"><span class="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-zinc-300"><Cpu class="h-3.5 w-3.5 text-blue-500" />硬件加速</span><span class="mt-1 block break-words text-[10px] leading-4 text-slate-400">{{ gpuDeviceName || '正在检测设备…' }}</span></span>

@@ -24,6 +24,12 @@ else:
 MODELS_DIR = PROJECT_ROOT / "models"
 CLIP_MODEL_DIR = MODELS_DIR / "clip-vit-base-patch32"
 CLIP_L14_MODEL_DIR = MODELS_DIR / "clip-vit-large-patch14"
+FACE_LANDMARKER_PATH = MODELS_DIR / "face_landmarker.task"
+FACE_LANDMARKER_BUNDLE_PATH = BUNDLE_ROOT / "models" / "face_landmarker.task"
+FACE_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+    "face_landmarker/float16/latest/face_landmarker.task"
+)
 
 # 1. 官方标准通用美学模型 (ViT-B/32 极速版 ~335MB)
 STANDARD_ONNX_PATH = MODELS_DIR / "standard_aesthetic_model.onnx"
@@ -98,9 +104,22 @@ class ModelStatus:
     mlp_path: str
     mlp_l14_ready: bool
     mlp_l14_path: str
+    face_landmarker_ready: bool
+    face_landmarker_path: str
     active_mode: str  # "standard_b32" | "standard_l14" | "custom_b32" | "custom_l14" | "custom"
     active_onnx_path: str
     is_fully_ready: bool
+
+
+def get_resolved_face_landmarker_path() -> Path | None:
+    """Return the optional local portrait model without triggering a download."""
+    for candidate in (FACE_LANDMARKER_PATH, FACE_LANDMARKER_BUNDLE_PATH):
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 1024 * 1024:
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 def get_active_model_mode() -> str:
@@ -464,6 +483,7 @@ def check_all_models() -> ModelStatus:
     active_mode = get_active_model_mode()
     active_onnx = get_active_aesthetic_model_path()
     active_path_str = str(active_onnx) if active_onnx else ""
+    face_landmarker = get_resolved_face_landmarker_path()
 
     is_ready = bool(std_ok or std_l14_ok or custom_ok or custom_l14_ok or (clip_ok and mlp_ok))
 
@@ -490,6 +510,8 @@ def check_all_models() -> ModelStatus:
         mlp_path=str(mlp_p) if mlp_p else str(MLP_WEIGHTS_PATH),
         mlp_l14_ready=mlp_l14_ok,
         mlp_l14_path=str(mlp_l14_p) if mlp_l14_p else str(MLP_L14_WEIGHTS_PATH),
+        face_landmarker_ready=face_landmarker is not None,
+        face_landmarker_path=str(face_landmarker or FACE_LANDMARKER_PATH),
         active_mode=active_mode,
         active_onnx_path=active_path_str,
         is_fully_ready=is_ready,
@@ -534,6 +556,31 @@ def download_file_with_progress(
         if dest_path.exists():
             dest_path.unlink()
         temp_path.rename(dest_path)
+
+
+def download_face_landmarker_model(
+    progress_callback: Callable[[str, float], None] | None = None,
+) -> bool:
+    """Download the optional MediaPipe portrait model for local eye-state checks."""
+    if progress_callback:
+        progress_callback("正在下载人像与闭眼检测模型…", 0.0)
+
+    download_file_with_progress(
+        FACE_LANDMARKER_URL,
+        FACE_LANDMARKER_PATH,
+        progress_callback,
+        "人像与闭眼检测模型",
+    )
+    ready = get_resolved_face_landmarker_path() is not None
+    if not ready:
+        try:
+            FACE_LANDMARKER_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RuntimeError("下载完成，但模型文件校验失败")
+    if progress_callback:
+        progress_callback("✅ 人像与闭眼检测模型下载完成！", 1.0)
+    return True
 
 
 def download_clip_model(
@@ -793,4 +840,3 @@ def fuse_standard_l14_onnx(
     )
     _notify(f"✅ Aesthetic 3 ONNX 导出成功 ({STANDARD_L14_ONNX_PATH.stat().st_size / (1024*1024):.1f} MB)！")
     return STANDARD_L14_ONNX_PATH
-

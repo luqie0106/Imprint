@@ -98,6 +98,13 @@ _DATETIME_FMT = "%Y:%m:%d %H:%M:%S"
 DEFAULT_TIME_GAP_SECONDS: float = 1.5
 DEFAULT_MAX_HAMMING_DISTANCE: int = 12   # dHash 64 位中允许的最大不同位数
 DEFAULT_REVIEW_SUBDIR: str = "审查_连拍淘汰"
+DEFAULT_DEFECT_SUBDIR: str = "审查_明显废片"
+
+# 绝对锐度质量在固定预览尺寸上计算，避免把原始 Laplacian 方差直接
+# 用在不同分辨率的图像之间比较。低于此值才视为“明显虚焦”；阈值刻意
+# 保守，纹理不足的普通照片不会仅凭单一锐度指标被删除（实际只会移动）。
+ABSOLUTE_SHARPNESS_SIZE: int = 256
+ABSOLUTE_BLUR_THRESHOLD: float = 0.08
 
 _CENTER_CROP_RATIO: float = 0.6
 _SHARPNESS_EQUAL_RATIO: float = 0.92
@@ -159,19 +166,48 @@ def _resolve_dynamic_weights(
         aesthetic_weight = 1.0 - technical_weight
 
     if sharp_signal >= 0.45 and exposure_signal >= 0.45:
-        reason = "清晰度与曝光差异明显，已提高技术质量权重"
+        reason = "自适应：清晰度与曝光差异明显，已提高技术质量权重"
     elif sharp_signal >= 0.45:
-        reason = "检测到清晰度差异，已提高对焦与细节权重"
+        reason = "自适应：检测到清晰度差异，已提高对焦与细节权重"
     elif exposure_signal >= 0.45:
-        reason = "检测到曝光差异，已提高高光与暗部保护权重"
+        reason = "自适应：检测到曝光差异，已提高高光与暗部保护权重"
     else:
-        reason = "组内技术质量接近，以审美表现为主"
+        reason = "自适应：组内技术质量接近，以审美表现为主"
 
     return {
         "aesthetic": aesthetic_weight,
         "sharpness": sharpness_weight,
         "exposure": exposure_weight,
     }, reason
+
+
+def _normalize_custom_weights(weights: Any) -> dict[str, float] | None:
+    """校验并归一化自定义权重；非法输入返回 ``None`` 以便安全回退。"""
+    if not isinstance(weights, dict):
+        return None
+    required = ("aesthetic", "sharpness", "exposure")
+    try:
+        values = {key: float(weights[key]) for key in required}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if any(not np.isfinite(value) or value < 0.0 for value in values.values()):
+        return None
+    total = sum(values.values())
+    if not np.isfinite(total) or total <= 1e-12:
+        return None
+    return {key: value / total for key, value in values.items()}
+
+
+def _normalize_subdir(value: Any, fallback: str) -> str:
+    """将目录参数限制为输入目录内的相对路径，防止意外越界。"""
+    try:
+        raw = str(value).strip()
+        candidate = Path(raw)
+    except Exception:
+        return fallback
+    if not raw or candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        return fallback
+    return raw
 
 # ── 动态加载 ONNX Runtime ───────────────────────────────────────────────────
 try:
@@ -237,6 +273,8 @@ class BurstFilterResult:
     burst_groups: int = 0
     moved: int = 0
     review_dir: Path | None = None
+    defect_dir: Path | None = None
+    defect_moved: int = 0
     errors: list[str] = field(default_factory=list)
     groups: list[dict[str, Any]] = field(default_factory=list)
 
@@ -381,6 +419,74 @@ class RawEvaluator:
         """计算锐度：人脸优先；无人脸时使用九宫格中细节最充足的区域。"""
         _, regions = self.sharpness_profile(img_rgb)
         return self._aggregate_sharpness_regions(regions)
+
+    @staticmethod
+    def absolute_sharpness_quality(img_rgb: np.ndarray) -> float:
+        """返回与分辨率无关的绝对清晰度质量（0~1）。
+
+        输入先缩放到固定预览尺寸，再结合稳健的高频 Laplacian 与梯度
+        分位数。相比直接比较 Laplacian 方差，这个指标不会因原图像素
+        数量变化而产生不可比的数值；纹理门控也能避免平坦区域的微小
+        噪声被误报为细节。
+        """
+        try:
+            arr = np.asarray(img_rgb)
+            if arr.size == 0 or arr.ndim not in (2, 3):
+                return 0.0
+            if arr.ndim == 3:
+                if arr.shape[2] == 1:
+                    arr = arr[:, :, 0]
+                elif arr.shape[2] >= 3:
+                    arr = cv2.cvtColor(RawEvaluator._to_unit_float(arr), cv2.COLOR_RGB2GRAY)
+                else:
+                    return 0.0
+            else:
+                arr = RawEvaluator._to_unit_float(arr)
+            if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] < 2:
+                return 0.0
+
+            height, width = arr.shape
+            scale = ABSOLUTE_SHARPNESS_SIZE / max(height, width)
+            if scale != 1.0:
+                resized_w = max(2, round(width * scale))
+                resized_h = max(2, round(height * scale))
+                arr = cv2.resize(arr, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+            arr = np.nan_to_num(arr.astype(np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+            arr = np.clip(arr, 0.0, 1.0)
+
+            lap = np.abs(cv2.Laplacian(arr, cv2.CV_32F, ksize=3))
+            sx = cv2.Sobel(arr, cv2.CV_32F, 1, 0, ksize=3)
+            sy = cv2.Sobel(arr, cv2.CV_32F, 0, 1, ksize=3)
+            gradient = cv2.magnitude(sx, sy)
+
+            # 分位数比均值更不受大面积天空、水面或孤立噪点影响。
+            lap_signal = float(np.clip(np.percentile(lap, 90) / 1.0, 0.0, 1.0))
+            gradient_signal = float(np.clip(np.percentile(gradient, 90) / 3.0, 0.0, 1.0))
+            texture_gate = float(np.clip(np.std(arr) / 0.10, 0.0, 1.0))
+            quality = (0.45 * lap_signal + 0.55 * gradient_signal) * texture_gate
+            return float(np.clip(quality, 0.0, 1.0))
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _to_unit_float(img: np.ndarray) -> np.ndarray:
+        """把常见 8/16-bit 与浮点图像安全归一化到 0~1。"""
+        arr = np.asarray(img)
+        if arr.dtype.kind in "ui":
+            info = np.iinfo(arr.dtype)
+            scale = float(info.max) if info.max else 1.0
+            return np.clip(arr.astype(np.float32) / scale, 0.0, 1.0)
+        arr = arr.astype(np.float32, copy=False)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        max_value = float(np.max(arr)) if arr.size else 0.0
+        min_value = float(np.min(arr)) if arr.size else 0.0
+        if max_value > 1.0 or min_value < 0.0:
+            if max_value > 255.0:
+                scale = max(max_value, 1.0)
+            else:
+                scale = 255.0
+            arr = arr / scale
+        return np.clip(arr, 0.0, 1.0)
 
     def sharpness_profile(self, img_rgb: np.ndarray) -> tuple[str, list[float]]:
         """返回检测模式和各区域的原始清晰度，供连拍组选择相同位置比较。"""
@@ -854,16 +960,30 @@ class BurstFilter:
         max_workers: int | None = None,
         use_gpu: bool = True,
         progress_callback: Callable[[str], None] | None = None,
+        defect_subdir: str = DEFAULT_DEFECT_SUBDIR,
+        weight_mode: str = "adaptive",
+        custom_weights: dict[str, float] | None = None,
+        all_blurry_action: str = "keep",
+        eye_detection: bool = False,
     ) -> None:
         self.gap_seconds = gap_seconds
         self.max_hamming_distance = max_hamming_distance
-        self.review_subdir = review_subdir
+        self.review_subdir = _normalize_subdir(review_subdir, DEFAULT_REVIEW_SUBDIR)
+        self.defect_subdir = _normalize_subdir(defect_subdir, DEFAULT_DEFECT_SUBDIR)
         self.keep_count = max(1, keep_count)
         if max_workers is None or max_workers <= 0:
             max_workers = max(1, round((os.cpu_count() or 4) * 0.8))
         self.max_workers = max_workers
         self.use_gpu = use_gpu
         self.progress_callback = progress_callback
+        normalized_mode = str(weight_mode).strip().lower() if weight_mode is not None else "adaptive"
+        self.weight_mode = normalized_mode if normalized_mode in {"adaptive", "custom"} else "adaptive"
+        self.custom_weights = _normalize_custom_weights(custom_weights)
+        self.all_blurry_action = str(all_blurry_action).strip().lower() if all_blurry_action is not None else "keep"
+        if self.all_blurry_action not in {"keep", "review", "reject"}:
+            self.all_blurry_action = "keep"
+        self.eye_detection = bool(eye_detection)
+        self._eye_evaluator = self._load_eye_evaluator() if self.eye_detection else None
 
         self._exif_reader = RawExifReader()
         self._scorer = RawEvaluator()
@@ -889,6 +1009,21 @@ class BurstFilter:
             self._notify(f"🚀 已启用 {engine_str} 美学评分模型！")
         else:
             self._notify("ℹ️ 未检测到有效的美学模型，降级为纯 OpenCV 锐度过滤。")
+
+    @staticmethod
+    def _load_eye_evaluator() -> Any | None:
+        """可选加载闭眼检测器；缺少 portrait_quality 时安全降级。"""
+        try:
+            from portrait_quality import EyeClosureEvaluator
+            evaluator = EyeClosureEvaluator()
+            available = getattr(evaluator, "available", None)
+            if available is False:
+                return None
+            if not callable(getattr(evaluator, "analyze", None)):
+                return None
+            return evaluator
+        except Exception:
+            return None
 
     def run(self, input_dir: Path | str) -> BurstFilterResult:
         import gc
@@ -924,13 +1059,17 @@ class BurstFilter:
                 return result
 
             review_dir = input_dir / self.review_subdir
+            defect_dir = input_dir / self.defect_subdir
             review_dir.mkdir(parents=True, exist_ok=True)
+            defect_dir.mkdir(parents=True, exist_ok=True)
             result.review_dir = review_dir
+            result.defect_dir = defect_dir
 
             for idx, group in enumerate(burst_groups, 1):
                 self._notify(f"处理连拍组 {idx}/{len(burst_groups)}（包含 {len(group)} 次连拍拍摄）…")
-                moved, errors, group_detail = self._process_group(group, review_dir)
+                moved, errors, group_detail = self._process_group(group, review_dir, defect_dir)
                 result.moved += moved
+                result.defect_moved += int(group_detail.get("defect_moved", 0)) if group_detail else 0
                 result.errors.extend(errors)
                 if group_detail:
                     group_detail["index"] = idx
@@ -975,7 +1114,7 @@ class BurstFilter:
         return shots
 
     def _process_group(
-        self, group: list[Any], review_dir: Path
+        self, group: list[Any], review_dir: Path, defect_dir: Path | None = None
     ) -> tuple[int, list[str], dict[str, Any]]:
         """
         对连拍组内所有照片实体进行多维度评估，综合加权后保留前 keep_count 张。
@@ -983,6 +1122,9 @@ class BurstFilter:
 
         组内差异越明显，对应的技术质量权重越高；差异很小时以审美为主。
         """
+        if defect_dir is None:
+            defect_dir = review_dir.parent / self.defect_subdir
+
         @dataclass
         class _EvaluatedShot:
             shot: PhotoShot
@@ -993,6 +1135,12 @@ class BurstFilter:
             _sharp_mode: str = "fallback"
             _sharp_profile: list[float] = field(default_factory=list)
             _norm_sharp: float = 0.0
+            absolute_sharpness: float = 0.0
+            absolute_available: bool = False
+            eye_info: dict[str, Any] = field(default_factory=dict)
+            eye_defect: bool = False
+            severe_blur: bool = False
+            reject_reasons: list[str] = field(default_factory=list)
             final_score: float = -1.0
 
             @property
@@ -1017,6 +1165,51 @@ class BurstFilter:
                 es.sharpness = self._scorer._aggregate_sharpness_regions(es._sharp_profile)
                 es.exposure  = self._scorer.exposure_score(preview)
                 es.aesthetic = self._aesthetic_scorer.score(preview)
+                absolute_fn = getattr(self._scorer, "absolute_sharpness_quality", None)
+                if callable(absolute_fn):
+                    try:
+                        absolute = float(absolute_fn(preview))
+                        if np.isfinite(absolute):
+                            es.absolute_sharpness = float(np.clip(absolute, 0.0, 1.0))
+                            es.absolute_available = True
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+
+                if self._eye_evaluator is not None:
+                    try:
+                        eye_result = self._eye_evaluator.analyze(preview)
+                        def _eye_value(name: str, default: Any = 0) -> Any:
+                            if isinstance(eye_result, dict):
+                                return eye_result.get(name, default)
+                            return getattr(eye_result, name, default)
+
+                        face_count = int(_eye_value("face_count", 0) or 0)
+                        closed_count = int(_eye_value("closed_face_count", 0) or 0)
+                        uncertain_count = int(_eye_value("uncertain_face_count", 0) or 0)
+                        blink_score = _eye_value("max_blink_score", None)
+                        try:
+                            blink_score = float(blink_score) if blink_score is not None else None
+                        except (TypeError, ValueError):
+                            blink_score = None
+                        es.eye_info = {
+                            "face_count": max(0, face_count),
+                            "closed_face_count": max(0, closed_count),
+                            "uncertain_face_count": max(0, uncertain_count),
+                            "max_blink_score": blink_score,
+                        }
+                        # 只有有人脸、明确闭眼且没有不确定脸时才进入硬性废片。
+                        es.eye_defect = bool(
+                            face_count > 0 and closed_count > 0 and uncertain_count == 0
+                        )
+                        if es.eye_defect:
+                            es.reject_reasons.append("closed_eyes")
+                    except Exception:
+                        # 第三方模型输出不稳定时必须保守保留，不能淘汰照片。
+                        es.eye_info = {}
+
+                if es.absolute_available and es.absolute_sharpness < ABSOLUTE_BLUR_THRESHOLD:
+                    es.severe_blur = True
+                    es.reject_reasons.append("severe_blur")
                 return es
             except Exception as exc:
                 es.failed = True
@@ -1072,9 +1265,15 @@ class BurstFilter:
             max(es.exposure for es in valid) - min(es.exposure for es in valid)
             if valid else 0.0
         )
-        weights, weight_reason = _resolve_dynamic_weights(
-            sharpness_spread, exposure_spread
-        )
+        if self.weight_mode == "custom" and self.custom_weights is not None:
+            weights = dict(self.custom_weights)
+            weight_reason = "自定义：使用用户提供的审美/清晰度/曝光权重（已归一化）"
+        else:
+            weights, weight_reason = _resolve_dynamic_weights(
+                sharpness_spread, exposure_spread
+            )
+            if self.weight_mode == "custom":
+                weight_reason = "自适应：自定义权重非法或总和为零，已安全回退"
         for es in valid:
             es.final_score = (
                 es.aesthetic     * weights["aesthetic"]
@@ -1085,19 +1284,30 @@ class BurstFilter:
             if not hasattr(es, 'final_score'):
                 es.final_score = -1.0
 
-        keep_n = min(self.keep_count, len(valid))
         sorted_valid = sorted(valid, key=lambda x: x.final_score, reverse=True)
-        top = sorted_valid[:keep_n]
+        qualified = [es for es in sorted_valid if not es.severe_blur and not es.eye_defect]
+        all_blurry = bool(valid) and all(es.severe_blur for es in valid)
+        if all_blurry:
+            # 全组均明显虚焦时，keep/review 都至少保留相对最佳一张，
+            # reject 才会把整组移入明显废片目录。
+            top = [] if self.all_blurry_action == "reject" else sorted_valid[:1]
+            keep_n = len(top)
+        else:
+            keep_n = min(self.keep_count, len(qualified))
+            top = qualified[:keep_n]
         top_shots: set[PhotoShot] = {es.shot for es in top}
 
         # 保留边界的分差越小，越值得用户人工复核。
         confidence_margin = 1.0
-        if keep_n > 0 and len(sorted_valid) > keep_n:
+        rank_candidates = sorted_valid if all_blurry else qualified
+        if keep_n > 0 and len(rank_candidates) > keep_n:
             confidence_margin = max(
                 0.0,
-                sorted_valid[keep_n - 1].final_score - sorted_valid[keep_n].final_score,
+                rank_candidates[keep_n - 1].final_score - rank_candidates[keep_n].final_score,
             )
-        needs_review = bool(errors) or confidence_margin < 0.08
+        needs_review = bool(errors) or confidence_margin < 0.08 or (
+            all_blurry and self.all_blurry_action == "review"
+        )
         sharpest_shot = max(valid, key=lambda x: x.sharpness).shot if valid else None
         aesthetic_best_shot = max(valid, key=lambda x: x.aesthetic).shot if valid else None
         original_paths: dict[PhotoShot, list[Path]] = {
@@ -1110,32 +1320,91 @@ class BurstFilter:
             es.shot: es.shot.primary_path for es in evaluated_list
         }
 
-        # ── 阶段 4：移动淘汰照片（连同 RAW+JPG/HIF 等伴生文件一同移动）─────────
-        moved = 0
+        categories: dict[PhotoShot, str] = {}
         for es in evaluated_list:
-            if es.shot in top_shots or es.failed:
-                continue
-            for path_index, fpath in enumerate(es.shot.all_paths):
-                if not fpath.exists():
+            if es.failed or es.shot in top_shots:
+                categories[es.shot] = "keep"
+            elif es.severe_blur or es.eye_defect or (all_blurry and self.all_blurry_action == "reject"):
+                categories[es.shot] = "defect"
+            else:
+                categories[es.shot] = "review"
+                if not es.reject_reasons:
+                    es.reject_reasons.append("lower_score")
+
+        def _move_shot(shot: PhotoShot, target_dir: Path) -> tuple[int, list[tuple[Path, Path]], str | None]:
+            """以 PhotoShot 为事务单位移动全部伴生文件，失败时回滚已移动项。"""
+            target_dir.mkdir(parents=True, exist_ok=True)
+            reserved: set[Path] = set()
+            plan: list[tuple[Path, Path]] = []
+            for source in shot.all_paths:
+                if not source.exists():
                     continue
-                try:
-                    dest = review_dir / fpath.name
-                    if dest.exists():
-                        dest = review_dir / f"{fpath.stem}_dup{fpath.suffix}"
-                    shutil.move(str(fpath), str(dest))
-                    final_paths[es.shot][path_index] = dest
-                    if fpath == es.shot.primary_path:
-                        final_primary_paths[es.shot] = dest
-                    moved += 1
-                except Exception as exc:
-                    msg = f"移动 {fpath.name} 失败: {exc}"
-                    warnings.warn(msg)
-                    errors.append(msg)
+                destination = target_dir / source.name
+                suffix_index = 1
+                while destination.exists() or destination in reserved:
+                    destination = target_dir / f"{source.stem}_dup{suffix_index}{source.suffix}"
+                    suffix_index += 1
+                reserved.add(destination)
+                plan.append((source, destination))
+
+            completed: list[tuple[Path, Path]] = []
+            try:
+                for source, destination in plan:
+                    shutil.move(str(source), str(destination))
+                    completed.append((source, destination))
+            except Exception as exc:
+                rollback_errors: list[str] = []
+                for source, destination in reversed(completed):
+                    try:
+                        if destination.exists():
+                            shutil.move(str(destination), str(source))
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"回滚 {destination.name} 失败: {rollback_exc}")
+                suffix = f"；{'；'.join(rollback_errors)}" if rollback_errors else ""
+                return 0, [], f"移动 {shot.primary_path.name} 失败: {exc}{suffix}"
+
+            for source, destination in completed:
+                for path_index, original in enumerate(shot.all_paths):
+                    if original == source:
+                        final_paths[shot][path_index] = destination
+                        break
+                if source == shot.primary_path:
+                    final_primary_paths[shot] = destination
+            return len(completed), completed, None
+
+        # ── 阶段 4：按照片实体移动，RAW+JPG/HIF 失败时整组回滚 ──────────────
+        moved = 0
+        defect_moved = 0
+        for es in evaluated_list:
+            category = categories[es.shot]
+            if category == "keep":
+                continue
+            target = defect_dir if category == "defect" else review_dir
+            count, _, error = _move_shot(es.shot, target)
+            if error:
+                warnings.warn(error)
+                errors.append(error)
+                # 事务回滚后该 shot 仍在原目录，不能在结果/UI 中声称它已
+                # 进入审查或明显废片目录；记录原因供人工复核。
+                categories[es.shot] = "keep"
+                if "move_failed" not in es.reject_reasons:
+                    es.reject_reasons.append("move_failed")
+                continue
+            moved += count
+            if category == "defect":
+                defect_moved += count
+
+        if errors:
+            needs_review = True
 
         ranks = {es.shot: rank for rank, es in enumerate(sorted_valid, 1)}
         group_detail = {
             "shot_count": len(shots),
             "review_dir": str(review_dir),
+            "defect_dir": str(defect_dir),
+            "defect_moved": defect_moved,
+            "all_blurry": all_blurry,
+            "all_blurry_action": self.all_blurry_action if all_blurry else None,
             "confidence_margin": round(float(confidence_margin), 4),
             "needs_review": needs_review,
             "weights": {
@@ -1150,16 +1419,25 @@ class BurstFilter:
                     "path": str(final_primary_paths[es.shot]),
                     "paths": [str(path) for path in final_paths[es.shot]],
                     "original_paths": [str(path) for path in original_paths[es.shot]],
+                    "destination": str(final_primary_paths[es.shot]),
+                    "destination_dir": str(final_primary_paths[es.shot].parent),
+                    "category": categories[es.shot],
+                    "reject_reasons": list(es.reject_reasons),
                     "companion_count": len(es.shot.all_paths),
-                    "kept": es.shot in top_shots,
+                    "kept": categories[es.shot] == "keep",
                     "failed": es.failed,
                     "rank": ranks.get(es.shot),
                     "sharpness": round(float(es._norm_sharp), 4),
+                    "absolute_sharpness": round(float(es.absolute_sharpness), 4),
                     "exposure": round(float(es.exposure), 4),
                     "aesthetic": round(float(es.aesthetic), 4),
                     "score": round(float(es.final_score), 4),
                     "sharpest": es.shot == sharpest_shot,
                     "aesthetic_best": es.shot == aesthetic_best_shot,
+                    "eye": dict(es.eye_info),
+                    "face_count": int(es.eye_info.get("face_count", 0)),
+                    "closed_face_count": int(es.eye_info.get("closed_face_count", 0)),
+                    "eye_defect": es.eye_defect,
                 }
                 for es in evaluated_list
             ],

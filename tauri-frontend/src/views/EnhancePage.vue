@@ -637,7 +637,7 @@ onBeforeUnmount(() => {
           <h2 class="mb-3 text-sm font-semibold">导出</h2>
           <button @click="chooseOutput" class="w-full truncate rounded-xl border border-slate-200 px-3 py-2 text-left text-[11px] text-slate-500 hover:border-blue-400 dark:border-zinc-700" :title="outputDir"><FolderOpen class="mr-1.5 inline h-3.5 w-3.5" />{{ outputDir || "选择输出目录" }}</button>
           <div class="mt-3 space-y-1.5 rounded-xl bg-emerald-50 p-3 text-[11px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
-            <div><ShieldCheck class="mr-1 inline h-3.5 w-3.5" />原始照片始终保持不变</div><div>16-bit Linear / Demosaiced DNG</div><div>文件名增加 _dehaze 后缀</div>
+            <div><ShieldCheck class="mr-1 inline h-3.5 w-3.5" />原始照片始终保持不变</div><div>与原照片位深一致的 Linear / Demosaiced DNG</div><div>文件名增加 _dehaze 后缀</div>
           </div>
           <p class="mt-2 text-[10px] leading-4 text-slate-400">JPG、PNG 等普通图片会生成 RGB Linear DNG，不会被标记成相机传感器 RAW。</p>
           <button v-if="!isRunning" @click="startBatch" :disabled="!files.length" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"><Play class="h-3.5 w-3.5" />{{ files.length > 1 ? `处理并导出 ${files.length} 张` : "处理并导出" }}</button>

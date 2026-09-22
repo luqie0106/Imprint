@@ -47,6 +47,7 @@ from model_manager import (
     check_all_models,
     download_clip_l14_model,
     download_clip_model,
+    download_face_landmarker_model,
     get_active_model_mode,
     set_active_model_mode,
     get_resolved_mlp_path,
@@ -58,6 +59,13 @@ from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT
 from dehaze import DehazeParams, apply_dehaze
 from dng_writer import write_linear_dng
 from image_io import OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES, read_image, scan_photo_directory, to_uint16
+from lens_correction import (
+    LensCorrectionError,
+    LensCorrectionNotAppliedError,
+    LensMatchError,
+    LensfunUnavailableError,
+    apply_lens_correction,
+)
 
 import io
 import cv2
@@ -125,10 +133,15 @@ class BurstRequest(BaseModel):
     gap_seconds: float = 1.5
     max_hamming_distance: int = 12
     review_subdir: str = "审查_连拍淘汰"
+    defect_subdir: str = "审查_明显废片"
     keep_count: int = 1
     max_workers: int = 4
     use_gpu: bool = False
     include_previews: bool = False
+    weight_mode: Literal["adaptive", "custom"] = "adaptive"
+    custom_weights: dict[str, float] | None = None
+    all_blurry_action: Literal["keep", "review", "reject"] = "keep"
+    eye_detection: bool = False
 
 
 class BurstDecisionRequest(BaseModel):
@@ -136,7 +149,7 @@ class BurstDecisionRequest(BaseModel):
 
 
 class DownloadModelRequest(BaseModel):
-    model: Literal["clip_b32", "clip_l14"]
+    model: Literal["clip_b32", "clip_l14", "face_landmarker"]
     use_mirror: bool = True
 
 
@@ -212,10 +225,17 @@ def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
             original_paths = [Path(str(path)) for path in shot.get("original_paths", [])]
             if not original_paths:
                 original_paths = list(current_paths)
+            reject_category = "defect" if shot.get("category") == "defect" else "review"
+            reject_dir_value = (
+                group.get("defect_dir") if reject_category == "defect"
+                else group.get("review_dir")
+            )
             path_map[photo_id] = {
                 "current_paths": current_paths,
                 "original_paths": original_paths,
-                "review_dir": Path(str(group.get("review_dir", ""))),
+                "review_dir": Path(str(reject_dir_value or "")),
+                "reject_category": reject_category,
+                "category": str(shot.get("category", "keep" if shot.get("kept") else reject_category)),
                 "kept": bool(shot.get("kept")),
             }
             shots.append({
@@ -296,6 +316,7 @@ def _apply_preview_decision(record: dict[str, Any], kept: bool) -> int:
 
     record["current_paths"] = targets
     record["kept"] = kept
+    record["category"] = "keep" if kept else record.get("reject_category", "review")
     return len(moved_pairs)
 
 
@@ -335,10 +356,15 @@ async def run_burst(req: BurstRequest):
                     gap_seconds=req.gap_seconds,
                     max_hamming_distance=req.max_hamming_distance,
                     review_subdir=req.review_subdir,
+                    defect_subdir=req.defect_subdir,
                     keep_count=req.keep_count,
                     max_workers=req.max_workers,
                     use_gpu=req.use_gpu,
                     progress_callback=on_progress,
+                    weight_mode=req.weight_mode,
+                    custom_weights=req.custom_weights,
+                    all_blurry_action=req.all_blurry_action,
+                    eye_detection=req.eye_detection,
                 )
                 result = await loop.run_in_executor(pool, lambda: flt.run(target_path))
 
@@ -355,9 +381,11 @@ async def run_burst(req: BurstRequest):
                     "total": getattr(result, "total", 0),
                     "burst_groups": getattr(result, "burst_groups", 0),
                     "moved": getattr(result, "moved", 0),
+                    "defect_moved": getattr(result, "defect_moved", 0),
                     "skipped_single": getattr(result, "skipped_single", 0),
                     "errors": getattr(result, "errors", []),
                     "review_dir": str(result.review_dir) if getattr(result, "review_dir", None) else "",
+                    "defect_dir": str(result.defect_dir) if getattr(result, "defect_dir", None) else "",
                     "preview_session": preview_session,
                     "groups": preview_groups,
                     "groups_shown": len(preview_groups),
@@ -416,6 +444,7 @@ def set_burst_decision(
     return {
         "ok": True,
         "kept": decision.kept,
+        "category": record.get("category", "keep" if decision.kept else "review"),
         "moved_files": moved_files,
         "message": "已恢复到原目录" if decision.kept else "已移入审查目录",
     }
@@ -499,6 +528,69 @@ def _enhance_public_job(job: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy({key: value for key, value in job.items() if key not in {"_cancel", "_thread"}})
 
 
+def _exception_text(exc: BaseException) -> str:
+    """Return exception text only for internal classification, never for responses."""
+    try:
+        return str(exc).casefold()
+    except Exception:
+        return ""
+
+
+def _is_enhance_unsupported_error(exc: BaseException) -> bool:
+    """Recognize RAW/container errors that should be reported as HTTP 422."""
+    if isinstance(exc, rawpy.LibRawFileUnsupportedError):
+        return True
+    return "unsupported file format or not raw file" in _exception_text(exc)
+
+
+def _enhance_error_message(exc: BaseException, *, output_dir: bool = False) -> str:
+    """Map enhancement failures to stable, path-free messages for the API."""
+    text = _exception_text(exc)
+    if _is_enhance_unsupported_error(exc):
+        return (
+            "当前 RAW 或压缩方式暂不受支持。若为尼康 HE/HE★，建议改用无损压缩 RAW，"
+            "或先用 Nikon NX Studio 转换为 TIFF 后再导入。"
+        )
+    if isinstance(exc, LensfunUnavailableError):
+        return "镜头校正组件不可用，已停止导出，避免生成未校正的 DNG。"
+    if isinstance(exc, LensMatchError):
+        return "找不到可靠的相机或镜头校正配置，未生成未校正的 DNG。"
+    if isinstance(exc, LensCorrectionNotAppliedError):
+        return "镜头配置没有可用的畸变或横向色差数据，未生成未校正的 DNG。"
+    if isinstance(exc, LensCorrectionError):
+        return "镜头像素校正失败，未生成未校正的 DNG。"
+    if isinstance(exc, (MemoryError, rawpy.LibRawUnsufficientMemoryError, rawpy.LibRawMemPoolOverflowError)) or any(
+        marker in text for marker in ("out of memory", "insufficient memory", "cannot allocate memory")
+    ):
+        return "处理照片时内存不足，请关闭其他应用后重试。"
+    if isinstance(exc, FileNotFoundError) or any(
+        marker in text for marker in ("no such file", "file not found", "does not exist", "不存在的照片")
+    ):
+        return "照片文件不存在或已被移动，请重新选择后重试。"
+    if isinstance(exc, PermissionError):
+        return (
+            "输出目录不可用，请检查目录权限和磁盘空间。"
+            if output_dir
+            else "没有权限读取照片或写入输出目录，请检查文件和目录权限。"
+        )
+    if output_dir and isinstance(exc, (OSError, ValueError)):
+        return "输出目录不可用，请检查目录权限和磁盘空间。"
+    if isinstance(exc, (rawpy.LibRawDataError, rawpy.LibRawFatalError)) or any(
+        marker in text
+        for marker in (
+            "corrupt",
+            "corrupted",
+            "truncated",
+            "unexpected end",
+            "invalid image",
+            "failed to decode",
+            "decode error",
+        )
+    ):
+        return "照片数据可能已损坏或不完整，请重新复制文件后重试。"
+    return "照片解码/处理失败，请确认文件完整且格式受支持。"
+
+
 def _encode_preview(image_rgb: np.ndarray) -> bytes:
     if image_rgb.dtype == np.uint16:
         image_rgb = np.clip(np.rint(image_rgb.astype(np.float32) / 257.0), 0, 255).astype(np.uint8)
@@ -572,10 +664,10 @@ def create_enhance_session(req: EnhanceSessionRequest):
             "count": len(files),
             "files": files,
             "default_output_dir": str(default_output),
-            "output_format": "16-bit Linear/Demosaiced DNG",
+            "output_format": "Source bit-depth Linear/Demosaiced DNG",
         }
     except Exception as exc:
-        return JSONResponse(status_code=400, content={"error": f"创建去朦胧会话失败: {exc}"})
+        return JSONResponse(status_code=400, content={"error": _enhance_error_message(exc)})
 
 
 @app.post("/api/enhance/preview")
@@ -610,7 +702,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             },
         )
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"error": f"生成去朦胧预览失败: {exc}"})
+        status_code = 422 if _is_enhance_unsupported_error(exc) else 500
+        return JSONResponse(status_code=status_code, content={"error": _enhance_error_message(exc)})
 
 
 @app.get("/api/enhance/thumbnail/{session_id}/{photo_id}")
@@ -704,18 +797,63 @@ def _run_enhance_job(
             image, metadata = read_image(path, preview=False)
             photo_params = _select_enhance_params(photo_id, params_by_photo, default_params)
             enhanced = apply_dehaze(to_uint16(image), photo_params)
+            corrected, correction = apply_lens_correction(
+                enhanced,
+                metadata,
+                # RAW exports must never silently succeed without a real
+                # Lensfun geometry/TCA pass. Standard RGB inputs remain
+                # exportable as required by the existing product behavior.
+                require_correction=getattr(metadata, "source_kind", "") == "raw",
+            )
             if cancel_event.is_set():
                 with _ENHANCE_LOCK:
                     item["status"] = "cancelled"
                     job["status"] = "cancelled"
                 break
-            output_path = write_linear_dng(enhanced, path, output_dir, metadata.exif)
+            output_metadata = dict(metadata.exif)
+            operations = []
+            if correction.distortion_applied:
+                operations.append("distortion")
+            if correction.tca_applied:
+                operations.append("tca")
+            if correction.vignetting_applied:
+                operations.append("vignetting")
+            if correction.applied:
+                output_metadata.update(
+                    {
+                        "LensCorrectionApplied": True,
+                        "LensCorrectionEngine": "Lensfun/lensfunpy",
+                        "LensCorrectionCamera": correction.camera_name or "",
+                        "LensCorrectionLens": correction.lens_name or "",
+                        "LensCorrectionOperations": ",".join(operations),
+                    }
+                )
+            output_path = write_linear_dng(
+                corrected,
+                path,
+                output_dir,
+                output_metadata,
+                bits_per_sample=metadata.bit_depth,
+            )
             with _ENHANCE_LOCK:
-                item.update({"status": "success", "output": str(output_path)})
+                item.update(
+                    {
+                        "status": "success",
+                        "output": str(output_path),
+                        "lens_correction": {
+                            "applied": correction.applied,
+                            "camera": correction.camera_name,
+                            "lens": correction.lens_name,
+                            "distortion": correction.distortion_applied,
+                            "tca": correction.tca_applied,
+                            "vignetting": correction.vignetting_applied,
+                        },
+                    }
+                )
                 job["success"] += 1
         except Exception as exc:
             with _ENHANCE_LOCK:
-                item.update({"status": "failed", "error": str(exc)})
+                item.update({"status": "failed", "error": _enhance_error_message(exc)})
                 job["failed"] += 1
         finally:
             with _ENHANCE_LOCK:
@@ -744,7 +882,7 @@ def run_enhance(req: EnhanceRunRequest):
         output_dir = output_dir.expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
-        return JSONResponse(status_code=400, content={"error": f"输出目录不可用: {exc}"})
+        return JSONResponse(status_code=400, content={"error": _enhance_error_message(exc, output_dir=True)})
     job_id = uuid.uuid4().hex
     job: dict[str, Any] = {
         "job_id": job_id, "status": "queued", "total": len(records), "processed": 0,
@@ -828,6 +966,8 @@ async def get_models_status():
             "mlp_path": status.mlp_path,
             "mlp_l14_ready": status.mlp_l14_ready,
             "mlp_l14_path": status.mlp_l14_path,
+            "face_landmarker_ready": status.face_landmarker_ready,
+            "face_landmarker_path": status.face_landmarker_path,
         }
     except Exception as exc:
         return JSONResponse(
@@ -846,6 +986,8 @@ async def get_models_status():
                 "mlp_path": "",
                 "mlp_l14_ready": False,
                 "mlp_l14_path": "",
+                "face_landmarker_ready": False,
+                "face_landmarker_path": "",
                 "error": str(exc),
             },
         )
@@ -877,9 +1019,13 @@ async def download_model(req: DownloadModelRequest):
                     success = await loop.run_in_executor(
                         pool, lambda: download_clip_model(use_mirror=req.use_mirror, progress_callback=on_progress)
                     )
-                else:
+                elif req.model == "clip_l14":
                     success = await loop.run_in_executor(
                         pool, lambda: download_clip_l14_model(use_mirror=req.use_mirror, progress_callback=on_progress)
+                    )
+                else:
+                    success = await loop.run_in_executor(
+                        pool, lambda: download_face_landmarker_model(progress_callback=on_progress)
                     )
 
                 if success:

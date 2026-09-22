@@ -79,18 +79,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tauri-frontend/dist-python
-          key: sidecar-onefile-v2-${{ runner.os }}-${{ hashFiles('src/app_api.py', 'src/burst_filter.py', 'src/model_manager.py', 'src/onnx_exporter.py', 'src/dehaze.py', 'src/image_io.py', 'src/dng_writer.py', 'app_api.spec', 'requirements-build.txt') }}
+          key: sidecar-onedir-v4-${{ runner.os }}-${{ hashFiles('src/app_api.py', 'src/burst_filter.py', 'src/model_manager.py', 'src/portrait_quality.py', 'src/onnx_exporter.py', 'src/dehaze.py', 'src/image_io.py', 'src/dng_writer.py', 'src/lens_correction.py', 'third_party/lensfun-db/*.xml', 'third_party/licenses/*', 'THIRD_PARTY_NOTICES.md', 'LICENSE', 'app_api.spec', 'requirements-build.txt') }}
 
       - name: Build Python sidecar (macOS onedir)
         if: steps.cache-sidecar.outputs.cache-hit != 'true' && runner.os == 'macOS'
         run: pyinstaller app_api.spec --distpath tauri-frontend/dist-python --noconfirm
 
-      - name: Build Python sidecar (Windows onefile)
+      - name: Build Python sidecar (Windows onedir)
         if: steps.cache-sidecar.outputs.cache-hit != 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:IMPRINT_ONEFILE = "1"
-          pyinstaller app_api.spec --distpath tauri-frontend/dist-python --noconfirm
+        run: pyinstaller app_api.spec --distpath tauri-frontend/dist-python --noconfirm
 
       # ── Node.js ───────────────────────────────────────────────────────
       - name: Set up Node.js 20
@@ -129,13 +126,13 @@ jobs:
           APP="tauri-frontend/src-tauri/target/release/bundle/macos/Imprint.app"
           productbuild --component "$APP" /Applications Imprint-macOS-Installer.pkg
 
-      # Windows：单文件 sidecar + zlib 快速压缩，避免 NSIS 遍历 15000+ 个文件超时
+      # Windows：保留 onedir sidecar，使 LGPL Lensfun 动态库可被替换。
       - name: Build Tauri App and NSIS Installer (Windows)
         if: runner.os == 'Windows'
         working-directory: tauri-frontend
         shell: bash
         run: |
-          npm run tauri build -- --bundles nsis --config '{"bundle":{"resources":{"../dist-python/imprint_api.exe":"dist-python/imprint_api.exe"},"windows":{"nsis":{"compression":"zlib"}}}}'
+          npm run tauri build -- --bundles nsis --config '{"bundle":{"windows":{"nsis":{"compression":"zlib"}}}}'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -154,9 +151,9 @@ jobs:
           } else {
             Copy-Item "tauri-frontend\src-tauri\target\release\tauri-frontend.exe" "$out\Imprint.exe"
           }
-          # Python sidecar（Windows 专用单文件）
+          # Python sidecar（保留可替换的 Lensfun 动态库和许可证文件）
           New-Item -ItemType Directory -Force -Path "$out\dist-python" | Out-Null
-          Copy-Item "tauri-frontend\dist-python\imprint_api.exe" "$out\dist-python\imprint_api.exe"
+          Copy-Item "tauri-frontend\dist-python\imprint_api" "$out\dist-python\imprint_api" -Recurse
           # 清理调试符号
           Get-ChildItem -Path $out -Recurse -Filter "*.pdb" | Remove-Item -Force -ErrorAction SilentlyContinue
           # 使用 7-Zip 高速多线程压缩（避免 PowerShell Compress-Archive 单线程耗时 20+ 分钟）
