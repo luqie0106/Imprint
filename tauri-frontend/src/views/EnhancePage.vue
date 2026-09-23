@@ -6,7 +6,7 @@ import { BASE_URL } from "../stores/api";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
   LoaderCircle, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Square,
-  Maximize2, Minus, Plus, Sparkles,
+  Maximize2, Minus, Plus, Rows2, Sparkles,
 } from "lucide-vue-next";
 
 interface SessionFile { photo_id: string; name: string; extension: string }
@@ -30,6 +30,7 @@ interface EnhanceParams {
 
 type PreviewMode = "original" | "compare" | "enhanced";
 type ThumbnailState = "loading" | "loaded" | "error";
+type PhotoListLayout = "vertical" | "horizontal";
 
 type AdvancedParamKey = Exclude<keyof EnhanceParams, "strength">;
 
@@ -58,6 +59,7 @@ const emptyParams = ref<EnhanceParams>(cloneParams());
 const sessionId = ref("");
 const files = ref<SessionFile[]>([]);
 const thumbnailStates = ref<Record<string, ThumbnailState>>({});
+const photoListLayout = ref<PhotoListLayout>("vertical");
 const selectedId = ref("");
 const outputDir = ref("");
 const originalUrl = ref("");
@@ -84,6 +86,11 @@ let pointerDownY = 0;
 let pointerDownZoom = 1;
 let pointerMoved = false;
 const advancedOpen = ref(false);
+const gpuEnabled = ref(false);
+const gpuDetecting = ref(true);
+const gpuAvailable = ref(false);
+const gpuLabel = ref("正在检测 GPU…");
+const gpuPreferenceTouched = ref(false);
 const job = ref<EnhanceJob | null>(null);
 const actionMessage = ref("");
 const revealMenu = ref<{ left: number; top: number } | null>(null);
@@ -138,6 +145,15 @@ function thumbnailUrl(file: SessionFile) {
 
 function thumbnailState(photoId: string): ThumbnailState {
   return thumbnailStates.value[photoId] ?? "loading";
+}
+
+function compactFileName(name: string) {
+  const characters = Array.from(name);
+  return characters.length > 10 ? `${characters.slice(0, 10).join("")}…` : name;
+}
+
+function isPhotoListLayout(layout: PhotoListLayout) {
+  return photoListLayout.value === layout;
 }
 
 function setThumbnailState(photoId: string, state: ThumbnailState) {
@@ -348,6 +364,36 @@ async function createSession(payload: { paths?: string[]; input_dir?: string }) 
   }
 }
 
+async function fetchGpuStatus() {
+  const baseUrl = BASE_URL.value;
+  if (!baseUrl) return;
+  gpuDetecting.value = true;
+  gpuAvailable.value = false;
+  gpuLabel.value = "正在检测 GPU…";
+  try {
+    const response = await fetch(`${baseUrl}/api/enhance/gpu-status`);
+    if (!response.ok) throw new Error("GPU 状态检测失败");
+    const data = await response.json() as {
+      available?: boolean;
+      backends?: string[];
+      label?: string;
+    };
+    gpuAvailable.value = Boolean(data.available && Array.isArray(data.backends) && data.backends.length);
+    if (gpuAvailable.value) {
+      if (!gpuPreferenceTouched.value) gpuEnabled.value = true;
+    } else {
+      gpuEnabled.value = false;
+    }
+    gpuLabel.value = gpuAvailable.value ? (data.label || "GPU 可用") : "未检测到可用 GPU";
+  } catch {
+    gpuAvailable.value = false;
+    gpuEnabled.value = false;
+    gpuLabel.value = "未检测到可用 GPU";
+  } finally {
+    gpuDetecting.value = false;
+  }
+}
+
 async function chooseSingle() {
   const result = await open({ multiple: false, directory: false, title: "选择一张照片" });
   if (typeof result === "string") await createSession({ paths: [result] });
@@ -374,7 +420,7 @@ async function fetchPreview(mode: "original" | "dehazed", generation: number) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       session_id: sessionId.value, photo_id: selectedId.value, params: params.value,
-      max_edge: 1800, mode,
+      max_edge: 1800, mode, use_gpu: gpuEnabled.value,
     }),
   });
   if (!response.ok) {
@@ -468,6 +514,7 @@ async function startBatch() {
         output_dir: outputDir.value,
         params: cloneParams(params.value),
         params_by_photo: paramsByPhotoPayload,
+        use_gpu: gpuEnabled.value,
       }),
     });
     const data = await response.json();
@@ -501,7 +548,13 @@ watch(selectedId, () => {
   void refreshPreview(true);
 });
 watch(params, schedulePreview, { deep: true });
+watch(gpuEnabled, () => {
+  if (sessionId.value && selectedId.value) void refreshPreview(false);
+});
 watch([fitWidth, fitHeight], clampPan);
+watch(BASE_URL, (value) => {
+  if (value) void fetchGpuStatus();
+}, { immediate: true });
 onMounted(() => {
   window.addEventListener("keydown", onWindowKeyDown);
   window.addEventListener("blur", closeRevealMenu);
@@ -523,8 +576,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="enhance-scroll h-full bg-slate-50 p-5 dark:bg-zinc-950">
-    <div class="mx-auto grid max-w-[1500px] gap-4 xl:grid-cols-[270px_minmax(0,1fr)_310px]">
-      <aside class="space-y-4">
+    <div class="enhance-layout mx-auto grid h-full min-h-0 max-w-[1500px] gap-4">
+      <aside class="enhance-left-column min-h-0 space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-3 flex items-center gap-2"><ImagePlus class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">输入照片</h2></div>
           <div class="grid gap-2">
@@ -538,30 +591,37 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-if="files.length" class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div class="border-b border-slate-100 px-4 py-3 text-xs font-semibold dark:border-zinc-800">照片列表</div>
-          <div class="photo-grid max-h-[420px] overflow-y-auto p-2">
+        <section v-if="files.length && photoListLayout === 'vertical'" class="photo-list-panel min-h-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-zinc-800">
+            <h2 class="text-xs font-semibold">照片列表</h2>
+            <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="照片列表布局">
+              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+            </div>
+          </div>
+          <div class="photo-list min-h-0 overflow-y-auto p-2">
             <button v-for="file in files" :key="file.photo_id" @click="selectedId = file.photo_id"
               type="button" :title="file.name" :aria-label="file.name"
-              class="photo-card min-w-0 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
+              class="photo-list-card flex min-w-0 w-full items-center gap-2 rounded-lg p-1.5 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
               :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
-              <span class="relative mb-1.5 block aspect-square w-full overflow-hidden rounded-lg bg-slate-100 dark:bg-zinc-800">
+              <span class="relative block h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100 dark:bg-zinc-800">
                 <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-500">
-                  <ImageIcon class="h-6 w-6" />
+                  <ImageIcon class="h-4 w-4" />
                 </span>
                 <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async"
                   class="absolute inset-0 block h-full w-full object-contain transition-opacity"
                   :class="thumbnailState(file.photo_id) === 'loaded' ? 'opacity-100' : 'opacity-0'"
                   @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
               </span>
-              <span class="block truncate">{{ file.name }}</span>
+              <span class="min-w-0 flex-1 truncate">{{ compactFileName(file.name) }}</span>
             </button>
           </div>
         </section>
+
       </aside>
 
-      <main class="min-w-0">
-        <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <main class="enhance-center-column min-h-0 min-w-0">
+        <section class="enhance-preview-card min-h-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-zinc-800">
             <div class="min-w-0"><div class="truncate text-sm font-semibold">{{ currentFile?.name || "去朦胧预览" }}</div><div class="mt-0.5 text-[11px] text-slate-400">{{ imageSize || "选择照片后生成参数化预览" }}</div></div>
             <div class="flex shrink-0 items-center gap-2">
@@ -578,7 +638,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div ref="previewViewport" class="relative flex min-h-[520px] items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in')) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel" @click="onPreviewClick" @contextmenu="onPreviewContextMenu">
+          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in')) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel" @click="onPreviewClick" @contextmenu="onPreviewContextMenu">
             <template v-if="originalUrl">
               <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
                 <div class="preview-stage relative shrink-0" :style="imageStageStyle">
@@ -610,9 +670,36 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="previewError" class="flex items-center gap-2 border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs text-rose-600 dark:border-rose-950 dark:bg-rose-950/30 dark:text-rose-300"><AlertCircle class="h-4 w-4" />{{ previewError }}</div>
         </section>
+
+        <section v-if="files.length && photoListLayout === 'horizontal'" class="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-zinc-800">
+            <h2 class="text-xs font-semibold">照片列表</h2>
+            <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="照片列表布局">
+              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+            </div>
+          </div>
+          <div class="photo-grid overflow-x-auto overflow-y-hidden p-2">
+            <button v-for="file in files" :key="file.photo_id" @click="selectedId = file.photo_id"
+              type="button" :title="file.name" :aria-label="file.name"
+              class="photo-card min-w-0 shrink-0 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
+              :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
+              <span class="relative mb-1.5 block h-20 w-full overflow-hidden rounded-lg bg-slate-100 dark:bg-zinc-800">
+                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-500">
+                  <ImageIcon class="h-6 w-6" />
+                </span>
+                <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async"
+                  class="absolute inset-0 block h-full w-full object-contain transition-opacity"
+                  :class="thumbnailState(file.photo_id) === 'loaded' ? 'opacity-100' : 'opacity-0'"
+                  @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
+              </span>
+              <span class="block truncate" :title="file.name">{{ compactFileName(file.name) }}</span>
+            </button>
+          </div>
+        </section>
       </main>
 
-      <aside class="space-y-4">
+      <aside class="enhance-right-column space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button type="button" @click="resetParams" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
           <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-400">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
@@ -623,6 +710,13 @@ onBeforeUnmount(() => {
               <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item.key] * 100) }}</span></span>
               <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ item.description }}</span>
               <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" />
+            </label>
+            <label class="flex cursor-pointer items-start gap-3 rounded-lg bg-slate-50 p-3 dark:bg-zinc-800" :class="gpuAvailable && !gpuDetecting ? '' : 'cursor-not-allowed opacity-60'">
+              <input v-model="gpuEnabled" @change="gpuPreferenceTouched = true" type="checkbox" :disabled="gpuDetecting || !gpuAvailable" class="mt-0.5 h-4 w-4 rounded accent-blue-600" aria-label="GPU 加速" />
+              <span class="min-w-0">
+                <span class="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-zinc-300">GPU 加速</span>
+                <span class="mt-1 block break-words text-[10px] leading-4" :class="gpuAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-zinc-500'">{{ gpuDetecting ? '正在检测 GPU…' : gpuLabel }}</span>
+              </span>
             </label>
             <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-blue-400">
               收起高级参数 <ChevronUp class="h-3.5 w-3.5" />
@@ -637,7 +731,7 @@ onBeforeUnmount(() => {
           <h2 class="mb-3 text-sm font-semibold">导出</h2>
           <button @click="chooseOutput" class="w-full truncate rounded-xl border border-slate-200 px-3 py-2 text-left text-[11px] text-slate-500 hover:border-blue-400 dark:border-zinc-700" :title="outputDir"><FolderOpen class="mr-1.5 inline h-3.5 w-3.5" />{{ outputDir || "选择输出目录" }}</button>
           <div class="mt-3 space-y-1.5 rounded-xl bg-emerald-50 p-3 text-[11px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
-            <div><ShieldCheck class="mr-1 inline h-3.5 w-3.5" />原始照片始终保持不变</div><div>与原照片位深一致的 Linear / Demosaiced DNG</div><div>文件名增加 _dehaze 后缀</div>
+            <div><ShieldCheck class="mr-1 inline h-3.5 w-3.5" />原始照片始终保持不变</div><div>RAW 导出包含原始数据和 16 位去朦胧图层</div><div>文件名增加 _dehaze 后缀</div>
           </div>
           <p class="mt-2 text-[10px] leading-4 text-slate-400">JPG、PNG 等普通图片会生成 RGB Linear DNG，不会被标记成相机传感器 RAW。</p>
           <button v-if="!isRunning" @click="startBatch" :disabled="!files.length" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"><Play class="h-3.5 w-3.5" />{{ files.length > 1 ? `处理并导出 ${files.length} 张` : "处理并导出" }}</button>
@@ -659,30 +753,76 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .enhance-scroll {
-  overflow-y: scroll;
-  scrollbar-gutter: stable;
+  overflow: hidden;
+}
+
+.enhance-layout {
+  grid-template-columns: clamp(150px, 17vw, 220px) minmax(0, 1fr) clamp(270px, 23vw, 300px);
+}
+
+.enhance-left-column,
+.enhance-center-column,
+.enhance-right-column {
+  min-height: 0;
+}
+
+.enhance-left-column {
+  display: flex;
+  flex-direction: column;
+}
+
+.enhance-left-column > section:first-child {
+  flex: 0 0 auto;
+}
+
+.photo-list-panel {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+}
+
+.enhance-center-column {
+  display: flex;
+  flex-direction: column;
+}
+
+.enhance-preview-card {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+}
+
+.enhance-right-column {
+  overflow-y: auto;
 }
 
 .photo-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  gap: 0.5rem;
+  overscroll-behavior-x: contain;
 }
 
 .photo-card {
-  border-bottom: 1px solid rgb(226 232 240);
+  flex: 0 0 120px;
+  width: 120px;
   padding: 0.5rem;
-}
-
-.photo-card:nth-child(odd):not(:last-child) {
   border-right: 1px solid rgb(226 232 240);
 }
 
-:global(.dark) .photo-card {
-  border-bottom-color: rgb(63 63 70);
+.photo-list-card + .photo-list-card {
+  margin-top: 0.25rem;
 }
 
-:global(.dark) .photo-card:nth-child(odd):not(:last-child) {
+.photo-card:last-child {
+  border-right: 0;
+}
+
+:global(.dark) .photo-card {
   border-right-color: rgb(63 63 70);
+}
+
+:global(.dark) .photo-card:last-child {
+  border-right: 0;
 }
 
 .preview-stage {

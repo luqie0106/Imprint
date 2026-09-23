@@ -1,8 +1,7 @@
 # Third-party notices
 
-Imprint includes or dynamically uses the following third-party components for
-lens correction. These notices do not change the Apache-2.0 license of Imprint
-itself.
+Imprint includes or dynamically uses the following third-party components.
+These notices do not change the Apache-2.0 license of Imprint itself.
 
 ## Lensfun library
 
@@ -41,3 +40,11 @@ itself.
 - Version: 1.18.0
 - License: MIT
 - License text: `third_party/licenses/LENSFUNPY_MIT.txt`
+
+## imagecodecs
+
+- Project: https://github.com/cgohlke/imagecodecs
+- Version: 2025.x
+- License: BSD 3-Clause; bundled codec libraries retain their respective licenses.
+- Used to encode lossless JPEG and JPEG XL image data in DNG exports.
+- Package and bundled library license files are collected with the Python sidecar.

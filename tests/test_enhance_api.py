@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import rawpy
@@ -13,6 +14,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import app_api
 from dehaze import DehazeParams
 from lens_correction import LensCorrectionResult, LensMatchError
+
+
+def test_linear_preview_encodes_display_srgb_brightness():
+    samples = np.array([0, 32768, 65535], dtype=np.uint16).reshape(1, 1, 3)
+    display = app_api._display_rgb8(samples, linear=True)
+    assert display.tolist() == [[[0, 188, 255]]]
+
+
+def test_enhance_preview_displays_linear_raw_with_srgb_transfer(monkeypatch, tmp_path: Path):
+    path = tmp_path / "sample.nef"
+    path.touch()
+    session_id = "linear-preview-session"
+    app_api._ENHANCE_SESSIONS[session_id] = {
+        "files": {"photo-1": path}, "created": 0.0,
+    }
+    app_api._ENHANCE_PREVIEW_CACHE.clear()
+    monkeypatch.setattr(
+        app_api, "read_image",
+        lambda *_args, **_kwargs: (
+            np.full((32, 32, 3), 32768, dtype=np.uint16),
+            SimpleNamespace(width=32, height=32, color_space="Linear sRGB"),
+        ),
+    )
+    try:
+        response = app_api.create_enhance_preview(app_api.EnhancePreviewRequest(
+            session_id=session_id, photo_id="photo-1", mode="original",
+        ))
+        assert response.status_code == 200
+        with Image.open(BytesIO(response.body)) as preview:
+            assert all(abs(channel - 188) <= 1 for channel in preview.getpixel((16, 16)))
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+        app_api._ENHANCE_PREVIEW_CACHE.clear()
 
 
 def test_enhance_params_request_accepts_and_converts_brightness_protection():
@@ -81,6 +115,7 @@ def test_enhance_job_uses_per_photo_params_and_default_fallback(monkeypatch, tmp
     }
 
     seen: dict[int, DehazeParams] = {}
+    seen_backends: list[str] = []
 
     class Metadata:
         exif = {}
@@ -90,8 +125,9 @@ def test_enhance_job_uses_per_photo_params_and_default_fallback(monkeypatch, tmp
         value = 1 if Path(path).name == first_path.name else 2
         return np.full((1, 1, 3), value, dtype=np.uint16), Metadata()
 
-    def fake_apply_dehaze(image: np.ndarray, params: DehazeParams):
+    def fake_apply_dehaze(image: np.ndarray, params: DehazeParams, *, backend: str):
         seen[int(image[0, 0, 0])] = params
+        seen_backends.append(backend)
         return image
 
     monkeypatch.setattr(app_api, "read_image", fake_read_image)
@@ -115,10 +151,56 @@ def test_enhance_job_uses_per_photo_params_and_default_fallback(monkeypatch, tmp
         )
         assert seen[1] == DehazeParams(strength=0.9)
         assert seen[2] == default_params
+        assert seen_backends == ["cpu", "cpu"]
         assert app_api._ENHANCE_JOBS[job_id]["status"] == "completed"
     finally:
         app_api._ENHANCE_SESSIONS.pop(session_id, None)
         app_api._ENHANCE_JOBS.pop(job_id, None)
+
+
+def test_enhance_preview_uses_backend_and_separates_gpu_cache(monkeypatch, tmp_path: Path):
+    session_id = "gpu-preview-session"
+    photo_id = "photo-1"
+    path = tmp_path / "photo.jpg"
+    path.touch()
+    app_api._ENHANCE_SESSIONS[session_id] = {
+        "files": {photo_id: path},
+        "created": 0.0,
+    }
+    app_api._ENHANCE_PREVIEW_CACHE.clear()
+    calls: list[str] = []
+
+    class Metadata:
+        width = 2
+        height = 2
+
+    def fake_read_image(*_args, **_kwargs):
+        return np.full((2, 2, 3), 100, dtype=np.uint8), Metadata()
+
+    def fake_apply_dehaze(image, _params, *, backend):
+        calls.append(backend)
+        return image
+
+    monkeypatch.setattr(app_api, "read_image", fake_read_image)
+    monkeypatch.setattr(app_api, "apply_dehaze", fake_apply_dehaze)
+    try:
+        cpu_request = app_api.EnhancePreviewRequest(
+            session_id=session_id, photo_id=photo_id, use_gpu=False,
+        )
+        gpu_request = app_api.EnhancePreviewRequest(
+            session_id=session_id, photo_id=photo_id, use_gpu=True,
+        )
+        first_cpu = app_api.create_enhance_preview(cpu_request)
+        cached_cpu = app_api.create_enhance_preview(cpu_request)
+        first_gpu = app_api.create_enhance_preview(gpu_request)
+        cached_gpu = app_api.create_enhance_preview(gpu_request)
+
+        assert first_cpu.status_code == cached_cpu.status_code == first_gpu.status_code == cached_gpu.status_code == 200
+        assert calls == ["cpu", "auto"]
+        assert len(app_api._ENHANCE_PREVIEW_CACHE) == 2
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+        app_api._ENHANCE_PREVIEW_CACHE.clear()
 
 
 def test_enhance_thumbnail_uses_preview_path_and_reuses_cache(monkeypatch, tmp_path: Path):
@@ -307,10 +389,24 @@ def test_raw_export_requires_and_records_baked_lens_correction(monkeypatch, tmp_
             scale=0.0,
         )
 
-    def fake_write(image, source_path, output_dir, metadata, *, bits_per_sample):
+    def fake_source_data(image, reference, source_path, source_exif):
+        assert int(image[0, 0, 0]) == 2
+        assert int(reference[0, 0, 0]) == 1
+        return image, np.ones((2, 2), dtype=np.uint16), np.array([[0, 1], [1, 2]], dtype=np.uint8), {
+            "DNGColorMatrix1": (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            "DNGAsShotNeutral": (0.5, 1.0, 0.8),
+            "DNGUniqueCameraModel": "Nikon Z6_3",
+            "DNGBlackLevel": (100, 100, 100, 100),
+            "DNGWhiteLevel": 16383,
+        }, 1
+
+    def fake_write(image, mosaic, pattern, source_path, output_dir, metadata, *, orientation, preview_rgb16):
         written_metadata.update(metadata)
         assert int(image[0, 0, 0]) == 2
-        assert bits_per_sample == 14
+        assert mosaic.shape == (2, 2)
+        assert orientation == 1
+        assert preview_rgb16.dtype == np.uint8
+        assert preview_rgb16.shape == (2, 2, 3)
         return tmp_path / "output.dng"
 
     monkeypatch.setattr(
@@ -318,9 +414,14 @@ def test_raw_export_requires_and_records_baked_lens_correction(monkeypatch, tmp_
         "read_image",
         lambda *args, **kwargs: (np.ones((2, 2, 3), dtype=np.uint16), Metadata()),
     )
-    monkeypatch.setattr(app_api, "apply_dehaze", lambda image, params: image)
+    monkeypatch.setattr(app_api, "apply_dehaze", lambda image, params, *, backend: image)
     monkeypatch.setattr(app_api, "apply_lens_correction", fake_correction)
-    monkeypatch.setattr(app_api, "write_linear_dng", fake_write)
+    monkeypatch.setattr(
+        app_api, "camera_profile_names",
+        lambda _path: {"SourceCameraProfileName": "Camera Flexible Color"},
+    )
+    monkeypatch.setattr(app_api, "enhanced_dng_source_data", fake_source_data)
+    monkeypatch.setattr(app_api, "write_enhanced_dng", fake_write)
     try:
         app_api._run_enhance_job(job_id, session_id, tmp_path, DehazeParams(), {})
         item = app_api._ENHANCE_JOBS[job_id]["files"][0]
@@ -330,6 +431,8 @@ def test_raw_export_requires_and_records_baked_lens_correction(monkeypatch, tmp_
         assert item["lens_correction"]["tca"] is True
         assert written_metadata["LensCorrectionApplied"] is True
         assert written_metadata["LensCorrectionOperations"] == "distortion,tca"
+        assert written_metadata["SourceCameraProfileName"] == "Camera Flexible Color"
+        assert written_metadata["DNGUniqueCameraModel"] == "Nikon Z6_3"
     finally:
         app_api._ENHANCE_SESSIONS.pop(session_id, None)
         app_api._ENHANCE_JOBS.pop(job_id, None)

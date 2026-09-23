@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
@@ -14,6 +16,8 @@ datas = [
     ('src/dng_writer.py',     'src'),
     ('src/lens_correction.py', 'src'),
     ('src/portrait_quality.py', 'src'),
+    ('assets/ricoh/Ricoh_GR2_CameraRaw_Presets/Presets', 'assets/ricoh/Ricoh_GR2_CameraRaw_Presets/Presets'),
+    ('assets/ricoh/Ricoh_GR3_CameraRaw_Presets/Presets', 'assets/ricoh/Ricoh_GR3_CameraRaw_Presets/Presets'),
     ('third_party/lensfun-db', 'third_party/lensfun-db'),
     ('third_party/licenses', 'third_party/licenses'),
     ('THIRD_PARTY_NOTICES.md', '.'),
@@ -33,6 +37,13 @@ try:
 except Exception:
     mediapipe_binaries = []
     mediapipe_hiddenimports = []
+
+try:
+    imagecodecs_datas, imagecodecs_binaries, imagecodecs_hiddenimports = collect_all('imagecodecs')
+    datas.extend(imagecodecs_datas)
+except Exception:
+    imagecodecs_binaries = []
+    imagecodecs_hiddenimports = []
 # 打包标准 ONNX 模型（如果存在）
 for model_rel in [
     'models/standard_aesthetic_model.onnx',
@@ -44,7 +55,7 @@ for model_rel in [
 a = Analysis(
     ['src/app_api.py'],
     pathex=['src'],
-    binaries=lensfun_binaries + mediapipe_binaries,
+    binaries=lensfun_binaries + mediapipe_binaries + imagecodecs_binaries,
     datas=datas,
     hiddenimports=[
         'burst_filter',
@@ -53,12 +64,15 @@ a = Analysis(
         'exif_reader',
         'config',
         'dehaze',
+        'dehaze_gpu',
         'image_io',
         'dng_writer',
         'lens_correction',
         'portrait_quality',
+        'ricoh_filter',
         *lensfun_hiddenimports,
         *mediapipe_hiddenimports,
+        *imagecodecs_hiddenimports,
         'uvicorn',
         'uvicorn.logging',
         'uvicorn.loops',
@@ -73,6 +87,7 @@ a = Analysis(
         'fastapi',
         'cv2',
         'numpy',
+        'torch',
         'rawpy',
         'onnxruntime',
         'onnx',
@@ -92,7 +107,7 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=[
-        'torch', 'torchvision', 'transformers',
+        'torchvision', 'transformers',
         'PySide6', 'tkinter', 'matplotlib',
     ],
     cipher=block_cipher,

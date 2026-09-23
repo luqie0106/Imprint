@@ -14,6 +14,7 @@ import BurstPage from "./views/BurstPage.vue";
 import ModelsPage from "./views/ModelsPage.vue";
 import TrainerPage from "./views/TrainerPage.vue";
 import EnhancePage from "./views/EnhancePage.vue";
+import RicohPage from "./views/RicohPage.vue";
 import appLogo from "./assets/logo.png";
 import {
   Images,
@@ -26,9 +27,10 @@ import {
   Moon,
   Monitor,
   WandSparkles,
+  Camera,
 } from "lucide-vue-next";
 
-type TabType = "burst" | "enhance" | "models" | "trainer";
+type TabType = "burst" | "enhance" | "ricoh" | "models" | "trainer";
 const activeTab = ref<TabType>("burst");
 
 async function retryConnection() {
@@ -83,6 +85,15 @@ onMounted(() => {
         >
           <WandSparkles class="w-3.5 h-3.5" />
           去朦胧
+        </button>
+
+        <button
+          @click="activeTab = 'ricoh'"
+          class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full"
+          :class="activeTab === 'ricoh' ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 after:bg-transparent'"
+        >
+          <Camera class="w-3.5 h-3.5" />
+          理光风格
         </button>
 
         <button
@@ -194,6 +205,7 @@ onMounted(() => {
       <!-- 正常功能页面切换 -->
       <BurstPage v-show="activeTab === 'burst'" />
       <EnhancePage v-show="activeTab === 'enhance'" />
+      <RicohPage v-show="activeTab === 'ricoh'" />
       <ModelsPage v-show="activeTab === 'models'" />
       <TrainerPage v-show="activeTab === 'trainer'" />
     </main>

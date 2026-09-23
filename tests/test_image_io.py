@@ -5,6 +5,10 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+import numpy as np
+import rawpy
+
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -14,8 +18,48 @@ from image_io import (
     _lens_metadata_from_exiftool_record,
     _parse_lens_specification,
     _raw_bit_depth,
+    _read_raw,
     _raw_metadata,
+    camera_profile_names,
+    enhanced_dng_source_data,
+    matching_embedded_profile_dng,
 )
+
+
+def test_raw_preview_uses_the_export_linear_exposure_scale(monkeypatch):
+    calls = []
+
+    class FakeRaw:
+        camera_whitebalance = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def postprocess(self, **kwargs):
+            calls.append(kwargs)
+            return np.full((4, 6, 3), 32768, dtype=np.uint16)
+
+        def extract_thumb(self):
+            raise RuntimeError("no thumbnail")
+
+    monkeypatch.setattr("image_io.rawpy.imread", lambda _path: FakeRaw())
+    monkeypatch.setattr("image_io._raw_bit_depth", lambda _raw: 14)
+    monkeypatch.setattr("image_io._safe_exif", lambda _path: {
+        "LensModel": "Test Lens", "LensSpecification": (35, 35, 2, 2),
+    })
+    monkeypatch.setattr("image_io._raw_metadata", lambda *_args: None)
+    monkeypatch.setattr("image_io._fill_lens_specification", lambda _exif: None)
+
+    image, metadata = _read_raw(Path("sample.nef"), preview=True)
+    assert image.dtype == np.uint16
+    assert metadata.color_space == "Linear sRGB"
+    assert calls[0]["half_size"] is True
+    assert calls[0]["no_auto_bright"] is True
+    assert calls[0]["output_bps"] == 16
+    assert calls[0]["gamma"] == (1.0, 1.0)
 
 
 class _FakeExif(dict):
@@ -138,3 +182,121 @@ def test_lens_name_supplies_missing_lens_specification():
     metadata = {"LensModel": "NIKKOR Z 50mm f/1.8 S"}
     _fill_lens_specification(metadata)
     assert metadata["LensSpecification"] == (50.0, 50.0, 1.8, 1.8)
+
+
+def test_camera_profile_names_reads_only_whitelisted_names(monkeypatch):
+    monkeypatch.setattr("image_io._find_exiftool", lambda: "exiftool")
+    monkeypatch.setattr(
+        "image_io.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout='[{"CameraProfile":"Camera Flexible Color","PictureControlName":"Negative_Cy_01a","SerialNumber":"secret"}]'
+        ),
+    )
+    assert camera_profile_names("sample.nef") == {
+        "SourceCameraProfileName": "Camera Flexible Color",
+        "NikonPictureControlName": "Negative_Cy_01a",
+    }
+
+
+def test_enhanced_source_data_keeps_cfa_and_rotates_rgb_to_sensor_orientation(monkeypatch):
+    rng = np.random.default_rng(34)
+    sensor_rgb = rng.integers(8000, 26000, (256, 320, 3), dtype=np.uint16)
+    reference = np.ascontiguousarray(np.rot90(sensor_rgb))
+    mosaic = np.full((256, 320), 1200, dtype=np.uint16)
+
+    class FakeRaw:
+        raw_image_visible = mosaic
+        raw_pattern = np.array([[0, 1], [3, 2]], dtype=np.uint8)
+        color_desc = b"RGBG"
+        rgb_xyz_matrix = np.array([[1.0, 0.1, 0], [0, 1.0, 0.1], [0.1, 0, 1.0], [0, 0, 0]])
+        camera_whitebalance = [2.0, 1.0, 1.25, 1.0]
+        black_level_per_channel = [100, 100, 100, 100]
+        white_level = 16383
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def postprocess(self, *, output_color, **_kwargs):
+            assert output_color == rawpy.ColorSpace.raw
+            return reference
+
+    monkeypatch.setattr("image_io.rawpy.imread", lambda _path: FakeRaw())
+    enhanced, cfa, pattern, profile, orientation = enhanced_dng_source_data(
+        reference, reference, "sample.nef", {"Make": "Nikon", "Model": "Z6_3", "Orientation": 8},
+    )
+    assert enhanced.shape == cfa.shape + (3,)
+    assert np.array_equal(enhanced, sensor_rgb)
+    assert pattern.tolist() == [[0, 1], [1, 2]]
+    assert profile["DNGUniqueCameraModel"] == "Nikon Z 6 3"
+    assert profile["DNGBlackLevel"] == (100, 100, 100, 100)
+    assert profile["DNGDefaultCropOrigin"] == (0, 0)
+    assert profile["DNGDefaultCropSize"] == (320, 256)
+    assert orientation == 8
+
+
+def test_enhanced_source_data_uses_midtones_when_highlights_are_nonlinear(monkeypatch):
+    rng = np.random.default_rng(8707)
+    camera = rng.integers(5000, 18000, (256, 256, 3), dtype=np.uint16)
+    camera[128:] = rng.integers(40000, 55000, (128, 256, 3), dtype=np.uint16)
+    reference = camera.copy()
+    bright = camera.max(axis=2) > 22000
+    reference[bright, 0] = np.minimum(
+        reference[bright, 0].astype(np.uint32) + 5000, 65535,
+    ).astype(np.uint16)
+
+    class FakeRaw:
+        raw_image_visible = np.full((256, 256), 1200, dtype=np.uint16)
+        raw_pattern = np.array([[0, 1], [3, 2]], dtype=np.uint8)
+        color_desc = b"RGBG"
+        rgb_xyz_matrix = np.eye(4, 3)
+        camera_whitebalance = [1.4, 1.0, 1.6, 1.0]
+        black_level_per_channel = [100, 100, 100, 100]
+        white_level = 16383
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def postprocess(self, **_kwargs):
+            return camera
+
+    monkeypatch.setattr("image_io.rawpy.imread", lambda _path: FakeRaw())
+    enhanced, _, _, _, _ = enhanced_dng_source_data(
+        reference, reference, "bright.nef", {"Make": "Nikon", "Model": "Z6_3"},
+    )
+    np.testing.assert_array_equal(enhanced, reference)
+
+
+def test_profile_reference_requires_identical_picture_control_bytes(monkeypatch, tmp_path: Path):
+    source = tmp_path / "source.nef"
+    reference = tmp_path / "reference.dng"
+    source.touch()
+    reference.touch()
+    controls = {str(source): b"nikon-flexible-color", str(reference): b"nikon-flexible-color"}
+    curves = {str(source): b"tone-curve", str(reference): b"tone-curve"}
+
+    def fake_run(arguments, **_kwargs):
+        path = arguments[-1]
+        if "-json" in arguments:
+            return SimpleNamespace(stdout='[{"Make":"NIKON CORPORATION","Model":"NIKON Z6_3","ProfileName":"Camera Flexible Color","ProfileEmbedPolicy":0}]')
+        if "-Nikon:ContrastCurve" in arguments:
+            return SimpleNamespace(stdout=curves[path])
+        return SimpleNamespace(stdout=controls[path])
+
+    monkeypatch.setattr("image_io._find_exiftool", lambda: "exiftool")
+    monkeypatch.setattr("image_io.subprocess.run", fake_run)
+    info = {
+        "Make": "NIKON CORPORATION", "Model": "NIKON Z6_3",
+        "SourceCameraProfileName": "Camera Flexible Color",
+    }
+    assert matching_embedded_profile_dng(source, info) == reference
+    curves[str(reference)] = b"different tone curve"
+    assert matching_embedded_profile_dng(source, info) is None
+    curves[str(reference)] = curves[str(source)]
+    controls[str(reference)] = b"a different camera recipe"
+    assert matching_embedded_profile_dng(source, info) is None

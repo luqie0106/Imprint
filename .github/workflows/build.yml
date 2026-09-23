@@ -74,6 +74,10 @@ jobs:
       - name: Install Python sidecar dependencies
         run: pip install -r requirements-build.txt
 
+      - name: Install CUDA-enabled PyTorch (Windows)
+        if: runner.os == 'Windows'
+        run: pip install "torch>=2.0.0" --index-url https://download.pytorch.org/whl/cu128
+
       - name: Cache Python sidecar
         id: cache-sidecar
         uses: actions/cache@v4

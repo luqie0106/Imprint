@@ -416,10 +416,14 @@ def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
         source_bit_depth = _raw_bit_depth(raw)
         kwargs: dict[str, Any] = {
             "use_camera_wb": True,
-            "output_bps": 8 if preview else 16,
-            "no_auto_bright": not preview,
+            # Both the quick preview and final export use the same linear
+            # exposure scale.  Display gamma is applied only when encoding a
+            # JPEG for the UI; LibRaw auto-bright would make the two paths
+            # disagree even before dehazing.
+            "output_bps": 16,
+            "no_auto_bright": True,
             "output_color": rawpy.ColorSpace.sRGB,
-            "gamma": (2.222, 4.5) if preview else (1.0, 1.0),
+            "gamma": (1.0, 1.0),
             "half_size": preview,
         }
         rgb = raw.postprocess(**kwargs)
@@ -451,11 +455,248 @@ def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
         width=int(rgb.shape[1]),
         height=int(rgb.shape[0]),
         bit_depth=source_bit_depth,
-        color_space="sRGB" if preview else "Linear sRGB",
+        color_space="Linear sRGB",
         source_kind="raw",
         exif=exif,
     )
     return np.ascontiguousarray(rgb), metadata
+
+
+class EnhancedDNGColorError(ValueError):
+    """Source RAW data cannot be represented as a camera-space enhanced DNG."""
+
+
+def enhanced_dng_source_data(
+    processed_rgb16: np.ndarray,
+    reference_rgb16: np.ndarray,
+    source_path: str | Path,
+    source_exif: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any], int]:
+    """Prepare CFA and processed RGB in the same camera-native, sensor orientation.
+
+    LibRaw's camera-space rendering and the original linear-sRGB rendering are
+    sampled at matching full-resolution pixels to recover its color conversion.
+    The processed result is then mapped through the inverse conversion.  This
+    data must be paired with the CFA in an Enhanced Image Data DNG, never
+    written as a standalone camera-native linear DNG.
+    """
+    if (processed_rgb16.dtype != np.uint16 or reference_rgb16.dtype != np.uint16
+            or processed_rgb16.shape != reference_rgb16.shape
+            or processed_rgb16.ndim != 3 or processed_rgb16.shape[2] != 3):
+        raise EnhancedDNGColorError("enhanced DNG requires aligned uint16 RGB images")
+    with rawpy.imread(str(source_path)) as raw:
+        mosaic = np.ascontiguousarray(raw.raw_image_visible.copy())
+        pattern = np.asarray(raw.raw_pattern)
+        color_desc = bytes(raw.color_desc)
+        if pattern.shape != (2, 2) or mosaic.dtype != np.uint16:
+            raise EnhancedDNGColorError("unsupported CFA layout")
+        try:
+            cfa_pattern = np.array(
+                [[b"RGB".index(color_desc[index:index + 1]) for index in row] for row in pattern],
+                dtype=np.uint8,
+            )
+        except ValueError as exc:
+            raise EnhancedDNGColorError("unsupported CFA colors") from exc
+        camera = raw.postprocess(
+            half_size=False, output_bps=16, no_auto_bright=True,
+            gamma=(1.0, 1.0), output_color=rawpy.ColorSpace.raw,
+            user_wb=[1.0, 1.0, 1.0, 1.0],
+        )
+        matrix = np.asarray(raw.rgb_xyz_matrix[:3, :], dtype=np.float64)
+        white_balance = np.asarray(raw.camera_whitebalance[:3], dtype=np.float64)
+        black_levels = tuple(int(value) for value in raw.black_level_per_channel[:4])
+        white_level = int(raw.white_level)
+        sizes = raw.sizes if hasattr(raw, "sizes") else None
+        crop_origin = (
+            int(getattr(sizes, "crop_left_margin", 0)),
+            int(getattr(sizes, "crop_top_margin", 0)),
+        )
+        crop_size = (
+            int(getattr(sizes, "crop_width", mosaic.shape[1])),
+            int(getattr(sizes, "crop_height", mosaic.shape[0])),
+        )
+    if camera.shape != reference_rgb16.shape:
+        raise EnhancedDNGColorError("camera-space and processed image dimensions differ")
+    if not np.isfinite(matrix).all() or abs(np.linalg.det(matrix)) < 1e-6:
+        raise EnhancedDNGColorError("camera color matrix unavailable")
+    if not np.isfinite(white_balance).all() or np.any(white_balance <= 0):
+        raise EnhancedDNGColorError("camera white balance unavailable")
+
+    source_samples = camera[::16, ::16].reshape(-1, 3).astype(np.float64) / 65535.0
+    reference_samples = reference_rgb16[::16, ::16].reshape(-1, 3).astype(np.float64) / 65535.0
+    positive = (
+        (source_samples.min(axis=1) > 0.01)
+        & (reference_samples.min(axis=1) > 0.01)
+    )
+    camera_to_srgb = None
+    # LibRaw's highlight handling is not a single linear transform.  Fit the
+    # camera matrix from midtones first, broadening the range only when a dark
+    # image does not supply enough samples.  This keeps clipped highlights
+    # from falsely rejecting an otherwise sound conversion.
+    for upper in (0.30, 0.50, 0.75, 0.95):
+        usable = (
+            positive
+            & (source_samples.max(axis=1) < upper)
+            & (reference_samples.max(axis=1) < upper)
+        )
+        if np.count_nonzero(usable) < 100:
+            continue
+        fitted, _, rank, _ = np.linalg.lstsq(
+            source_samples[usable], reference_samples[usable], rcond=None,
+        )
+        if rank != 3 or np.linalg.cond(fitted) > 100:
+            continue
+        fit_error = np.mean(np.abs(source_samples[usable] @ fitted - reference_samples[usable]))
+        if fit_error <= 0.003:
+            camera_to_srgb = fitted
+            break
+    if camera_to_srgb is None:
+        raise EnhancedDNGColorError("camera color transform does not fit")
+    srgb_to_camera = np.linalg.inv(camera_to_srgb).astype(np.float32)
+    del camera
+
+    camera_rgb = np.empty_like(processed_rgb16)
+    for start in range(0, processed_rgb16.shape[0], 128):
+        end = min(start + 128, processed_rgb16.shape[0])
+        chunk = processed_rgb16[start:end].astype(np.float32) @ srgb_to_camera
+        camera_rgb[start:end] = np.clip(np.rint(chunk), 0, 65535).astype(np.uint16)
+
+    orientation = int(source_exif.get("Orientation") or 1)
+    if orientation == 8:
+        camera_rgb = np.ascontiguousarray(np.rot90(camera_rgb, -1))
+    elif orientation == 6:
+        camera_rgb = np.ascontiguousarray(np.rot90(camera_rgb, 1))
+    elif orientation == 3:
+        camera_rgb = np.ascontiguousarray(np.rot90(camera_rgb, 2))
+    elif orientation != 1:
+        raise EnhancedDNGColorError("unsupported RAW orientation")
+    if camera_rgb.shape[:2] != mosaic.shape:
+        raise EnhancedDNGColorError("enhanced and CFA sensor dimensions differ")
+    if (crop_origin[0] < 0 or crop_origin[1] < 0
+            or crop_size[0] < 1 or crop_size[1] < 1
+            or crop_origin[0] + crop_size[0] > mosaic.shape[1]
+            or crop_origin[1] + crop_size[1] > mosaic.shape[0]):
+        raise EnhancedDNGColorError("invalid RAW crop")
+
+    make = str(source_exif.get("Make") or "").strip()
+    model = str(source_exif.get("Model") or "").strip()
+    if not model:
+        raise EnhancedDNGColorError("camera model unavailable")
+    make_prefix = make.split()[0] if make else ""
+    unique_model = model if not make_prefix or model.casefold().startswith(make_prefix.casefold()) else f"{make_prefix} {model}"
+    # Adobe's Nikon Z III DNG uses this spaced camera identity.  Keep its
+    # spelling when the NEF's EXIF model uses Nikon's compact underscore form.
+    nikon_z_model = re.fullmatch(r"(?:NIKON\s+)?Z(\d+)_(\d+)", model, flags=re.IGNORECASE)
+    if make_prefix.casefold() == "nikon" and nikon_z_model:
+        unique_model = f"Nikon Z {nikon_z_model.group(1)} {nikon_z_model.group(2)}"
+    neutral = 1.0 / white_balance
+    neutral /= neutral[1]
+    profile = {
+        "DNGColorMatrix1": tuple(float(value) for value in matrix.flat),
+        "DNGAsShotNeutral": tuple(float(value) for value in neutral),
+        "DNGUniqueCameraModel": unique_model,
+        "DNGBlackLevel": black_levels,
+        "DNGWhiteLevel": white_level,
+        "DNGDefaultCropOrigin": crop_origin,
+        "DNGDefaultCropSize": crop_size,
+    }
+    return camera_rgb, mosaic, cfa_pattern, profile, orientation
+
+
+def camera_profile_names(source_path: str | Path) -> dict[str, str]:
+    """Read source camera identity and profile names without changing the RAW."""
+    executable = _find_exiftool()
+    if executable is None:
+        return {}
+    try:
+        completed = subprocess.run(
+            [executable, "-json", "-CameraProfile", "-PictureControlName", "-Make", "-Model", str(source_path)],
+            check=True, capture_output=True, text=True, timeout=8,
+        )
+        records = json.loads(completed.stdout)
+        record = records[0] if isinstance(records, list) and records else {}
+        if not isinstance(record, dict):
+            return {}
+        result: dict[str, str] = {}
+        for source, target in (
+            ("CameraProfile", "SourceCameraProfileName"),
+            ("PictureControlName", "NikonPictureControlName"),
+            ("Make", "Make"),
+            ("Model", "Model"),
+        ):
+            value = _metadata_candidate(record.get(source))
+            if isinstance(value, str):
+                result[target] = value
+        return result
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError):
+        return {}
+
+
+def matching_embedded_profile_dng(
+    source_path: str | Path,
+    source_info: dict[str, Any],
+) -> Path | None:
+    """Find a neighboring ACR DNG with the identical Nikon Picture Control.
+
+    A matching profile name alone is insufficient: two customized Flexible
+    Color recipes can share a name.  Compare the original Nikon maker-note
+    PictureControlData bytes, camera identity, profile name and the DNG's
+    explicit copying policy before using its embedded profile as a reference.
+    """
+    executable = _find_exiftool()
+    selected = _metadata_candidate(source_info.get("SourceCameraProfileName"))
+    make = _metadata_candidate(source_info.get("Make"))
+    model = _metadata_candidate(source_info.get("Model"))
+    if executable is None or not all(isinstance(x, str) for x in (selected, make, model)):
+        return None
+    source = Path(source_path)
+    try:
+        source_control = subprocess.run(
+            [executable, "-b", "-Nikon:PictureControlData", str(source)],
+            check=True, capture_output=True, timeout=10,
+        ).stdout
+        if not source_control:
+            return None
+        source_curve = subprocess.run(
+            [executable, "-b", "-Nikon:ContrastCurve", str(source)],
+            check=True, capture_output=True, timeout=10,
+        ).stdout
+        candidates = sorted(
+            (path for path in source.parent.iterdir() if path.is_file() and path.suffix.lower() == ".dng"),
+            key=lambda path: path.name,
+        )
+        for candidate in candidates:
+            try:
+                details = subprocess.run(
+                    [executable, "-json", "-n", "-Make", "-Model", "-ProfileName", "-ProfileEmbedPolicy", str(candidate)],
+                    check=True, capture_output=True, text=True, timeout=10,
+                )
+                records = json.loads(details.stdout)
+                record = records[0] if isinstance(records, list) and records else {}
+                if not isinstance(record, dict):
+                    continue
+                if (
+                    _metadata_candidate(record.get("Make")) != make
+                    or _metadata_candidate(record.get("Model")) != model
+                    or _metadata_candidate(record.get("ProfileName")) != selected
+                    or str(record.get("ProfileEmbedPolicy")) != "0"
+                ):
+                    continue
+                candidate_control = subprocess.run(
+                    [executable, "-b", "-Nikon:PictureControlData", str(candidate)],
+                    check=True, capture_output=True, timeout=10,
+                ).stdout
+                candidate_curve = subprocess.run(
+                    [executable, "-b", "-Nikon:ContrastCurve", str(candidate)],
+                    check=True, capture_output=True, timeout=10,
+                ).stdout
+                if candidate_control == source_control and candidate_curve == source_curve:
+                    return candidate
+            except (OSError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError):
+                continue
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError):
+        return None
+    return None
 
 
 def _read_standard(path: Path) -> tuple[np.ndarray, ImageMetadata]:

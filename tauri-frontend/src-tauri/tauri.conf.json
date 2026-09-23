@@ -17,8 +17,8 @@
         "title": "Imprint",
         "width": 1100,
         "height": 780,
-        "minWidth": 900,
-        "minHeight": 600,
+        "minWidth": 1050,
+        "minHeight": 680,
         "transparent": true,
         "decorations": true
       }

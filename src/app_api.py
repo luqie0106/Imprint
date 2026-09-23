@@ -56,9 +56,19 @@ from model_manager import (
     get_resolved_standard_l14_onnx_path,
 )
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
-from dehaze import DehazeParams, apply_dehaze
-from dng_writer import write_linear_dng
-from image_io import OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES, read_image, scan_photo_directory, to_uint16
+from dehaze import DehazeParams, apply_dehaze, get_gpu_status
+from dng_writer import write_enhanced_dng, write_linear_dng
+from image_io import (
+    OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES,
+    EnhancedDNGColorError, camera_profile_names, enhanced_dng_source_data,
+    matching_embedded_profile_dng, read_image,
+    scan_photo_directory, to_uint16,
+)
+from ricoh_filter import (
+    RicohBatchLimitError,
+    apply_ricoh_preset,
+    list_ricoh_presets,
+)
 from lens_correction import (
     LensCorrectionError,
     LensCorrectionNotAppliedError,
@@ -99,7 +109,7 @@ _MAX_PREVIEW_GROUPS = 40
 # 去朦胧使用完全独立的会话、预览缓存和后台任务；会话中保存真实路径，HTTP
 # 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
 _ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
-_ENHANCE_PREVIEW_CACHE: dict[tuple[str, str, str, int, str], bytes] = {}
+_ENHANCE_PREVIEW_CACHE: dict[tuple[str, str, str, int, str, bool], bytes] = {}
 _ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str], bytes] = {}
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _ENHANCE_LOCK = threading.RLock()
@@ -190,6 +200,7 @@ class EnhancePreviewRequest(BaseModel):
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
     max_edge: int = Field(default=1800, ge=320, le=3000)
     mode: Literal["original", "dehazed"] = "dehazed"
+    use_gpu: bool = False
 
 
 class EnhanceRevealRequest(BaseModel):
@@ -202,6 +213,12 @@ class EnhanceRunRequest(BaseModel):
     output_dir: str = ""
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
+    use_gpu: bool = False
+
+
+class RicohApplyRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=32)
+    preset_id: str = Field(min_length=1, max_length=80)
 
 
 def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
@@ -323,6 +340,23 @@ def _apply_preview_decision(record: dict[str, Any], kept: bool) -> int:
 # ══════════════════════════════════════════════════════════════════════════════
 # 接口一：POST /api/burst/run (SSE 连拍筛选)
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/ricoh/presets")
+def get_ricoh_presets():
+    """List the reviewed GR2 and GR3 Camera Raw sidecar presets."""
+    return {"presets": list_ricoh_presets()}
+
+
+@app.post("/api/ricoh/apply")
+def apply_ricoh_preset_request(req: RicohApplyRequest):
+    """Write Camera Raw XMP settings beside selected photos without overwriting."""
+    try:
+        return apply_ricoh_preset(req.paths, req.preset_id)
+    except KeyError:
+        return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
+    except RicohBatchLimitError:
+        return JSONResponse(status_code=413, content={"error": "一次最多处理 500 张照片"})
 
 
 @app.post("/api/burst/run")
@@ -559,6 +593,8 @@ def _enhance_error_message(exc: BaseException, *, output_dir: bool = False) -> s
         return "镜头配置没有可用的畸变或横向色差数据，未生成未校正的 DNG。"
     if isinstance(exc, LensCorrectionError):
         return "镜头像素校正失败，未生成未校正的 DNG。"
+    if isinstance(exc, EnhancedDNGColorError):
+        return "无法可靠转换相机色彩数据，未生成可能颜色错误的 DNG。"
     if isinstance(exc, (MemoryError, rawpy.LibRawUnsufficientMemoryError, rawpy.LibRawMemPoolOverflowError)) or any(
         marker in text for marker in ("out of memory", "insufficient memory", "cannot allocate memory")
     ):
@@ -591,9 +627,29 @@ def _enhance_error_message(exc: BaseException, *, output_dir: bool = False) -> s
     return "照片解码/处理失败，请确认文件完整且格式受支持。"
 
 
-def _encode_preview(image_rgb: np.ndarray) -> bytes:
+_LINEAR_LEVELS = np.arange(65536, dtype=np.float32) / 65535.0
+_LINEAR_TO_SRGB8 = np.clip(
+    np.rint(
+        np.where(
+            _LINEAR_LEVELS <= 0.0031308,
+            _LINEAR_LEVELS * 12.92,
+            1.055 * np.power(_LINEAR_LEVELS, 1.0 / 2.4) - 0.055,
+        ) * 255.0
+    ), 0, 255,
+).astype(np.uint8)
+del _LINEAR_LEVELS
+
+
+def _display_rgb8(image_rgb: np.ndarray, *, linear: bool = False) -> np.ndarray:
     if image_rgb.dtype == np.uint16:
-        image_rgb = np.clip(np.rint(image_rgb.astype(np.float32) / 257.0), 0, 255).astype(np.uint8)
+        if linear:
+            return _LINEAR_TO_SRGB8[image_rgb]
+        return np.clip(np.rint(image_rgb.astype(np.float32) / 257.0), 0, 255).astype(np.uint8)
+    return image_rgb
+
+
+def _encode_preview(image_rgb: np.ndarray, *, linear: bool = False) -> bytes:
+    image_rgb = _display_rgb8(image_rgb, linear=linear)
     stream = io.BytesIO()
     Image.fromarray(image_rgb, "RGB").save(stream, "JPEG", quality=91, optimize=True)
     return stream.getvalue()
@@ -670,6 +726,23 @@ def create_enhance_session(req: EnhanceSessionRequest):
         return JSONResponse(status_code=400, content={"error": _enhance_error_message(exc)})
 
 
+@app.get("/api/enhance/gpu-status")
+def get_enhance_gpu_status():
+    """Return accelerator availability for the dehaze preview/export path."""
+    try:
+        return get_gpu_status()
+    except Exception:
+        # Device probing is best-effort.  Keep the response stable and avoid
+        # exposing driver paths or exception details if an optional runtime is
+        # partially installed or unavailable.
+        return {
+            "available": False,
+            "backends": [],
+            "recommended": None,
+            "label": "未检测到可用 GPU",
+        }
+
+
 @app.post("/api/enhance/preview")
 def create_enhance_preview(req: EnhancePreviewRequest):
     with _ENHANCE_LOCK:
@@ -678,7 +751,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
     params = req.params.to_params()
     token = params.cache_token()
-    cache_key = (req.session_id, req.photo_id, token, req.max_edge, req.mode)
+    cache_key = (req.session_id, req.photo_id, token, req.max_edge, req.mode, bool(req.use_gpu))
     with _ENHANCE_LOCK:
         cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
     if cached is not None:
@@ -686,8 +759,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     try:
         image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
         if req.mode == "dehazed":
-            image = apply_dehaze(image, params)
-        payload = _encode_preview(image)
+            image = apply_dehaze(image, params, backend="auto" if req.use_gpu else "cpu")
+        payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
         with _ENHANCE_LOCK:
             if len(_ENHANCE_PREVIEW_CACHE) >= 128:
                 _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)
@@ -725,8 +798,8 @@ def get_enhance_thumbnail(session_id: str, photo_id: str):
         )
 
     try:
-        image, _metadata = read_image(path, preview=True, max_edge=360)
-        payload = _encode_preview(image)
+        image, metadata = read_image(path, preview=True, max_edge=360)
+        payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
         with _ENHANCE_LOCK:
             current_path = _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).get(photo_id)
             if current_path is None or Path(current_path) != Path(path):
@@ -779,6 +852,7 @@ def _run_enhance_job(
     output_dir: Path,
     default_params: DehazeParams,
     params_by_photo: Mapping[str, DehazeParams],
+    backend: str = "cpu",
 ) -> None:
     with _ENHANCE_LOCK:
         job = _ENHANCE_JOBS[job_id]
@@ -796,7 +870,7 @@ def _run_enhance_job(
         try:
             image, metadata = read_image(path, preview=False)
             photo_params = _select_enhance_params(photo_id, params_by_photo, default_params)
-            enhanced = apply_dehaze(to_uint16(image), photo_params)
+            enhanced = apply_dehaze(to_uint16(image), photo_params, backend=backend)
             corrected, correction = apply_lens_correction(
                 enhanced,
                 metadata,
@@ -805,6 +879,7 @@ def _run_enhance_job(
                 # exportable as required by the existing product behavior.
                 require_correction=getattr(metadata, "source_kind", "") == "raw",
             )
+            del enhanced
             if cancel_event.is_set():
                 with _ENHANCE_LOCK:
                     item["status"] = "cancelled"
@@ -828,13 +903,49 @@ def _run_enhance_job(
                         "LensCorrectionOperations": ",".join(operations),
                     }
                 )
-            output_path = write_linear_dng(
-                corrected,
-                path,
-                output_dir,
-                output_metadata,
-                bits_per_sample=metadata.bit_depth,
-            )
+            is_raw = getattr(metadata, "source_kind", "") == "raw"
+            if is_raw:
+                output_metadata.update(camera_profile_names(path))
+                profile_reference = matching_embedded_profile_dng(path, output_metadata)
+                if profile_reference is not None:
+                    output_metadata["DNGProfileReferencePath"] = profile_reference
+                camera_rgb, mosaic, cfa_pattern, profile, orientation = enhanced_dng_source_data(
+                    corrected, image, path, output_metadata,
+                )
+                output_metadata.update(profile)
+                del image
+                # Build a high-resolution display preview from the same
+                # linear pixels as the exported enhanced layer.  Resize in
+                # linear light before applying the sRGB transfer curve.
+                preview_edge = 4096
+                if max(corrected.shape[:2]) > preview_edge:
+                    scale = preview_edge / max(corrected.shape[:2])
+                    preview_linear = cv2.resize(
+                        corrected,
+                        (max(1, round(corrected.shape[1] * scale)),
+                         max(1, round(corrected.shape[0] * scale))),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                else:
+                    preview_linear = corrected
+                preview_rgb = _display_rgb8(preview_linear, linear=True)
+                if orientation == 8:
+                    preview_rgb = np.rot90(preview_rgb, -1)
+                elif orientation == 6:
+                    preview_rgb = np.rot90(preview_rgb, 1)
+                elif orientation == 3:
+                    preview_rgb = np.rot90(preview_rgb, 2)
+                preview_rgb = np.ascontiguousarray(preview_rgb)
+                output_path = write_enhanced_dng(
+                    camera_rgb, mosaic, cfa_pattern, path, output_dir,
+                    output_metadata, orientation=orientation, preview_rgb16=preview_rgb,
+                )
+            else:
+                del image
+                output_path = write_linear_dng(
+                    corrected, path, output_dir, output_metadata,
+                    bits_per_sample=metadata.bit_depth,
+                )
             with _ENHANCE_LOCK:
                 item.update(
                     {
@@ -893,7 +1004,7 @@ def run_enhance(req: EnhanceRunRequest):
     }
     thread = threading.Thread(
         target=_run_enhance_job,
-        args=(job_id, req.session_id, output_dir, default_params, params_by_photo),
+        args=(job_id, req.session_id, output_dir, default_params, params_by_photo, "auto" if req.use_gpu else "cpu"),
         name=f"enhance-{job_id[:8]}", daemon=True,
     )
     job["_thread"] = thread

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import os
+import threading
 
 import numpy as np
 
@@ -168,7 +170,7 @@ def _apply_brightness_protection(
     return _smooth_chroma_gamut(protected)
 
 
-def apply_dehaze(image_rgb: np.ndarray, params: DehazeParams | None = None) -> np.ndarray:
+def _apply_dehaze_cpu(image_rgb: np.ndarray, params: DehazeParams | None = None) -> np.ndarray:
     """Return a dehazed RGB image while preserving shape, dtype, and the input array."""
     if not isinstance(image_rgb, np.ndarray):
         raise TypeError("image_rgb must be a numpy array")
@@ -354,3 +356,163 @@ def apply_dehaze(image_rgb: np.ndarray, params: DehazeParams | None = None) -> n
 
     result = np.nan_to_num(natural, nan=0.0, posinf=1.0, neginf=0.0)
     return np.clip(np.rint(result * peak), 0, peak).astype(image_rgb.dtype)
+
+# GPU backend selection is deliberately kept at this module boundary.  The
+# CPU implementation above remains the compatibility reference and is also
+# the unconditional safety net when an optional accelerator is unavailable or
+# raises during execution.
+_BACKEND_NAMES = frozenset(("auto", "cpu", "cuda", "mps", "opencl"))
+_BACKEND_LOCK = threading.RLock()
+_GPU_BACKENDS = ("cuda", "mps", "opencl")
+_GPU_BACKEND_LABELS = {
+    "cuda": "NVIDIA CUDA 可用",
+    "mps": "Apple MPS 可用",
+    "opencl": "OpenCL 可用",
+}
+
+
+def _requested_backend() -> str:
+    value = os.environ.get("IMPRINT_DEHAZE_BACKEND", "auto").strip().lower()
+    return value if value in _BACKEND_NAMES else "auto"
+
+
+def _torch_backend_available(backend: str) -> bool:
+    """Check a torch backend without importing torch on CPU/OpenCL hosts."""
+    try:
+        import torch  # noqa: PLC0415 - optional dependency, intentionally lazy
+    except Exception:
+        return False
+    try:
+        if backend == "cuda":
+            return bool(torch.cuda.is_available())
+        if backend == "mps":
+            return bool(
+                hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+                and torch.backends.mps.is_built()
+            )
+    except Exception:
+        return False
+    return False
+
+
+def _opencl_backend_available() -> bool:
+    """Return whether OpenCV can actually schedule UMat work on OpenCL."""
+    try:
+        import cv2  # noqa: PLC0415 - optional accelerator probe
+    except Exception:
+        return False
+    try:
+        if not bool(cv2.ocl.haveOpenCL()):
+            return False
+        # OpenCV's default is often disabled even when a platform is present.
+        # This is a process-wide switch, so probing and execution are guarded by
+        # _BACKEND_LOCK to avoid races with concurrent preview/batch requests.
+        cv2.ocl.setUseOpenCL(True)
+        return bool(cv2.ocl.useOpenCL())
+    except Exception:
+        return False
+
+
+def _backend_available(backend: str) -> bool:
+    if backend in ("cuda", "mps"):
+        return _torch_backend_available(backend)
+    if backend == "opencl":
+        return _opencl_backend_available()
+    return backend == "cpu"
+
+
+def get_gpu_status() -> dict[str, object]:
+    """Return a path-free snapshot of the available dehaze accelerators.
+
+    Backend probing can touch process-wide OpenCL state, so all three probes
+    are serialized with the same lock used by backend selection.  The result
+    intentionally contains only stable backend identifiers and display text;
+    device paths and driver details are never exposed through the API.
+    """
+    with _BACKEND_LOCK:
+        available = [backend for backend in _GPU_BACKENDS if _backend_available(backend)]
+    recommended = available[0] if available else None
+    return {
+        "available": bool(available),
+        "backends": available,
+        "recommended": recommended,
+        "label": _GPU_BACKEND_LABELS[recommended] if recommended else "未检测到可用 GPU",
+    }
+
+
+# Keep a descriptive alias for callers that prefer an explicit query verb.
+query_gpu_status = get_gpu_status
+
+
+def _backend_candidates(requested: str) -> tuple[str, ...]:
+    if requested == "cpu":
+        return ("cpu",)
+    if requested in ("cuda", "mps", "opencl"):
+        return (requested, "cpu")
+    # Keep this order stable: CUDA first, Apple MPS second, OpenCL third.
+    return ("cuda", "mps", "opencl", "cpu")
+
+
+def _run_gpu_backend(
+    image_rgb: np.ndarray,
+    params: DehazeParams,
+    backend: str,
+) -> np.ndarray:
+    # Importing the adapter lazily is important: the ordinary CPU sidecar must
+    # start even when torch is not installed, and OpenCL is optional too.
+    from dehaze_gpu import apply_gpu  # noqa: PLC0415
+
+    return apply_gpu(image_rgb, params, backend)
+
+
+def apply_dehaze(
+    image_rgb: np.ndarray,
+    params: DehazeParams | None = None,
+    *,
+    backend: str | None = None,
+) -> np.ndarray:
+    """Dehaze an RGB image, preferring an available accelerator safely.
+
+    ``IMPRINT_DEHAZE_BACKEND`` may be ``auto``, ``cpu``, ``cuda``, ``mps`` or
+    ``opencl``.  An explicit ``backend`` takes precedence over the environment
+    variable. Explicit accelerator requests are still safe: an unavailable
+    device or a runtime failure falls back to the unchanged CPU algorithm.
+    """
+    if not isinstance(image_rgb, np.ndarray):
+        raise TypeError("image_rgb must be a numpy array")
+    if image_rgb.ndim != 3 or image_rgb.shape[2] != 3:
+        raise ValueError("image_rgb must have shape (height, width, 3)")
+    if image_rgb.dtype not in (np.uint8, np.uint16):
+        raise TypeError("image_rgb must use uint8 or uint16 samples")
+
+    normalized = (params or DehazeParams()).normalized()
+    if normalized.strength <= 1e-6 or image_rgb.size == 0:
+        return image_rgb.copy()
+
+    if backend is None:
+        requested = _requested_backend()
+    elif isinstance(backend, str):
+        normalized_backend = backend.strip().lower()
+        requested = normalized_backend if normalized_backend in _BACKEND_NAMES else "auto"
+    else:
+        requested = "auto"
+    # Do not cache this decision: tests and desktop sessions can change the
+    # environment between calls, and device availability can change at runtime.
+    for backend in _backend_candidates(requested):
+        if backend == "cpu":
+            return _apply_dehaze_cpu(image_rgb, normalized)
+        try:
+            with _BACKEND_LOCK:
+                if not _backend_available(backend):
+                    continue
+                return _run_gpu_backend(image_rgb, normalized, backend)
+        except Exception:
+            # A driver/context failure must never make preview or export fail.
+            # Try the next auto candidate, or the CPU reference for explicit
+            # requests.  The exception is intentionally not logged here because
+            # this function is called for every preview tile and paths may be
+            # sensitive; callers can instrument their own backend adapter.
+            continue
+
+    return _apply_dehaze_cpu(image_rgb, normalized)
