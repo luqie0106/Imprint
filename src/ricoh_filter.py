@@ -1059,6 +1059,66 @@ def write_dehaze_settings(photo: str | Path, params: dict[str, float],
         return (sidecar or photo_path.with_suffix(".xmp")).name
 
 
+def write_photo_settings(
+    photo: str | Path,
+    dehaze_params: dict[str, float],
+    basic_params: dict[str, float],
+    ricoh_preset_id: str | None,
+) -> dict[str, str]:
+    """Atomically merge one complete Imprint photo-settings snapshot into XMP."""
+    if set(dehaze_params) != set(_DEHAZE_FIELDS):
+        raise ValueError("invalid dehaze settings")
+    dehaze_values = {key: float(value) for key, value in dehaze_params.items()}
+    if any(not math.isfinite(value) or not 0.0 <= value <= 1.0
+           for value in dehaze_values.values()):
+        raise ValueError("invalid dehaze settings")
+    basic_values = validate_basic_params(basic_params)
+    if ricoh_preset_id is not None and ricoh_preset_id not in _PRESETS_BY_ID:
+        raise KeyError(ricoh_preset_id)
+
+    photo_path = Path(photo)
+    if not photo_path.is_file():
+        raise FileNotFoundError
+    with _WRITE_LOCK:
+        sidecar = _sidecar_path(photo_path)
+        existing_payload = sidecar.read_bytes() if sidecar is not None else None
+        if ricoh_preset_id is not None:
+            # Preset processing controls and basic adjustments are merged in
+            # memory first. The full settings snapshot is committed once below.
+            root = _parse_xmp(_merge_preset_payload(
+                existing_payload, ricoh_preset_id, basic_values,
+            ))
+        else:
+            root = (
+                _parse_xmp(existing_payload)
+                if existing_payload is not None
+                else ET.Element("{adobe:ns:meta/}xmpmeta")
+            )
+            description = _description(root, create=True)
+            assert description is not None
+            existing_preset_id = _find_simple(description, _IMPRINT_NS, "RicohPresetId")
+            baseline = (
+                _preset_controls(existing_preset_id)
+                if existing_preset_id in _PRESETS_BY_ID else {}
+            )
+            for key, (crs_name, low, high) in _BASIC_FIELDS.items():
+                description.set("{" + _IMPRINT_NS + "}Basic" + key.title(),
+                                format(basic_values[key], ".8g"))
+                absolute = max(low, min(high, float(baseline.get(key, 0)) + basic_values[key]))
+                description.set("{" + _CRS_NS + "}" + crs_name, format(absolute, ".8g"))
+
+        description = _description(root, create=True)
+        assert description is not None
+        for field_name, value in dehaze_values.items():
+            local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
+            description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
+        _atomic_write_sidecar(photo_path, _serialize_xmp(root))
+        return {
+            "name": (sidecar or photo_path.with_suffix(".xmp")).name,
+            "status": "updated" if sidecar is not None else "written",
+        }
+
+
 def write_basic_settings(photo: str | Path, params: dict[str, float]) -> str:
     """Write ACR basic fields as preset-relative adjustments in an XMP sidecar."""
     values = validate_basic_params(params)
@@ -1128,10 +1188,14 @@ def apply_ricoh_preset(paths: list[str], preset_id: str) -> dict[str, object]:
 def apply_ricoh_preset_to_session(
     photos: Iterable[tuple[str, str | Path]], preset_id: str,
     basic_params_by_photo: dict[str, dict[str, float]] | None = None,
+    preset_ids_by_photo: dict[str, str | None] | None = None,
 ) -> dict[str, object]:
     """Apply one preset to session records, writing only one XMP per stem."""
     if preset_id not in _PRESETS_BY_ID:
         raise KeyError(preset_id)
+    if any(value is not None and value not in _PRESETS_BY_ID
+           for value in (preset_ids_by_photo or {}).values()):
+        raise KeyError("unknown per-photo preset")
     records = list(photos)
     if len(records) > _MAX_PHOTOS:
         raise RicohBatchLimitError(f"最多处理 {_MAX_PHOTOS} 张照片")
@@ -1141,13 +1205,23 @@ def apply_ricoh_preset_to_session(
         photo = Path(raw_path)
         key = (str(photo.parent).casefold(), photo.stem.casefold())
         name = photo.stem + ".xmp"
+        selected_preset_id = (preset_ids_by_photo or {}).get(photo_id, preset_id)
+        if selected_preset_id is None:
+            files.append({"photo_id": photo_id, "name": name, "status": "skipped",
+                          "error": "未选择理光预设"})
+            continue
+        if selected_preset_id not in _PRESETS_BY_ID:
+            raise KeyError(selected_preset_id)
         if key in seen:
             files.append({"photo_id": photo_id, "name": name, "status": "skipped", "error": "同名伴生照片共用一个 XMP"})
             continue
         seen.add(key)
         try:
             existing = _sidecar_path(photo)
-            name = write_ricoh_preset(photo, preset_id, (basic_params_by_photo or {}).get(photo_id))
+            name = write_ricoh_preset(
+                photo, selected_preset_id,
+                (basic_params_by_photo or {}).get(photo_id),
+            )
             files.append({"photo_id": photo_id, "name": name, "status": "updated" if existing else "written"})
         except (OSError, RuntimeError, ValueError, ET.ParseError) as exc:
             files.append({"photo_id": photo_id, "name": name, "status": "failed", "error": _safe_error(exc)})
@@ -1157,8 +1231,12 @@ def apply_ricoh_preset_to_session(
 def write_dehaze_session_settings(
     photos: Iterable[tuple[str, str | Path, dict[str, float]]],
     basic_params_by_photo: dict[str, dict[str, float]] | None = None,
+    preset_ids_by_photo: dict[str, str | None] | None = None,
 ) -> dict[str, object]:
     """Write per-photo dehaze values through active session records."""
+    if any(value is not None and value not in _PRESETS_BY_ID
+           for value in (preset_ids_by_photo or {}).values()):
+        raise KeyError("unknown per-photo preset")
     records = list(photos)
     if len(records) > 5000:
         raise RicohBatchLimitError("最多处理 5000 张照片")
@@ -1174,7 +1252,15 @@ def write_dehaze_session_settings(
         seen.add(key)
         try:
             existing = _sidecar_path(photo)
-            name = write_dehaze_settings(photo, params, (basic_params_by_photo or {}).get(photo_id))
+            basic = (basic_params_by_photo or {}).get(photo_id)
+            if preset_ids_by_photo is not None and photo_id in preset_ids_by_photo:
+                if basic is None:
+                    basic = read_photo_settings(photo)["basic_params"]
+                name = write_photo_settings(
+                    photo, params, basic, preset_ids_by_photo[photo_id],
+                )["name"]
+            else:
+                name = write_dehaze_settings(photo, params, basic)
             files.append({"photo_id": photo_id, "name": name, "status": "updated" if existing else "written"})
         except (OSError, RuntimeError, ValueError, ET.ParseError) as exc:
             files.append({"photo_id": photo_id, "name": name, "status": "failed", "error": _safe_error(exc)})

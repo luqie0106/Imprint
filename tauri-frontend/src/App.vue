@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, watch } from "vue";
+import { flushPendingSaves } from "./stores/photoSource";
 import {
   initApiConnection,
   isServerReady,
@@ -32,6 +33,7 @@ import {
 
 type TabType = "burst" | "enhance" | "ricoh" | "models" | "trainer";
 const activeTab = ref<TabType>("burst");
+watch(activeTab, () => { void flushPendingSaves(); });
 
 async function retryConnection() {
   await initApiConnection();

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import copy
+from collections import OrderedDict
 import json
 import os
 import shutil
@@ -38,7 +39,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from burst_filter import BurstFilter, RawEvaluator
 from model_manager import (
@@ -56,6 +57,7 @@ from model_manager import (
     get_resolved_standard_l14_onnx_path,
 )
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
+from dehaze import ALGORITHM_VERSION as DEHAZE_ALGORITHM_VERSION
 from dehaze import DehazeParams, apply_dehaze, get_gpu_status
 from dng_writer import write_enhanced_dng, write_linear_dng
 from image_io import (
@@ -93,6 +95,7 @@ from ricoh_filter import (
     write_dehaze_session_settings,
     write_dehaze_settings,
     write_ricoh_preset,
+    write_photo_settings,
     validate_basic_params,
 )
 
@@ -126,6 +129,11 @@ _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _RICOH_PREVIEW_CACHE: dict[tuple, bytes] = {}
 _RICOH_JOBS: dict[str, dict[str, Any]] = {}
 _ENHANCE_LOCK = threading.RLock()
+_DISPLAY_PREVIEW_LOCK = threading.RLock()
+_DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_MAX_DISPLAY_PREVIEW_BYTES = 64 * 1024 * 1024
+_DEHAZED_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_MAX_DEHAZED_PREVIEW_BYTES = 64 * 1024 * 1024
 _MAX_ENHANCE_SESSIONS = 8
 _MAX_ENHANCE_THUMBNAILS = 256
 
@@ -188,7 +196,7 @@ class TrainerRequest(BaseModel):
 
 
 class EnhanceParamsRequest(BaseModel):
-    strength: float = Field(default=0.45, ge=0.0, le=1.0)
+    strength: float = Field(default=0.0, ge=0.0, le=1.0)
     naturalness: float = Field(default=0.70, ge=0.0, le=1.0)
     fog_retention: float = Field(default=0.55, ge=0.0, le=1.0)
     local_contrast: float = Field(default=0.25, ge=0.0, le=1.0)
@@ -230,6 +238,7 @@ class EnhancePreviewRequest(BaseModel):
     mode: Literal["original", "dehazed"] = "dehazed"
     color_manage_srgb: bool = False
     use_gpu: bool = False
+    ricoh_preset_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class EnhanceRevealRequest(BaseModel):
@@ -255,12 +264,24 @@ class EnhanceXmpRequest(BaseModel):
     session_id: str
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
+    preset_ids_by_photo: dict[str, str | None] = Field(default_factory=dict)
 
 
 class RicohSessionRequest(BaseModel):
     session_id: str
     preset_id: str = Field(min_length=1, max_length=80)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
+    preset_ids_by_photo: dict[str, str | None] = Field(default_factory=dict)
+
+
+class PhotoSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    photo_id: str
+    dehaze_params: EnhanceParamsRequest
+    basic_params: BasicParamsRequest
+    ricoh_preset_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class RicohPreviewRequest(BaseModel):
@@ -276,6 +297,7 @@ class RicohRunRequest(BaseModel):
     preset_id: str = Field(min_length=1, max_length=80)
     output_dir: str = ""
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
+    preset_ids_by_photo: dict[str, str] = Field(default_factory=dict)
 
 
 def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
@@ -427,11 +449,126 @@ def apply_ricoh_preset_session(req: RicohSessionRequest):
         return apply_ricoh_preset_to_session(
             records, req.preset_id,
             {key: value.values() for key, value in req.basic_params_by_photo.items()},
+            req.preset_ids_by_photo,
         )
     except KeyError:
         return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     except RicohBatchLimitError:
         return JSONResponse(status_code=413, content={"error": "一次最多处理 500 张照片"})
+
+
+@app.post("/api/photo/settings")
+def save_photo_settings_snapshot(req: PhotoSettingsRequest):
+    """Save one complete settings snapshot for a photo in an active session."""
+    with _ENHANCE_LOCK:
+        session = _ENHANCE_SESSIONS.get(req.session_id)
+        path = session.get("files", {}).get(req.photo_id) if session else None
+    if session is None or path is None:
+        return JSONResponse(status_code=404, content={"error": "照片会话或照片已失效"})
+    try:
+        result = write_photo_settings(
+            path,
+            req.dehaze_params.to_params().__dict__,
+            req.basic_params.values(),
+            req.ricoh_preset_id,
+        )
+        return {
+            "photo_id": req.photo_id,
+            "status": "saved",
+            "sidecar_status": result["status"],
+            "name": result["name"],
+        }
+    except KeyError:
+        return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    except FileExistsError:
+        return JSONResponse(status_code=409, content={"error": "已存在同名 XMP，未覆盖"})
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "照片设置无效"})
+    except Exception:
+        # Never include server-side photo paths or filesystem error details.
+        return JSONResponse(status_code=500, content={"error": "保存照片设置失败"})
+
+
+def _cached_display_preview(session_id: str, photo_id: str, path: Path,
+                            max_edge: int) -> np.ndarray:
+    """Share decoded, color-managed previews across original/effect requests.
+
+    A bounded cache avoids decoding the same RAW again for every slider change.
+    The dedicated lock also coalesces simultaneous first loads of one photo.
+    """
+    stat = path.stat()
+    key = (session_id, photo_id, max_edge, stat.st_mtime_ns, stat.st_size)
+    with _DISPLAY_PREVIEW_LOCK:
+        cached = _DISPLAY_PREVIEW_CACHE.get(key)
+        if cached is not None:
+            _DISPLAY_PREVIEW_CACHE.move_to_end(key)
+            return cached
+        image, metadata = read_image(path, preview=True, max_edge=max_edge)
+        display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+        if getattr(metadata, "source_kind", "") == "rgb":
+            display = standard_preview_to_srgb(display, path)
+        display.setflags(write=False)
+        if display.nbytes <= _MAX_DISPLAY_PREVIEW_BYTES:
+            for old_key in [old_key for old_key in _DISPLAY_PREVIEW_CACHE
+                            if old_key[:2] == key[:2] and old_key != key]:
+                _DISPLAY_PREVIEW_CACHE.pop(old_key, None)
+            while (_DISPLAY_PREVIEW_CACHE and
+                   sum(value.nbytes for value in _DISPLAY_PREVIEW_CACHE.values())
+                   + display.nbytes > _MAX_DISPLAY_PREVIEW_BYTES):
+                _DISPLAY_PREVIEW_CACHE.popitem(last=False)
+            _DISPLAY_PREVIEW_CACHE[key] = display
+        return display
+
+
+def _cached_dehazed_display_preview(
+    session_id: str,
+    photo_id: str,
+    path: Path,
+    max_edge: int,
+    params: DehazeParams,
+    backend: str,
+    color_manage_srgb: bool,
+) -> np.ndarray:
+    """Cache the post-dehaze display base so basic and Ricoh edits stay responsive."""
+    stat = path.stat()
+    dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
+    key = (
+        session_id, photo_id, stat.st_mtime_ns, stat.st_size,
+        DEHAZE_ALGORITHM_VERSION, dehaze_values, max_edge, backend,
+        bool(color_manage_srgb),
+    )
+    with _DISPLAY_PREVIEW_LOCK:
+        cached = _DEHAZED_PREVIEW_CACHE.get(key)
+        if cached is not None:
+            _DEHAZED_PREVIEW_CACHE.move_to_end(key)
+            return cached
+
+        image, metadata = read_image(path, preview=True, max_edge=max_edge)
+        dehazed = apply_dehaze(image, params, backend=backend)
+        display = _display_rgb8(
+            dehazed, linear=getattr(metadata, "color_space", "") == "Linear sRGB",
+        )
+        if color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
+            display = standard_preview_to_srgb(display, path)
+        display.setflags(write=False)
+
+        if display.nbytes <= _MAX_DEHAZED_PREVIEW_BYTES:
+            # Drop stale copies if the source file changed during the session.
+            for old_key in [
+                old_key for old_key in _DEHAZED_PREVIEW_CACHE
+                if old_key[:2] == key[:2] and old_key[2:4] != key[2:4]
+            ]:
+                _DEHAZED_PREVIEW_CACHE.pop(old_key, None)
+            while (
+                _DEHAZED_PREVIEW_CACHE
+                and sum(value.nbytes for value in _DEHAZED_PREVIEW_CACHE.values())
+                + display.nbytes > _MAX_DEHAZED_PREVIEW_BYTES
+            ):
+                _DEHAZED_PREVIEW_CACHE.popitem(last=False)
+            _DEHAZED_PREVIEW_CACHE[key] = display
+        return display
 
 
 @app.post("/api/ricoh/preview")
@@ -452,10 +589,7 @@ def create_ricoh_preview(req: RicohPreviewRequest):
                      "X-Preview-Empirical-Color": "hsl-and-grading-response"},
         )
     try:
-        image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
-        display_image = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
-        if getattr(metadata, "source_kind", "") == "rgb":
-            display_image = standard_preview_to_srgb(display_image, path)
+        display_image = _cached_display_preview(req.session_id, req.photo_id, Path(path), req.max_edge)
         effected = apply_ricoh_preview_effect(display_image, req.preset_id, basic,
                                               use_measured_color=True)
         payload = _encode_preview(effected)
@@ -468,8 +602,8 @@ def create_ricoh_preview(req: RicohPreviewRequest):
             media_type="image/jpeg",
             headers={
                 "Cache-Control": "private, max-age=3600",
-                "X-Image-Width": str(metadata.width),
-                "X-Image-Height": str(metadata.height),
+                "X-Image-Width": str(display_image.shape[1]),
+                "X-Image-Height": str(display_image.shape[0]),
                 "X-Preview-Approximation": "true",
                 "X-Preview-Empirical-Color": "hsl-and-grading-response",
             },
@@ -859,6 +993,11 @@ def create_enhance_session(req: EnhanceSessionRequest):
                     _ENHANCE_THUMBNAIL_CACHE.pop(key, None)
                 for key in [key for key in _RICOH_PREVIEW_CACHE if key[0] == expired]:
                     _RICOH_PREVIEW_CACHE.pop(key, None)
+                with _DISPLAY_PREVIEW_LOCK:
+                    for key in [key for key in _DISPLAY_PREVIEW_CACHE if key[0] == expired]:
+                        _DISPLAY_PREVIEW_CACHE.pop(key, None)
+                    for key in [key for key in _DEHAZED_PREVIEW_CACHE if key[0] == expired]:
+                        _DEHAZED_PREVIEW_CACHE.pop(key, None)
         return {
             "session_id": session_id,
             "count": len(files),
@@ -885,8 +1024,12 @@ def save_enhance_session_xmp(req: EnhanceXmpRequest):
     ]
     try:
         return write_dehaze_session_settings(
-            scoped, {key: value.values() for key, value in req.basic_params_by_photo.items()},
+            scoped,
+            {key: value.values() for key, value in req.basic_params_by_photo.items()},
+            req.preset_ids_by_photo,
         )
+    except KeyError:
+        return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     except RicohBatchLimitError:
         return JSONResponse(status_code=413, content={"error": "一次最多处理 5000 张照片"})
 
@@ -915,30 +1058,46 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     if path is None or not Path(path).is_file():
         return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
     params = req.params.to_params()
-    token = params.cache_token()
+    dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
     basic = req.basic_params.values()
-    cache_key = (req.session_id, req.photo_id, token, req.max_edge, req.mode, bool(req.use_gpu),
-                 bool(req.color_manage_srgb),
+    stat = Path(path).stat()
+    effective_preset_id = req.ricoh_preset_id if req.mode == "dehazed" else None
+    cache_key = (req.session_id, req.photo_id, stat.st_mtime_ns, stat.st_size,
+                 DEHAZE_ALGORITHM_VERSION, dehaze_values, req.max_edge, req.mode,
+                 effective_preset_id, bool(req.use_gpu), bool(req.color_manage_srgb),
                  tuple(basic[key] for key in sorted(basic)))
+
+    if effective_preset_id is not None:
+        valid_preset_ids = {preset["id"] for preset in list_ricoh_presets()}
+        if effective_preset_id not in valid_preset_ids:
+            return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     with _ENHANCE_LOCK:
         cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
     if cached is not None:
         return Response(content=cached, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
     try:
-        image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
-        if req.mode == "dehazed":
-            image = apply_dehaze(image, params, backend="auto" if req.use_gpu else "cpu")
-            display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
-            image = apply_basic_preview_effect(display, basic)
-            payload = _encode_preview(image)
-        else:
-            if req.color_manage_srgb:
-                display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
-                if getattr(metadata, "source_kind", "") == "rgb":
-                    display = standard_preview_to_srgb(display, path)
-                payload = _encode_preview(display)
+        if req.mode == "original" and req.color_manage_srgb:
+            display = _cached_display_preview(req.session_id, req.photo_id, Path(path), req.max_edge)
+            payload = _encode_preview(display)
+            width, height = display.shape[1], display.shape[0]
+        elif req.mode == "dehazed":
+            display = _cached_dehazed_display_preview(
+                req.session_id, req.photo_id, Path(path), req.max_edge, params,
+                backend="auto" if req.use_gpu else "cpu",
+                color_manage_srgb=req.color_manage_srgb,
+            )
+            if effective_preset_id is not None:
+                effected = apply_ricoh_preview_effect(
+                    display, effective_preset_id, basic, use_measured_color=True,
+                )
             else:
-                payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+                effected = apply_basic_preview_effect(display, basic)
+            payload = _encode_preview(effected)
+            width, height = display.shape[1], display.shape[0]
+        else:
+            image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
+            width, height = metadata.width, metadata.height
+            payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
         with _ENHANCE_LOCK:
             if len(_ENHANCE_PREVIEW_CACHE) >= 128:
                 _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)
@@ -948,10 +1107,12 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             media_type="image/jpeg",
             headers={
                 "Cache-Control": "private, max-age=3600",
-                "X-Image-Width": str(metadata.width),
-                "X-Image-Height": str(metadata.height),
+                "X-Image-Width": str(width),
+                "X-Image-Height": str(height),
             },
         )
+    except KeyError:
+        return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     except Exception as exc:
         status_code = 422 if _is_enhance_unsupported_error(exc) else 500
         return JSONResponse(status_code=status_code, content={"error": _enhance_error_message(exc)})
@@ -1216,7 +1377,8 @@ def _ricoh_public_job(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Path,
-                   basic_params_by_photo: Mapping[str, dict[str, float]] | None = None) -> None:
+                   basic_params_by_photo: Mapping[str, dict[str, float]] | None = None,
+                   preset_ids_by_photo: Mapping[str, str] | None = None) -> None:
     with _ENHANCE_LOCK:
         job = _RICOH_JOBS[job_id]
         records = list(_ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).items())
@@ -1231,6 +1393,7 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Pat
             item["status"] = "processing"
             job["current_file"] = Path(path).name
         try:
+            photo_preset_id = (preset_ids_by_photo or {}).get(photo_id, preset_id)
             image, metadata = read_image(path, preview=False)
             source16 = to_uint16(image)
             # Camera Raw controls operate on a display-referred rendering.
@@ -1241,7 +1404,7 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Pat
                 else source16
             )
             basic = (basic_params_by_photo or {}).get(photo_id)
-            effected_display16 = apply_ricoh_preview_effect(display16, preset_id, basic)
+            effected_display16 = apply_ricoh_preview_effect(display16, photo_preset_id, basic)
             effected_linear16 = _srgb16_to_linear16(effected_display16)
             output_path = write_linear_dng(
                 effected_linear16, path, output_dir, dict(metadata.exif), bits_per_sample=16,
@@ -1252,7 +1415,7 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Pat
             # the same look a second time when opening the DNG.
             xmp_status: dict[str, str] = {"source": "failed", "output": "rendered"}
             try:
-                write_ricoh_preset(path, preset_id, basic)
+                write_ricoh_preset(path, photo_preset_id, basic)
                 xmp_status["source"] = "written"
             except Exception:
                 xmp_status["source"] = "failed"
@@ -1279,7 +1442,10 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Pat
 
 @app.post("/api/ricoh/run")
 def run_ricoh(req: RicohRunRequest):
-    if req.preset_id not in {preset["id"] for preset in list_ricoh_presets()}:
+    valid_preset_ids = {preset["id"] for preset in list_ricoh_presets()}
+    if req.preset_id not in valid_preset_ids or any(
+        preset_id not in valid_preset_ids for preset_id in req.preset_ids_by_photo.values()
+    ):
         return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     with _ENHANCE_LOCK:
         session = _ENHANCE_SESSIONS.get(req.session_id)
@@ -1306,6 +1472,7 @@ def run_ricoh(req: RicohRunRequest):
         "job_id": job_id,
         "status": "queued",
         "preset_id": req.preset_id,
+        "preset_ids_by_photo": dict(req.preset_ids_by_photo),
         "total": len(records),
         "processed": 0,
         "success": 0,
@@ -1319,7 +1486,8 @@ def run_ricoh(req: RicohRunRequest):
     thread = threading.Thread(
         target=_run_ricoh_job,
         args=(job_id, req.session_id, req.preset_id, output_dir,
-              {key: value.values() for key, value in req.basic_params_by_photo.items()}),
+              {key: value.values() for key, value in req.basic_params_by_photo.items()},
+              dict(req.preset_ids_by_photo)),
         name=f"ricoh-{job_id[:8]}", daemon=True,
     )
     job["_thread"] = thread

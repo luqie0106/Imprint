@@ -2,8 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { BASE_URL, isServerReady } from "../stores/api";
-import { sharedPhotoSource, sharePhotoSource } from "../stores/photoSource";
-import { Columns2, Image as ImageIcon, Maximize2, Minus, Plus } from "lucide-vue-next";
+import {
+  autoSaveError, clearAutoSaveErrors, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
+  previewUseGpu, sharedDehazeByPhoto,
+  sharedPhotoSource, sharedPresetByPhoto, sharedSelectedPhotoId, sharePhotoSource,
+  type PhotoSource,
+} from "../stores/photoSource";
+import {
+  Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images, LoaderCircle,
+  Maximize2, Minus, Plus, Rows2, Sparkles,
+} from "lucide-vue-next";
 
 interface Preset { id: string; model: string; name: string; description: string }
 interface BasicParams {
@@ -20,6 +28,8 @@ interface Photo { photo_id: string; name: string; ricoh_preset_id?: string | nul
 interface Summary { written: number; skipped: number; failed: number }
 interface Job { job_id: string; status: string; total: number; processed: number; success: number; failed: number }
 type PreviewMode = "compare" | "original" | "effect";
+type ThumbnailState = "loading" | "loaded" | "error";
+type PhotoListLayout = "vertical" | "horizontal";
 
 const defaultBasicParams: BasicParams = {
   exposure: 0, contrast: 0, highlights: 0, shadows: 0,
@@ -41,10 +51,19 @@ function cloneBasicParams(source?: Partial<BasicParams> | null): BasicParams {
 }
 
 const presets = ref<Preset[]>([]);
-const selectedPreset = ref("");
+const selectedPreset = computed({
+  get: () => sharedPresetByPhoto.value[selectedId.value] || "",
+  set: (presetId: string) => {
+    if (!selectedId.value) return;
+    sharedPresetByPhoto.value[selectedId.value] = presetId;
+    markPhotoChanged(selectedId.value);
+  },
+});
 const sessionId = ref("");
 const files = ref<Photo[]>([]);
-const basicParamsByPhoto = ref<Record<string, BasicParams>>({});
+const thumbnailStates = ref<Record<string, ThumbnailState>>({});
+const photoListLayout = ref<PhotoListLayout>("vertical");
+const basicParamsByPhoto = sharedBasicByPhoto;
 const selectedId = ref("");
 const outputDir = ref("");
 const originalUrl = ref("");
@@ -70,6 +89,7 @@ const summary = ref<Summary | null>(null);
 const job = ref<Job | null>(null);
 const currentFile = computed(() => files.value.find(file => file.photo_id === selectedId.value));
 const basicParams = computed<BasicParams>(() => basicParamsByPhoto.value[selectedId.value] ?? defaultBasicParams);
+const dehazeParams = computed(() => sharedDehazeByPhoto.value[selectedId.value]);
 const effectReady = computed(() => Boolean(effectUrl.value) && !previewLoading.value);
 const showComparePreview = computed(() => mode.value === "compare" && effectReady.value);
 const previewImageUrl = computed(() => mode.value !== "original" && effectReady.value ? effectUrl.value : originalUrl.value);
@@ -206,7 +226,10 @@ function rangeProgress(key: keyof BasicParams, value: number) {
 }
 
 function resetBasicParams() {
-  if (selectedId.value) basicParamsByPhoto.value[selectedId.value] = cloneBasicParams();
+  if (selectedId.value) {
+    basicParamsByPhoto.value[selectedId.value] = cloneBasicParams();
+    markPhotoChanged(selectedId.value);
+  }
 }
 
 async function postJson(endpoint: string, body: object) {
@@ -225,28 +248,28 @@ async function loadPresets() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "无法读取预设");
     presets.value = data.presets ?? [];
-    if (!presets.value.some(preset => preset.id === selectedPreset.value))
-      selectedPreset.value = presets.value[0]?.id ?? "";
   } catch (cause) { error.value = cause instanceof Error ? cause.message : "无法读取预设"; }
 }
 
-async function createSession(source: { paths?: string[]; input_dir?: string }, publish = true) {
+function adoptSession(source: PhotoSource) {
+  sessionId.value = source.session_id;
+  files.value = source.files as Photo[];
+  thumbnailStates.value = Object.fromEntries(source.files.map(file => [file.photo_id, "loading"]));
+  selectedId.value = sharedSelectedPhotoId.value || source.files[0]?.photo_id || "";
+  outputDir.value = source.ricoh_default_output_dir;
+  job.value = null;
+  message.value = `已载入 ${source.files.length} 张照片`;
+}
+
+async function createSession(source: { paths?: string[]; input_dir?: string }) {
   if (!BASE_URL.value) return;
   loading.value = true;
   error.value = "";
   try {
+    await flushPendingSaves();
     const data = await postJson("/api/enhance/session", source);
-    sessionId.value = data.session_id;
-    files.value = data.files;
-    basicParamsByPhoto.value = Object.fromEntries(
-      (data.files as Photo[]).map(file => [file.photo_id, cloneBasicParams(file.basic_params)]),
-    );
-    selectedId.value = data.files[0]?.photo_id ?? "";
-    const savedPreset = data.files[0]?.ricoh_preset_id;
-    if (savedPreset && presets.value.some(preset => preset.id === savedPreset)) selectedPreset.value = savedPreset;
-    outputDir.value = data.ricoh_default_output_dir;
-    message.value = `已载入 ${data.count} 张照片`;
-    if (publish) sharePhotoSource("ricoh", source);
+    await sharePhotoSource("ricoh", source, data);
+    if (sharedPhotoSource.value) adoptSession(sharedPhotoSource.value);
   } catch (cause) { error.value = cause instanceof Error ? cause.message : "无法读取照片"; }
   finally { loading.value = false; }
 }
@@ -265,7 +288,18 @@ async function chooseOutput() {
   if (typeof selected === "string") outputDir.value = selected;
 }
 function thumbnailUrl(file: Photo) {
-  return `${BASE_URL.value}/api/enhance/thumbnail/${encodeURIComponent(sessionId.value)}/${encodeURIComponent(file.photo_id)}`;
+  const baseUrl = BASE_URL.value;
+  if (!baseUrl || !sessionId.value || !file.photo_id) return "";
+  return `${baseUrl}/api/enhance/thumbnail/${encodeURIComponent(sessionId.value)}/${encodeURIComponent(file.photo_id)}`;
+}
+function thumbnailState(photoId: string): ThumbnailState {
+  return thumbnailStates.value[photoId] ?? "loading";
+}
+function setThumbnailState(photoId: string, state: ThumbnailState) {
+  thumbnailStates.value = { ...thumbnailStates.value, [photoId]: state };
+}
+function isPhotoListLayout(layout: PhotoListLayout) {
+  return photoListLayout.value === layout;
 }
 function releasePreview() {
   if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
@@ -314,11 +348,13 @@ async function refreshPreview(includeOriginal = false) {
     if (requestOriginal) requests.push(requestPreview("/api/enhance/preview", {
       ...common, mode: "original", color_manage_srgb: true,
     }, token));
-    if (selectedPreset.value) {
-      requests.push(requestPreview("/api/ricoh/preview", {
-        ...common, preset_id: selectedPreset.value, basic_params: cloneBasicParams(basicParams.value),
-      }, token));
-    }
+    requests.push(requestPreview("/api/enhance/preview", {
+      ...common, mode: "dehazed", color_manage_srgb: true,
+      params: dehazeParams.value,
+      basic_params: cloneBasicParams(basicParams.value),
+      ricoh_preset_id: selectedPreset.value || null,
+      use_gpu: previewUseGpu.value,
+    }, token));
     const results = await Promise.allSettled(requests);
     if (token !== generation) return;
     const rejected = results.find(result => result.status === "rejected");
@@ -327,10 +363,8 @@ async function refreshPreview(includeOriginal = false) {
       const result = results[resultIndex++];
       if (result?.status === "fulfilled") originalUrl.value = result.value;
     }
-    if (selectedPreset.value) {
-      const result = results[resultIndex];
-      if (result?.status === "fulfilled") effectUrl.value = result.value;
-    }
+    const effectResult = results[resultIndex];
+    if (effectResult?.status === "fulfilled") effectUrl.value = effectResult.value;
     if (rejected?.status === "rejected") throw rejected.reason;
   } catch (cause) {
     if (token === generation) error.value = cause instanceof Error ? cause.message : "预览失败";
@@ -343,17 +377,24 @@ function schedulePreview() {
 }
 
 async function saveXmp() {
-  if (!sessionId.value || !selectedPreset.value || busy.value) return;
+  if (!sessionId.value || busy.value) return;
   busy.value = true;
   error.value = "";
   try {
-    summary.value = await postJson("/api/ricoh/apply-session", {
+    await flushPendingSaves();
+    summary.value = await postJson("/api/enhance/xmp", {
       session_id: sessionId.value,
-      preset_id: selectedPreset.value,
+      params_by_photo: Object.fromEntries(files.value.map(file => [
+        file.photo_id, sharedDehazeByPhoto.value[file.photo_id],
+      ])),
+      preset_ids_by_photo: Object.fromEntries(files.value.map(file => [
+        file.photo_id, sharedPresetByPhoto.value[file.photo_id] ?? null,
+      ])),
       basic_params_by_photo: Object.fromEntries(files.value.map(file => [
         file.photo_id, cloneBasicParams(basicParamsByPhoto.value[file.photo_id] ?? file.basic_params),
       ])),
     });
+    if (!summary.value?.failed) clearAutoSaveErrors();
     message.value = `XMP 已写入 ${summary.value?.written ?? 0} 张，失败 ${summary.value?.failed ?? 0} 张`;
   } catch (cause) { error.value = cause instanceof Error ? cause.message : "写入 XMP 失败"; }
   finally { busy.value = false; }
@@ -380,9 +421,13 @@ async function exportDng() {
   if (!sessionId.value || !selectedPreset.value || isRunning.value) return;
   error.value = "";
   try {
+    await flushPendingSaves();
     job.value = await postJson("/api/ricoh/run", {
       session_id: sessionId.value,
       preset_id: selectedPreset.value,
+      preset_ids_by_photo: Object.fromEntries(files.value.map(file => [
+        file.photo_id, sharedPresetByPhoto.value[file.photo_id] || presets.value[0]?.id || selectedPreset.value,
+      ])),
       output_dir: outputDir.value,
       basic_params_by_photo: Object.fromEntries(files.value.map(file => [
         file.photo_id, cloneBasicParams(basicParamsByPhoto.value[file.photo_id] ?? file.basic_params),
@@ -402,9 +447,11 @@ async function cancelExport() {
 }
 watch([isServerReady, BASE_URL], () => { void loadPresets(); }, { immediate: true });
 watch(sharedPhotoSource, source => {
-  if (source?.owner === "enhance") void createSession({ paths: source.paths, input_dir: source.input_dir }, false);
+  if (source?.owner === "enhance") adoptSession(source);
 }, { immediate: true });
 watch([sessionId, selectedId], () => {
+  if (selectedId.value && sharedPhotoSource.value?.session_id === sessionId.value)
+    sharedSelectedPhotoId.value = selectedId.value;
   window.clearTimeout(previewTimer);
   releasePreview();
   resetView();
@@ -414,10 +461,17 @@ watch([sessionId, selectedId], () => {
   void refreshPreview(true);
 });
 watch(selectedPreset, () => { schedulePreview(); });
-watch(basicParams, () => { schedulePreview(); }, { deep: true });
-watch(selectedId, photoId => {
-  const savedPreset = files.value.find(file => file.photo_id === photoId)?.ricoh_preset_id;
-  if (savedPreset && presets.value.some(preset => preset.id === savedPreset)) selectedPreset.value = savedPreset;
+watch(dehazeParams, schedulePreview, { deep: true });
+watch(previewUseGpu, schedulePreview);
+watch(basicParams, (next, previous) => {
+  schedulePreview();
+  if (selectedId.value && next === previous) {
+    markPhotoChanged(selectedId.value);
+  }
+}, { deep: true });
+watch(sharedSelectedPhotoId, photoId => {
+  if (photoId && photoId !== selectedId.value && files.value.some(file => file.photo_id === photoId))
+    selectedId.value = photoId;
 });
 watch([fitWidth, fitHeight], clampPan);
 onMounted(() => {
@@ -428,6 +482,7 @@ onMounted(() => {
   }
 });
 onBeforeUnmount(() => {
+  void flushPendingSaves();
   generation++;
   releasePreview();
   window.clearTimeout(previewTimer);
@@ -440,33 +495,51 @@ onBeforeUnmount(() => {
   <div class="h-full min-h-0 overflow-hidden bg-slate-50 p-5 dark:bg-zinc-950">
     <div class="mx-auto grid h-full min-h-0 max-w-[1500px] grid-cols-[clamp(150px,17vw,220px)_minmax(0,1fr)_clamp(270px,23vw,300px)] gap-4">
       <aside class="flex min-h-0 flex-col gap-4">
-        <section class="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 class="mb-3 text-sm font-semibold">输入照片</h2>
-          <button @click="choosePhotos" class="mb-2 w-full rounded-xl border px-3 py-2 text-left text-xs dark:border-zinc-700">选择照片</button>
-          <button @click="chooseFolder" class="w-full rounded-xl border px-3 py-2 text-left text-xs dark:border-zinc-700">选择文件夹</button>
-          <p class="mt-3 text-xs text-slate-500">{{ loading ? "正在载入…" : `当前共 ${files.length} 张` }}</p>
+        <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="mb-3 flex items-center gap-2"><ImagePlus class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">输入照片</h2></div>
+          <div class="grid gap-2">
+            <button type="button" @click="choosePhotos" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs transition hover:border-blue-400 dark:border-zinc-700"><Images class="mr-2 inline h-3.5 w-3.5" />选择照片</button>
+            <button type="button" @click="chooseFolder" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs transition hover:border-blue-400 dark:border-zinc-700"><FolderOpen class="mr-2 inline h-3.5 w-3.5" />选择照片文件夹</button>
+          </div>
+          <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-zinc-800 dark:text-zinc-400">
+            <LoaderCircle v-if="loading" class="mr-1 inline h-3 w-3 animate-spin" />
+            {{ files.length ? `当前共 ${files.length} 张` : "尚未选择照片" }}
+          </div>
         </section>
-        <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 class="border-b px-4 py-3 text-xs font-semibold dark:border-zinc-800">照片列表</h2>
-          <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-            <button v-for="file in files" :key="file.photo_id" @click="selectedId = file.photo_id" :title="file.name" class="flex w-full items-center gap-2 rounded-lg p-1.5 text-left text-xs" :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
-              <img :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" class="h-11 w-11 shrink-0 rounded bg-slate-100 object-contain dark:bg-zinc-800" />
-              <span class="min-w-0"><span class="block truncate">{{ file.name }}</span><span v-if="file.ricoh_preset_id || file.dehaze_params" class="block truncate text-[10px] text-slate-500">{{ file.ricoh_preset_id ? '理光 XMP' : '' }}{{ file.ricoh_preset_id && file.dehaze_params ? ' · ' : '' }}{{ file.dehaze_params ? '去朦胧参数' : '' }}</span></span>
+
+        <section v-if="files.length && photoListLayout === 'vertical'" class="photo-list-panel min-h-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-zinc-800">
+            <h2 class="text-xs font-semibold">照片列表</h2>
+            <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="照片列表布局">
+              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+            </div>
+          </div>
+          <div class="photo-list min-h-0 overflow-y-auto p-2">
+            <button v-for="file in files" :key="file.photo_id" @click="selectedId = file.photo_id" type="button" :title="file.name" :aria-label="file.name" class="photo-list-card flex min-w-0 w-full items-center gap-2 rounded-lg p-1.5 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500" :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
+              <span class="relative block h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100 dark:bg-zinc-800">
+                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-500"><ImageIcon class="h-4 w-4" /></span>
+                <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async" class="absolute inset-0 block h-full w-full object-contain transition-opacity" :class="thumbnailState(file.photo_id) === 'loaded' ? 'opacity-100' : 'opacity-0'" @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate">{{ file.name }}</span>
+                <span v-if="sharedPresetByPhoto[file.photo_id] || file.dehaze_params" class="block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ sharedPresetByPhoto[file.photo_id] ? '理光预设' : '' }}{{ sharedPresetByPhoto[file.photo_id] && file.dehaze_params ? ' · ' : '' }}{{ file.dehaze_params ? '去朦胧参数' : '' }}</span>
+              </span>
             </button>
           </div>
         </section>
       </aside>
-      <main class="flex min-h-0 min-w-0 flex-col">
-        <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-          <div class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 dark:border-zinc-800">
-            <div class="min-w-0"><h2 class="truncate text-sm font-semibold">{{ currentFile?.name || "理光风格预览" }}</h2><p class="mt-1 text-[11px] text-slate-500">所选理光预设自动映射实测 HSL 与灰阶色轮响应；多滑杆组合和彩色输入仍是近似预览</p></div>
+      <main class="flex min-h-0 min-w-0 flex-col gap-4">
+        <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 dark:border-zinc-800">
+            <div class="min-w-0"><h2 class="truncate text-sm font-semibold">{{ currentFile?.name || "理光风格预览" }}</h2><p class="mt-1 text-[11px] text-slate-500">同时预览去朦胧、理光预设和基础参数；理光色彩仍是近似模拟</p></div>
             <div class="flex flex-wrap items-center gap-2">
-              <div class="flex rounded-lg bg-slate-100 p-1 text-xs dark:bg-zinc-800" role="group" aria-label="预览模式">
-                <button type="button" @click="mode = 'original'" :aria-pressed="mode === 'original'" title="仅原图" class="rounded-md px-2 py-1" :class="mode === 'original' ? 'bg-blue-600 text-white' : ''"><ImageIcon class="h-3.5 w-3.5" /></button>
-                <button type="button" @click="mode = 'compare'" :aria-pressed="mode === 'compare'" title="原图/效果图对比" class="rounded-md px-2 py-1" :class="mode === 'compare' ? 'bg-blue-600 text-white' : ''"><Columns2 class="h-3.5 w-3.5" /></button>
-                <button type="button" @click="mode = 'effect'" :aria-pressed="mode === 'effect'" title="仅效果图" class="rounded-md px-2 py-1" :class="mode === 'effect' ? 'bg-blue-600 text-white' : ''">效果</button>
+              <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="预览模式">
+                <button type="button" @click="mode = 'original'" :aria-pressed="mode === 'original'" title="仅原图" aria-label="仅原图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="mode === 'original' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><ImageIcon class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="mode = 'compare'" :aria-pressed="mode === 'compare'" title="原图/效果图对比" aria-label="原图/效果图对比" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="mode === 'compare' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="mode = 'effect'" :aria-pressed="mode === 'effect'" title="仅效果图" aria-label="仅效果图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="mode === 'effect' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Sparkles class="h-3.5 w-3.5" /></button>
               </div>
-              <div class="flex items-center gap-1 rounded-lg bg-slate-100 p-1 dark:bg-zinc-800">
+              <div class="flex shrink-0 items-center gap-1 rounded-lg bg-slate-50 p-1 dark:bg-zinc-800">
                 <button type="button" @click="zoomBy(-0.25)" :disabled="zoom <= 1" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
                 <button type="button" @click="resetView" title="适合窗口" aria-label="适合窗口" class="min-w-[3.8rem] rounded px-1.5 py-1 text-[11px] font-medium tabular-nums hover:bg-white dark:hover:bg-zinc-700">{{ Math.round(zoom * 100) }}%</button>
                 <button type="button" @click="resetView" title="适合窗口" aria-label="适合窗口" class="rounded p-1.5 hover:bg-white dark:hover:bg-zinc-700"><Maximize2 class="h-3.5 w-3.5" /></button>
@@ -478,7 +551,7 @@ onBeforeUnmount(() => {
             <template v-if="originalUrl">
               <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
                 <div class="preview-stage relative shrink-0" :style="imageStageStyle">
-                  <img :src="previewImageUrl" :alt="mode === 'effect' && effectReady ? '理光效果' : '原图'" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
+                  <img :src="previewImageUrl" :alt="mode === 'effect' && effectReady ? '综合效果' : '原图'" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
                 </div>
               </div>
               <div v-if="showComparePreview" class="absolute inset-0 overflow-hidden" :style="{ clipPath: `inset(0 ${100 - split}% 0 0)` }">
@@ -491,13 +564,32 @@ onBeforeUnmount(() => {
               <div v-if="showComparePreview" class="pointer-events-none absolute inset-y-0 z-10 w-px bg-white shadow" :style="{ left: `${split}%`, transform: 'translateX(-50%)' }"></div>
               <template v-if="showComparePreview">
                 <span class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">原图</span>
-                <span class="pointer-events-none absolute right-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">理光预设效果</span>
+                <span class="pointer-events-none absolute right-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">综合效果</span>
                 <input v-model.number="split" type="range" min="0" max="100" class="compare-split absolute bottom-4 z-20" aria-label="前后对比分割线" @pointerdown.stop @click.stop />
               </template>
-              <span v-else class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">{{ mode === "effect" && effectReady ? "理光预设效果" : "原图" }}</span>
+              <span v-else class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">{{ mode === "effect" && effectReady ? "综合效果" : "原图" }}</span>
             </template>
             <p v-if="!originalUrl" class="text-sm text-slate-400">{{ previewLoading ? "正在生成预览…" : "选择照片开始预览" }}</p>
             <div v-if="previewLoading" class="absolute inset-0 flex items-center justify-center bg-white/45 text-sm text-blue-600 backdrop-blur-[1px] dark:bg-black/35">正在生成预览…</div>
+          </div>
+        </section>
+        <section v-if="files.length && photoListLayout === 'horizontal'" class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-zinc-800">
+            <h2 class="text-xs font-semibold">照片列表</h2>
+            <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="照片列表布局">
+              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+            </div>
+          </div>
+          <div class="photo-grid overflow-x-auto overflow-y-hidden p-2">
+            <button v-for="file in files" :key="file.photo_id" @click="selectedId = file.photo_id" type="button" :title="file.name" :aria-label="file.name" class="photo-card min-w-0 shrink-0 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500" :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
+              <span class="relative mb-1.5 block h-20 w-full overflow-hidden rounded-lg bg-slate-100 dark:bg-zinc-800">
+                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-500"><ImageIcon class="h-6 w-6" /></span>
+                <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async" class="absolute inset-0 block h-full w-full object-contain transition-opacity" :class="thumbnailState(file.photo_id) === 'loaded' ? 'opacity-100' : 'opacity-0'" @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
+              </span>
+              <span class="block truncate" :title="file.name">{{ file.name }}</span>
+              <span v-if="sharedPresetByPhoto[file.photo_id] || file.dehaze_params" class="mt-0.5 block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ sharedPresetByPhoto[file.photo_id] ? '理光预设' : '' }}{{ sharedPresetByPhoto[file.photo_id] && file.dehaze_params ? ' · ' : '' }}{{ file.dehaze_params ? '去朦胧参数' : '' }}</span>
+            </button>
           </div>
         </section>
       </main>
@@ -507,7 +599,7 @@ onBeforeUnmount(() => {
             <h2 class="text-sm font-semibold">基础参数</h2>
             <button type="button" @click="resetBasicParams" :disabled="!selectedId" title="重置当前照片基础参数" aria-label="重置当前照片基础参数" class="rounded px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-zinc-800">重置</button>
           </div>
-          <p class="mb-4 text-[11px] text-slate-500">仅调整当前照片；数值相对所选理光风格累加，0 保持预设效果。</p>
+          <p class="mb-4 text-[11px] text-slate-500">仅调整当前照片；数值相对所选理光风格累加，修改后自动保存到 XMP。</p>
           <div class="space-y-3">
             <label v-for="item in basicParamControls" :key="item.key" class="block text-[11px]">
               <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-blue-600">{{ formatParam(item.key, basicParams[item.key]) }}</span></span>
@@ -517,14 +609,15 @@ onBeforeUnmount(() => {
         </section>
         <section class="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
           <h2 class="mb-2 text-sm font-semibold">理光风格</h2>
-          <p class="mb-3 text-[11px] text-slate-500">所选风格写入同名 XMP，与去朦胧参数共享。</p>
+          <p class="mb-3 text-[11px] text-slate-500">所选风格自动保存到同名 XMP，与去朦胧参数共享。</p>
           <div class="max-h-72 space-y-2 overflow-y-auto">
             <button v-for="preset in presets" :key="preset.id" @click="selectedPreset = preset.id" class="w-full rounded-xl border p-2.5 text-left text-xs" :class="selectedPreset === preset.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-slate-200 dark:border-zinc-700'"><span class="font-semibold">{{ preset.model }} · {{ preset.name }}</span><span class="mt-1 block text-[11px] text-slate-500">{{ preset.description }}</span></button>
           </div>
         </section>
         <section class="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
           <h2 class="mb-3 text-sm font-semibold">导出</h2>
-          <button @click="saveXmp" :disabled="!files.length || !selectedPreset || busy" class="w-full rounded-xl border border-blue-300 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-40 dark:text-blue-300">单独写入 XMP</button>
+          <button @click="saveXmp" :disabled="!files.length || busy" class="w-full rounded-xl border border-blue-300 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-40 dark:text-blue-300">手动补写 XMP</button>
+          <p v-if="autoSaveError" class="mt-2 text-[11px] text-rose-600">{{ autoSaveError }}</p>
           <button @click="chooseOutput" :title="outputDir" class="mt-3 w-full truncate rounded-xl border px-3 py-2 text-left text-[11px] text-slate-500 dark:border-zinc-700">{{ outputDir || "选择 DNG 输出目录" }}</button>
           <button v-if="!isRunning" @click="exportDng" :disabled="!files.length || !selectedPreset" class="mt-3 w-full rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white disabled:opacity-40">导出 DNG</button>
           <button v-else @click="cancelExport" class="mt-3 w-full rounded-xl bg-rose-600 px-3 py-2.5 text-xs font-semibold text-white">停止后续处理</button>
@@ -540,6 +633,41 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.photo-list-panel {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+}
+
+.photo-grid {
+  display: flex;
+  gap: 0.5rem;
+  overscroll-behavior-x: contain;
+}
+
+.photo-card {
+  flex: 0 0 144px;
+  width: 144px;
+  padding: 0.5rem;
+  border-right: 1px solid rgb(226 232 240);
+}
+
+.photo-card:last-child {
+  border-right: 0;
+}
+
+:global(.dark) .photo-card {
+  border-right-color: rgb(63 63 70);
+}
+
+:global(.dark) .photo-card:last-child {
+  border-right: 0;
+}
+
+.photo-list-card + .photo-list-card {
+  margin-top: 0.25rem;
+}
+
 .preview-stage {
   transform-origin: center center;
   will-change: transform;

@@ -16,7 +16,7 @@ ALGORITHM_VERSION = "natural-global-v8-source-hue-brightness-guard"
 
 @dataclass(frozen=True)
 class DehazeParams:
-    strength: float = 0.45
+    strength: float = 0.0
     naturalness: float = 0.70
     fog_retention: float = 0.55
     local_contrast: float = 0.25

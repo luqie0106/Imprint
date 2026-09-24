@@ -80,8 +80,8 @@ htmlcov/
 .pyre/
 .pytype/
 
-# Tests are source code and must stay tracked. Generated test output belongs in
-# the normal cache/build directories above or in a temporary directory.
+# Keep Python test files local; do not add them to the cloud repository.
+/tests/*.py
 
 # Local ACR black-box test fixtures and analysis artifacts (including TIFFs)
 /artifacts/acr_blackbox_fixtures/
