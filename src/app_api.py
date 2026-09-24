@@ -70,6 +70,7 @@ from ricoh_filter import (
     apply_ricoh_preset,
     list_ricoh_presets,
 )
+from measured_response import standard_preview_to_srgb
 from lens_correction import (
     LensCorrectionError,
     LensCorrectionNotAppliedError,
@@ -227,6 +228,7 @@ class EnhancePreviewRequest(BaseModel):
     basic_params: BasicParamsRequest = Field(default_factory=BasicParamsRequest)
     max_edge: int = Field(default=1800, ge=320, le=3000)
     mode: Literal["original", "dehazed"] = "dehazed"
+    color_manage_srgb: bool = False
     use_gpu: bool = False
 
 
@@ -446,12 +448,16 @@ def create_ricoh_preview(req: RicohPreviewRequest):
     if cached is not None:
         return Response(
             content=cached, media_type="image/jpeg",
-            headers={"Cache-Control": "private, max-age=3600", "X-Preview-Approximation": "true"},
+            headers={"Cache-Control": "private, max-age=3600", "X-Preview-Approximation": "true",
+                     "X-Preview-Empirical-Color": "hsl-and-grading-response"},
         )
     try:
         image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
         display_image = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
-        effected = apply_ricoh_preview_effect(display_image, req.preset_id, basic)
+        if getattr(metadata, "source_kind", "") == "rgb":
+            display_image = standard_preview_to_srgb(display_image, path)
+        effected = apply_ricoh_preview_effect(display_image, req.preset_id, basic,
+                                              use_measured_color=True)
         payload = _encode_preview(effected)
         with _ENHANCE_LOCK:
             if len(_RICOH_PREVIEW_CACHE) >= 128:
@@ -465,6 +471,7 @@ def create_ricoh_preview(req: RicohPreviewRequest):
                 "X-Image-Width": str(metadata.width),
                 "X-Image-Height": str(metadata.height),
                 "X-Preview-Approximation": "true",
+                "X-Preview-Empirical-Color": "hsl-and-grading-response",
             },
         )
     except KeyError:
@@ -911,6 +918,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     token = params.cache_token()
     basic = req.basic_params.values()
     cache_key = (req.session_id, req.photo_id, token, req.max_edge, req.mode, bool(req.use_gpu),
+                 bool(req.color_manage_srgb),
                  tuple(basic[key] for key in sorted(basic)))
     with _ENHANCE_LOCK:
         cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
@@ -924,7 +932,13 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             image = apply_basic_preview_effect(display, basic)
             payload = _encode_preview(image)
         else:
-            payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+            if req.color_manage_srgb:
+                display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+                if getattr(metadata, "source_kind", "") == "rgb":
+                    display = standard_preview_to_srgb(display, path)
+                payload = _encode_preview(display)
+            else:
+                payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
         with _ENHANCE_LOCK:
             if len(_ENHANCE_PREVIEW_CACHE) >= 128:
                 _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)

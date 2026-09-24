@@ -22,6 +22,17 @@ _IMPRINT_NS = "https://imprint.local/ns/photo-settings/1.0/"
 _MAX_PHOTOS = 500
 _WRITE_LOCK = threading.RLock()
 
+# Empirical residual luminance calibration for the GR3 Vivid Street measured
+# preview. It comes from aligned captures of one photo using Adobe's Standard
+# profile, the Vivid Street XMP preset, and Exposure +0.85. This sample-based
+# correction improves the preview match; it cannot establish full ACR parity.
+_GR3_VIVID_STREET_LUMA_X = tuple(
+    value / 255.0 for value in (0, 8, 24, 40, 56, 72, 88, 104, 120, 144, 176, 208, 240, 255)
+)
+_GR3_VIVID_STREET_LUMA_Y = tuple(
+    value / 255.0 for value in (0, 6, 16, 30, 49, 71, 93, 111, 129, 157, 192, 211, 234, 255)
+)
+
 
 @dataclass(frozen=True)
 class RicohPreset:
@@ -376,6 +387,77 @@ def _apply_color_grading(rgb, controls: dict[str, object], np):
     return np.clip(np.nan_to_num(graded, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
 
 
+def _apply_measured_color_grading(rgb, controls: dict[str, object], np):
+    """Use gray-ramp measured wheel responses with inferred tone masks.
+
+    ACR wheel responses are measured on gray ramps at Hue 0/Sat 100. Hue
+    rotation and saturation scaling follow the XMP controls. Applying these
+    responses to colored inputs, multiple wheels, or Balance/Blending-adjusted
+    masks is an approximation because those combinations were not measured.
+    """
+    color_keys = (
+        "split_shadow_saturation", "split_highlight_saturation",
+        "grade_shadow_saturation", "grade_midtone_saturation",
+        "grade_highlight_saturation", "grade_global_saturation",
+    )
+    if not any(abs(_finite_control_value(controls[key])) > 1e-8 for key in color_keys):
+        return rgb
+
+    import cv2
+    from measured_response import apply_grading_wheels_float
+
+    lab_luminance = cv2.cvtColor(
+        np.clip(np.asarray(rgb, dtype=np.float32), 0.0, 1.0), cv2.COLOR_RGB2Lab,
+    )[..., 0] / 100.0
+    shadow, midtone, highlight = _grading_masks(lab_luminance, controls, np)
+    reference_controls = dict(controls, split_balance=0.0, grade_blending=50.0)
+    reference_shadow, reference_midtone, reference_highlight = _grading_masks(
+        lab_luminance, reference_controls, np,
+    )
+
+    def relative_mask(current, reference):
+        # The measured wheel curves already contain the default tonal mask.
+        # Apply only a bounded ratio for changed Balance/Blending settings.
+        floor = 0.05
+        ratio = current / np.maximum(reference, floor)
+        ratio = np.where(
+            reference < floor,
+            np.where(current < floor, 1.0, current / floor),
+            ratio,
+        )
+        return np.clip(ratio, 0.0, 3.0)
+
+    shadow = relative_mask(shadow, reference_shadow)
+    midtone = relative_mask(midtone, reference_midtone)
+    highlight = relative_mask(highlight, reference_highlight)
+    wheels = [
+        ("Shadows", _finite_control_value(controls["split_shadow_hue"]),
+         _finite_control_value(controls["split_shadow_saturation"]), shadow),
+        ("Highlights", _finite_control_value(controls["split_highlight_hue"]),
+         _finite_control_value(controls["split_highlight_saturation"]), highlight),
+        ("Shadows", _finite_control_value(controls["grade_shadow_hue"]),
+         _finite_control_value(controls["grade_shadow_saturation"]), shadow),
+        ("Midtones", _finite_control_value(controls["grade_midtone_hue"]),
+         _finite_control_value(controls["grade_midtone_saturation"]), midtone),
+        ("Highlights", _finite_control_value(controls["grade_highlight_hue"]),
+         _finite_control_value(controls["grade_highlight_saturation"]), highlight),
+    ]
+    graded = apply_grading_wheels_float(rgb, wheels)
+
+    # The measurement set has no global wheel. Retain the previous restrained
+    # approximation for that one control without reapplying measured wheels.
+    if abs(_finite_control_value(controls["grade_global_saturation"])) > 1e-8:
+        global_controls = dict(controls)
+        for key in (
+            "split_shadow_saturation", "split_highlight_saturation",
+            "grade_shadow_saturation", "grade_midtone_saturation",
+            "grade_highlight_saturation",
+        ):
+            global_controls[key] = 0.0
+        graded = _apply_color_grading(graded, global_controls, np)
+    return np.clip(graded, 0.0, 1.0)
+
+
 def _apply_curves(rgb, controls: dict[str, object], *, grayscale: bool, np):
     """Apply master and optional per-channel PV2012 curves to normalized RGB."""
     channel_curves = (controls["red_curve"], controls["green_curve"], controls["blue_curve"])
@@ -412,13 +494,29 @@ def _adjust_luminance_preserving_color(rgb, luminance, target_luminance, np):
     return np.where((luminance <= 1e-8)[..., None], target_luminance[..., None], adjusted)
 
 
+def _apply_gr3_vivid_street_luminance_calibration(rgb, np):
+    """Apply the measured preview's residual luminance curve, preserving RGB ratios."""
+    luminance_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luminance = rgb @ luminance_weights
+    target_luminance = np.interp(
+        luminance, _GR3_VIVID_STREET_LUMA_X, _GR3_VIVID_STREET_LUMA_Y,
+    )
+    return _adjust_luminance_preserving_color(rgb, luminance, target_luminance, np)
+
+
 def apply_ricoh_preview_effect(image: "object", preset_id: str,
-                               basic_params: dict[str, float] | None = None):
+                               basic_params: dict[str, float] | None = None,
+                               use_measured_color: bool = False):
     """Approximate XMP Camera Raw controls on an RGB preview.
 
     Processing is row-chunked to bound temporary memory for full-resolution
     exports. Adobe's camera profile and internal color transforms remain
     proprietary, so this preview does not claim pixel parity with Camera Raw.
+    When ``use_measured_color`` is true, the HSL stage adds independently
+    measured first-order RGB residuals and Color Grading adds gray-ramp measured
+    Lab wheel residuals. Multi-slider HSL combinations, multiple color wheels,
+    colored inputs, and Balance/Blending masks are approximations because they
+    were not measured together. DNG/export callers leave this false by default.
     """
     import numpy as np
 
@@ -495,7 +593,16 @@ def apply_ricoh_preview_effect(image: "object", preset_id: str,
             luminance = rgb @ luminance_weights
             rgb = np.repeat(luminance[..., None], 3, axis=2)
         else:
-            rgb = _apply_hsl_adjustments(rgb, controls, np)
+            if use_measured_color:
+                from measured_response import apply_hsl_controls_float
+
+                rgb = apply_hsl_controls_float(rgb, {
+                    "hue": controls["hue_adjustments"],
+                    "saturation": controls["saturation_adjustments"],
+                    "luminance": controls["luminance_adjustments"],
+                })
+            else:
+                rgb = _apply_hsl_adjustments(rgb, controls, np)
             luminance = rgb @ luminance_weights
             chroma = rgb - luminance[..., None]
             chroma_level = np.max(np.abs(chroma), axis=2)
@@ -505,9 +612,16 @@ def apply_ricoh_preview_effect(image: "object", preset_id: str,
 
             # Split Toning and Color Grading coexist in ACR. Combine their
             # wheel offsets once in Lab so each control contributes smoothly.
-            rgb = _apply_color_grading(rgb, controls, np)
+            if use_measured_color:
+                rgb = _apply_measured_color_grading(rgb, controls, np)
+            else:
+                rgb = _apply_color_grading(rgb, controls, np)
 
         rgb = _apply_curves(rgb, controls, grayscale=is_grayscale, np=np)
+        # Keep the XMP tone curve above. This is only its measured-preview
+        # residual correction, applied after the complete preset processing.
+        if use_measured_color and preset_id == "gr3_vivid_street":
+            rgb = _apply_gr3_vivid_street_luminance_calibration(rgb, np)
         output[row:end] = np.clip(np.rint(rgb * maximum), 0.0, maximum).astype(image.dtype)
     return output
 

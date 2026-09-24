@@ -83,7 +83,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tauri-frontend/dist-python
-          key: sidecar-onedir-v4-${{ runner.os }}-${{ hashFiles('src/app_api.py', 'src/burst_filter.py', 'src/model_manager.py', 'src/portrait_quality.py', 'src/onnx_exporter.py', 'src/dehaze.py', 'src/image_io.py', 'src/dng_writer.py', 'src/lens_correction.py', 'third_party/lensfun-db/*.xml', 'third_party/licenses/*', 'THIRD_PARTY_NOTICES.md', 'LICENSE', 'app_api.spec', 'requirements-build.txt') }}
+          key: sidecar-onedir-v4-${{ runner.os }}-${{ hashFiles('src/app_api.py', 'src/burst_filter.py', 'src/model_manager.py', 'src/portrait_quality.py', 'src/onnx_exporter.py', 'src/dehaze.py', 'src/image_io.py', 'src/dng_writer.py', 'src/lens_correction.py', 'src/measured_response.py', 'assets/acr_measured/*.npz', 'third_party/lensfun-db/*.xml', 'third_party/licenses/*', 'THIRD_PARTY_NOTICES.md', 'LICENSE', 'app_api.spec', 'requirements-build.txt') }}
 
       - name: Build Python sidecar (macOS onedir)
         if: steps.cache-sidecar.outputs.cache-hit != 'true' && runner.os == 'macOS'

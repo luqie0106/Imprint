@@ -311,7 +311,9 @@ async function refreshPreview(includeOriginal = false) {
     const common = { session_id: sessionId.value, photo_id: selectedId.value, max_edge: 1800 };
     const requests: Array<Promise<string>> = [];
     const requestOriginal = includeOriginal || !originalUrl.value;
-    if (requestOriginal) requests.push(requestPreview("/api/enhance/preview", { ...common, mode: "original" }, token));
+    if (requestOriginal) requests.push(requestPreview("/api/enhance/preview", {
+      ...common, mode: "original", color_manage_srgb: true,
+    }, token));
     if (selectedPreset.value) {
       requests.push(requestPreview("/api/ricoh/preview", {
         ...common, preset_id: selectedPreset.value, basic_params: cloneBasicParams(basicParams.value),
@@ -457,7 +459,7 @@ onBeforeUnmount(() => {
       <main class="flex min-h-0 min-w-0 flex-col">
         <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 dark:border-zinc-800">
-            <div class="min-w-0"><h2 class="truncate text-sm font-semibold">{{ currentFile?.name || "理光风格预览" }}</h2><p class="mt-1 text-[11px] text-slate-500">应用内近似预览不含 Adobe Standard 配置文件；最终颜色以 Camera Raw 为准</p></div>
+            <div class="min-w-0"><h2 class="truncate text-sm font-semibold">{{ currentFile?.name || "理光风格预览" }}</h2><p class="mt-1 text-[11px] text-slate-500">所选理光预设自动映射实测 HSL 与灰阶色轮响应；多滑杆组合和彩色输入仍是近似预览</p></div>
             <div class="flex flex-wrap items-center gap-2">
               <div class="flex rounded-lg bg-slate-100 p-1 text-xs dark:bg-zinc-800" role="group" aria-label="预览模式">
                 <button type="button" @click="mode = 'original'" :aria-pressed="mode === 'original'" title="仅原图" class="rounded-md px-2 py-1" :class="mode === 'original' ? 'bg-blue-600 text-white' : ''"><ImageIcon class="h-3.5 w-3.5" /></button>
@@ -489,10 +491,10 @@ onBeforeUnmount(() => {
               <div v-if="showComparePreview" class="pointer-events-none absolute inset-y-0 z-10 w-px bg-white shadow" :style="{ left: `${split}%`, transform: 'translateX(-50%)' }"></div>
               <template v-if="showComparePreview">
                 <span class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">原图</span>
-                <span class="pointer-events-none absolute right-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">近似效果</span>
+                <span class="pointer-events-none absolute right-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">理光预设效果</span>
                 <input v-model.number="split" type="range" min="0" max="100" class="compare-split absolute bottom-4 z-20" aria-label="前后对比分割线" @pointerdown.stop @click.stop />
               </template>
-              <span v-else class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">{{ mode === "effect" && effectReady ? "近似效果" : "原图" }}</span>
+              <span v-else class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">{{ mode === "effect" && effectReady ? "理光预设效果" : "原图" }}</span>
             </template>
             <p v-if="!originalUrl" class="text-sm text-slate-400">{{ previewLoading ? "正在生成预览…" : "选择照片开始预览" }}</p>
             <div v-if="previewLoading" class="absolute inset-0 flex items-center justify-center bg-white/45 text-sm text-blue-600 backdrop-blur-[1px] dark:bg-black/35">正在生成预览…</div>
