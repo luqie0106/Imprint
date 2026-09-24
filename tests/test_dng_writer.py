@@ -507,6 +507,24 @@ def test_exiftool_validates_enhanced_dng_when_available(tmp_path: Path):
     assert "Imprint Dehaze" in result.stdout
 
 
+def test_linear_dng_ricoh_suffix_is_safe_and_does_not_overwrite(tmp_path: Path):
+    image = np.full((16, 16, 3), 32768, dtype=np.uint16)
+    first = write_linear_dng(image, "scene.jpg", tmp_path, name_suffix="_ricoh")
+    second = write_linear_dng(image, "scene.jpg", tmp_path, name_suffix="_ricoh")
+    assert first.name == "scene_ricoh.dng"
+    assert second.name == "scene_ricoh_2.dng"
+    assert first.exists() and second.exists()
+    if shutil.which("exiftool"):
+        details = subprocess.run(
+            ["exiftool", "-validate", "-DNGVersion", "-PhotometricInterpretation", "-Compression", "-BitsPerSample", str(first)],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        assert "Validate                        : OK" in details
+        assert "DNG Version" in details
+        assert "Photometric Interpretation      : Linear Raw" in details
+        assert "Bits Per Sample                 : 16 16 16" in details
+
+
 def test_linear_dng_signature_tags_and_non_overwrite(tmp_path: Path):
     image = np.linspace(0, 65535, 96 * 128 * 3, dtype=np.uint16).reshape(96, 128, 3)
     first = write_linear_dng(image, "scene.jpg", tmp_path, {"Make": "Test", "Model": "Fixture"})

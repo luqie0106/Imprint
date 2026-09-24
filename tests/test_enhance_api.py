@@ -12,6 +12,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import app_api
+import ricoh_filter
 from dehaze import DehazeParams
 from lens_correction import LensCorrectionResult, LensMatchError
 
@@ -445,3 +446,138 @@ def test_lens_match_failure_never_reports_an_uncorrected_raw_success(monkeypatch
     assert "secret.nef" not in app_api._enhance_error_message(
         LensMatchError("/private/photos/secret.nef")
     )
+
+
+def test_session_exposes_xmp_settings_and_writes_through_photo_ids(tmp_path: Path):
+    path = tmp_path / "sample.jpg"
+    path.touch()
+
+    session = app_api.create_enhance_session(app_api.EnhanceSessionRequest(paths=[str(path)]))
+    session_id = session["session_id"]
+    photo = session["files"][0]
+    try:
+        assert photo["dehaze_params"] is None
+        assert photo["ricoh_preset_id"] is None
+        assert photo["basic_params"]["exposure"] == 0
+        result = app_api.save_enhance_session_xmp(app_api.EnhanceXmpRequest(
+            session_id=session_id,
+            params_by_photo={photo["photo_id"]: app_api.EnhanceParamsRequest(strength=0.27)},
+            basic_params_by_photo={photo["photo_id"]: app_api.BasicParamsRequest(exposure=0.6, highlights=-15)},
+        ))
+        assert result["written"] == 1
+        assert result["failed"] == 0
+
+        applied = app_api.apply_ricoh_preset_session(app_api.RicohSessionRequest(
+            session_id=session_id, preset_id="gr3_standard",
+        ))
+        assert applied["written"] == 1
+        assert applied["updated"] == 1
+        settings = app_api.read_photo_settings(path)
+        assert settings["dehaze_params"]["strength"] == 0.27
+        assert settings["ricoh_preset_id"] == "gr3_standard"
+        assert settings["basic_params"]["exposure"] == 0.6
+        assert settings["basic_params"]["highlights"] == -15
+        root = ricoh_filter._parse_xmp(path.with_suffix(".xmp").read_bytes())
+        description = ricoh_filter._description(root)
+        assert description is not None
+        assert description.attrib["{" + ricoh_filter._CRS_NS + "}Exposure2012"] == "0.6"
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+
+
+def test_ricoh_preview_uses_session_path_and_returns_approximate_jpeg(monkeypatch, tmp_path: Path):
+    path = tmp_path / "preview.jpg"
+    path.touch()
+    session_id = "ricoh-preview-session"
+    app_api._ENHANCE_SESSIONS[session_id] = {
+        "files": {"photo-1": path}, "created": 0.0,
+    }
+    app_api._RICOH_PREVIEW_CACHE.clear()
+
+    class Metadata:
+        width = 8
+        height = 8
+        color_space = "sRGB"
+
+    monkeypatch.setattr(
+        app_api, "read_image",
+        lambda *_args, **_kwargs: (np.full((8, 8, 3), [40, 120, 220], dtype=np.uint8), Metadata()),
+    )
+    try:
+        response = app_api.create_ricoh_preview(app_api.RicohPreviewRequest(
+            session_id=session_id, photo_id="photo-1", preset_id="gr3_high_contrast_bw",
+        ))
+        assert response.status_code == 200
+        assert response.media_type == "image/jpeg"
+        assert response.headers["X-Preview-Approximation"] == "true"
+        with Image.open(BytesIO(response.body)) as preview:
+            red, green, blue = preview.getpixel((4, 4))
+            assert abs(red - green) <= 2
+            assert abs(green - blue) <= 2
+        brighter = app_api.create_ricoh_preview(app_api.RicohPreviewRequest(
+            session_id=session_id, photo_id="photo-1", preset_id="gr3_high_contrast_bw",
+            basic_params=app_api.BasicParamsRequest(exposure=1),
+        ))
+        assert brighter.status_code == 200
+        assert brighter.body != response.body
+        assert len(app_api._RICOH_PREVIEW_CACHE) == 2
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+        app_api._RICOH_PREVIEW_CACHE.clear()
+
+
+def test_ricoh_dng_job_exports_linear_full_resolution_and_xmp(monkeypatch, tmp_path: Path):
+    session_id = "ricoh-run-session"
+    job_id = "ricoh-run-job"
+    source = tmp_path / "source.jpg"
+    output = tmp_path / "source_ricoh.dng"
+    source.touch()
+    app_api._ENHANCE_SESSIONS[session_id] = {
+        "files": {"photo-1": source}, "created": 0.0,
+    }
+    app_api._RICOH_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "total": 1,
+        "processed": 0,
+        "success": 0,
+        "failed": 0,
+        "progress": 0.0,
+        "current_file": "",
+        "files": [{"photo_id": "photo-1", "name": source.name, "status": "waiting"}],
+        "_cancel": app_api.threading.Event(),
+    }
+    written: dict[str, object] = {}
+
+    class Metadata:
+        color_space = "sRGB"
+        exif = {"Make": "Ricoh", "Model": "GR III"}
+
+    def fake_write(image, source_path, output_dir, metadata, *, bits_per_sample, name_suffix):
+        written["image"] = image.copy()
+        written["metadata"] = metadata
+        written["bits_per_sample"] = bits_per_sample
+        written["name_suffix"] = name_suffix
+        output.touch()
+        return output
+
+    monkeypatch.setattr(
+        app_api, "read_image",
+        lambda *_args, **_kwargs: (np.full((3, 4, 3), [100, 150, 200], dtype=np.uint8), Metadata()),
+    )
+    monkeypatch.setattr(app_api, "write_linear_dng", fake_write)
+    try:
+        app_api._run_ricoh_job(job_id, session_id, "gr3_standard", tmp_path)
+        job = app_api._RICOH_JOBS[job_id]
+        assert job["status"] == "completed"
+        assert job["success"] == 1
+        assert job["files"][0]["status"] == "success"
+        assert job["files"][0]["xmp_status"] == {"source": "written", "output": "rendered"}
+        assert written["name_suffix"] == "_ricoh"
+        assert written["bits_per_sample"] == 16
+        assert written["image"].dtype == np.uint16
+        assert app_api.read_photo_settings(source)["ricoh_preset_id"] == "gr3_standard"
+        assert not output.with_suffix(".xmp").exists()
+    finally:
+        app_api._ENHANCE_SESSIONS.pop(session_id, None)
+        app_api._RICOH_JOBS.pop(job_id, None)

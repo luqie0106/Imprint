@@ -3,13 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { BASE_URL } from "../stores/api";
+import { sharedPhotoSource, sharePhotoSource } from "../stores/photoSource";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
   LoaderCircle, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Square,
   Maximize2, Minus, Plus, Rows2, Sparkles,
 } from "lucide-vue-next";
 
-interface SessionFile { photo_id: string; name: string; extension: string }
+interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: EnhanceParams | null; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
 interface JobFile { photo_id: string; name: string; status: string; output?: string; error?: string }
 interface EnhanceJob {
   job_id: string; status: string; total: number; processed: number; success: number;
@@ -27,6 +28,18 @@ interface EnhanceParams {
   shadow_protection: number;
   brightness_protection: number;
 }
+interface BasicParams { exposure: number; contrast: number; highlights: number; shadows: number; whites: number; blacks: number; vibrance: number; saturation: number }
+const basicDefaults: BasicParams = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, vibrance: 0, saturation: 0 };
+const basicControls: Array<{ key: keyof BasicParams; label: string; min: number; max: number; step: number }> = [
+  { key: "exposure", label: "曝光", min: -5, max: 5, step: 0.05 },
+  { key: "contrast", label: "对比度", min: -100, max: 100, step: 1 },
+  { key: "highlights", label: "高光", min: -100, max: 100, step: 1 },
+  { key: "shadows", label: "阴影", min: -100, max: 100, step: 1 },
+  { key: "whites", label: "白色", min: -100, max: 100, step: 1 },
+  { key: "blacks", label: "黑色", min: -100, max: 100, step: 1 },
+  { key: "vibrance", label: "自然饱和度", min: -100, max: 100, step: 1 },
+  { key: "saturation", label: "饱和度", min: -100, max: 100, step: 1 },
+];
 
 type PreviewMode = "original" | "compare" | "enhanced";
 type ThumbnailState = "loading" | "loaded" | "error";
@@ -55,6 +68,7 @@ function cloneParams(source: EnhanceParams = defaults): EnhanceParams {
 }
 
 const paramsByPhoto = ref<Record<string, EnhanceParams>>({});
+const basicByPhoto = ref<Record<string, BasicParams>>({});
 const emptyParams = ref<EnhanceParams>(cloneParams());
 const sessionId = ref("");
 const files = ref<SessionFile[]>([]);
@@ -93,6 +107,7 @@ const gpuLabel = ref("正在检测 GPU…");
 const gpuPreferenceTouched = ref(false);
 const job = ref<EnhanceJob | null>(null);
 const actionMessage = ref("");
+const savingXmp = ref(false);
 const revealMenu = ref<{ left: number; top: number } | null>(null);
 const revealBusy = ref(false);
 let previewTimer: number | undefined;
@@ -100,6 +115,7 @@ let previewGeneration = 0;
 let pollTimer: number | undefined;
 
 const params = computed<EnhanceParams>(() => paramsByPhoto.value[selectedId.value] ?? emptyParams.value);
+const basicParams = computed<BasicParams>(() => basicByPhoto.value[selectedId.value] ?? basicDefaults);
 const enhancedReady = computed(() => Boolean(enhancedUrl.value) && !previewLoading.value);
 const showComparePreview = computed(() => previewMode.value === "compare" && enhancedReady.value);
 const previewImageUrl = computed(() => {
@@ -330,7 +346,7 @@ function onPreviewImageLoad(event: Event) {
   void nextTick(updateViewportSize);
 }
 
-async function createSession(payload: { paths?: string[]; input_dir?: string }) {
+async function createSession(payload: { paths?: string[]; input_dir?: string }, publish = true) {
   if (!BASE_URL.value) return;
   sessionLoading.value = true;
   previewError.value = "";
@@ -349,18 +365,42 @@ async function createSession(payload: { paths?: string[]; input_dir?: string }) 
     );
     const nextParamsByPhoto: Record<string, EnhanceParams> = {};
     for (const file of data.files as SessionFile[]) {
-      nextParamsByPhoto[file.photo_id] = cloneParams();
+      nextParamsByPhoto[file.photo_id] = cloneParams(file.dehaze_params ?? defaults);
     }
     paramsByPhoto.value = nextParamsByPhoto;
+    basicByPhoto.value = Object.fromEntries((data.files as SessionFile[]).map(file => [file.photo_id, { ...basicDefaults, ...file.basic_params }]));
     resetView();
     selectedId.value = data.files[0]?.photo_id ?? "";
     outputDir.value = data.default_output_dir;
     job.value = null;
     actionMessage.value = `已载入 ${data.count} 张照片`;
+    if (publish) sharePhotoSource("enhance", payload);
   } catch (error) {
     previewError.value = error instanceof Error ? error.message : String(error);
   } finally {
     sessionLoading.value = false;
+  }
+}
+
+async function saveXmp() {
+  if (!sessionId.value || !BASE_URL.value || savingXmp.value) return;
+  savingXmp.value = true;
+  try {
+    const response = await fetch(`${BASE_URL.value}/api/enhance/xmp`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId.value,
+        params_by_photo: Object.fromEntries(files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? defaults)])),
+        basic_params_by_photo: basicByPhoto.value,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "写入 XMP 失败");
+    actionMessage.value = `XMP 已写入 ${data.written ?? 0} 张，失败 ${data.failed ?? 0} 张`;
+  } catch (error) {
+    actionMessage.value = error instanceof Error ? error.message : "写入 XMP 失败";
+  } finally {
+    savingXmp.value = false;
   }
 }
 
@@ -420,6 +460,7 @@ async function fetchPreview(mode: "original" | "dehazed", generation: number) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       session_id: sessionId.value, photo_id: selectedId.value, params: params.value,
+      basic_params: basicParams.value,
       max_edge: 1800, mode, use_gpu: gpuEnabled.value,
     }),
   });
@@ -514,6 +555,7 @@ async function startBatch() {
         output_dir: outputDir.value,
         params: cloneParams(params.value),
         params_by_photo: paramsByPhotoPayload,
+        basic_params_by_photo: basicByPhoto.value,
         use_gpu: gpuEnabled.value,
       }),
     });
@@ -548,6 +590,7 @@ watch(selectedId, () => {
   void refreshPreview(true);
 });
 watch(params, schedulePreview, { deep: true });
+watch(basicParams, schedulePreview, { deep: true });
 watch(gpuEnabled, () => {
   if (sessionId.value && selectedId.value) void refreshPreview(false);
 });
@@ -555,6 +598,9 @@ watch([fitWidth, fitHeight], clampPan);
 watch(BASE_URL, (value) => {
   if (value) void fetchGpuStatus();
 }, { immediate: true });
+watch(sharedPhotoSource, (source) => {
+  if (source?.owner === "ricoh") void createSession({ paths: source.paths, input_dir: source.input_dir }, false);
+});
 onMounted(() => {
   window.addEventListener("keydown", onWindowKeyDown);
   window.addEventListener("blur", closeRevealMenu);
@@ -701,6 +747,14 @@ onBeforeUnmount(() => {
 
       <aside class="enhance-right-column space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-semibold">基础参数</h2><button type="button" @click="basicByPhoto[selectedId] = { ...basicDefaults }" :disabled="!selectedId" class="text-xs text-slate-500 hover:text-blue-600 disabled:opacity-40">重置</button></div>
+          <p class="mb-3 text-[11px] text-slate-500">作用于当前照片；写入 XMP 后可在 Camera Raw 调整。</p>
+          <label v-for="item in basicControls" :key="item.key" class="mb-3 block text-[11px]">
+            <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-500">{{ basicParams[item.key] > 0 ? '+' : '' }}{{ basicParams[item.key] }}</span></span>
+            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" />
+          </label>
+        </section>
+        <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button type="button" @click="resetParams" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
           <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-400">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
           <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" /></label>
@@ -729,12 +783,13 @@ onBeforeUnmount(() => {
 
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <h2 class="mb-3 text-sm font-semibold">导出</h2>
+          <button @click="saveXmp" :disabled="!files.length || savingXmp" class="mb-3 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-300 px-4 py-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40 dark:text-blue-300"><LoaderCircle v-if="savingXmp" class="h-3.5 w-3.5 animate-spin" /><CheckCircle2 v-else class="h-3.5 w-3.5" />单独写入 XMP</button>
           <button @click="chooseOutput" class="w-full truncate rounded-xl border border-slate-200 px-3 py-2 text-left text-[11px] text-slate-500 hover:border-blue-400 dark:border-zinc-700" :title="outputDir"><FolderOpen class="mr-1.5 inline h-3.5 w-3.5" />{{ outputDir || "选择输出目录" }}</button>
           <div class="mt-3 space-y-1.5 rounded-xl bg-emerald-50 p-3 text-[11px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
             <div><ShieldCheck class="mr-1 inline h-3.5 w-3.5" />原始照片始终保持不变</div><div>RAW 导出包含原始数据和 16 位去朦胧图层</div><div>文件名增加 _dehaze 后缀</div>
           </div>
           <p class="mt-2 text-[10px] leading-4 text-slate-400">JPG、PNG 等普通图片会生成 RGB Linear DNG，不会被标记成相机传感器 RAW。</p>
-          <button v-if="!isRunning" @click="startBatch" :disabled="!files.length" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"><Play class="h-3.5 w-3.5" />{{ files.length > 1 ? `处理并导出 ${files.length} 张` : "处理并导出" }}</button>
+          <button v-if="!isRunning" @click="startBatch" :disabled="!files.length" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"><Play class="h-3.5 w-3.5" />{{ files.length > 1 ? `导出 ${files.length} 张 DNG` : "导出 DNG" }}</button>
           <button v-else @click="cancelBatch" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-xs font-semibold text-white"><Square class="h-3.5 w-3.5" />停止后续处理</button>
         </section>
 

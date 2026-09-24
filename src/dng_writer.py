@@ -572,11 +572,13 @@ def _jpeg_preview(image: np.ndarray, max_edge: int = 1024) -> tuple[bytes, int, 
     return stream.getvalue(), preview.width, preview.height
 
 
-def _unique_output_path(output_dir: Path, source: Path) -> Path:
-    candidate = output_dir / f"{source.stem}_dehaze.dng"
+def _unique_output_path(output_dir: Path, source: Path, name_suffix: str = "_dehaze") -> Path:
+    if name_suffix not in {"_dehaze", "_ricoh"}:
+        raise ValueError("unsupported DNG output suffix")
+    candidate = output_dir / f"{source.stem}{name_suffix}.dng"
     index = 2
     while candidate.exists():
-        candidate = output_dir / f"{source.stem}_dehaze_{index}.dng"
+        candidate = output_dir / f"{source.stem}{name_suffix}_{index}.dng"
         index += 1
     return candidate
 
@@ -588,6 +590,7 @@ def write_linear_dng(
     metadata: dict[str, Any] | None = None,
     *,
     bits_per_sample: int = 16,
+    name_suffix: str = "_dehaze",
 ) -> Path:
     """Atomically create a lossless RGB Linear DNG and return its path."""
     if image_rgb16.dtype != np.uint16 or image_rgb16.ndim != 3 or image_rgb16.shape[2] != 3:
@@ -597,7 +600,7 @@ def write_linear_dng(
     source = Path(source_path)
     destination_dir = Path(output_dir).expanduser().resolve()
     destination_dir.mkdir(parents=True, exist_ok=True)
-    final_path = _unique_output_path(destination_dir, source)
+    final_path = _unique_output_path(destination_dir, source, name_suffix)
     height, width = image_rgb16.shape[:2]
     row_bytes = (width * 3 * bits_per_sample + 7) // 8
     rows_per_strip = max(1, min(height, max(1, 1024 * 1024 // max(1, row_bytes))))
@@ -763,7 +766,7 @@ def write_linear_dng(
         with _OUTPUT_LOCK:
             # Re-check inside the process-wide commit lock so simultaneous jobs can
             # never replace one another's output.
-            final_path = _unique_output_path(destination_dir, source)
+            final_path = _unique_output_path(destination_dir, source, name_suffix)
             os.replace(temporary, final_path)
         return final_path
     except Exception:
