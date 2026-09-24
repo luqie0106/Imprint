@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "imprint"
-version = "2.1.1"
+version = "3.0.0"
 description = "RAW / JPEG / JXL / HIF 智能连拍优选与个人审美微调系统"
 
 readme = "README.md"
