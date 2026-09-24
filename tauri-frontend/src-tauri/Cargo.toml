@@ -1,6 +1,6 @@
 [package]
 name = "imprint"
-version = "3.0.0"
+version = "3.0.1"
 description = "Imprint - Intelligent RAW Photo Burst Selection & Aesthetic Sorting App"
 authors = ["Luqie"]
 edition = "2021"

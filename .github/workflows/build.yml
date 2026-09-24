@@ -132,7 +132,9 @@ jobs:
 
       # Windows：保留 onedir sidecar，使 LGPL Lensfun 动态库可被替换。
       - name: Build Tauri App and NSIS Installer (Windows)
+        id: build-nsis
         if: runner.os == 'Windows'
+        continue-on-error: true
         working-directory: tauri-frontend
         shell: bash
         run: |
@@ -162,6 +164,11 @@ jobs:
           Get-ChildItem -Path $out -Recurse -Filter "*.pdb" | Remove-Item -Force -ErrorAction SilentlyContinue
           # 使用 7-Zip 高速多线程压缩（避免 PowerShell Compress-Archive 单线程耗时 20+ 分钟）
           7z a -tzip -mx=1 -mmt=on "Imprint-Windows-Portable.zip" ".\$out\*"
+          $zip = Get-Item "Imprint-Windows-Portable.zip"
+          if ($zip.Length -ge 1900MB) {
+            Remove-Item $zip.FullName -Force
+            7z a -t7z -mx=1 -mmt=on -v1800m "Imprint-Windows-Portable.7z" ".\$out\*"
+          }
 
       # ── Upload Artifacts (分平台精确上传) ───────────────────────────────
       - name: Upload macOS Artifacts
@@ -174,14 +181,22 @@ jobs:
             Imprint-macOS-Installer.pkg
           if-no-files-found: error
 
-      - name: Upload Windows Artifacts
+      - name: Upload Windows Portable Package
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: Imprint-Windows
+          name: Imprint-Windows-Portable
           path: |
             Imprint-Windows-Portable.zip
-            tauri-frontend/src-tauri/target/release/bundle/nsis/*.exe
+            Imprint-Windows-Portable.7z.*
+          if-no-files-found: error
+
+      - name: Upload Windows NSIS Installer
+        if: runner.os == 'Windows' && steps.build-nsis.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Imprint-Windows-NSIS
+          path: tauri-frontend/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
   # ── 独立 Release 任务（避免多平台矩阵并发冲突导致死锁/重试循环）──────────────
