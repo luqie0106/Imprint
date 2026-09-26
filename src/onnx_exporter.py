@@ -6,6 +6,7 @@ onnx_exporter.py — 将 CLIP 视觉编码器与个人 AestheticMLP 熔铸为单
 from __future__ import annotations
 
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable
 import numpy as np
@@ -18,7 +19,7 @@ try:
 except ImportError:
     ONNX_AVAILABLE = False
 
-TORCH_EXPORT_AVAILABLE = True
+TORCH_EXPORT_AVAILABLE = find_spec("torch") is not None
 
 
 def fuse_mlp_weights_to_onnx(

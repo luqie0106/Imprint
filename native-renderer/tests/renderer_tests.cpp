@@ -185,7 +185,37 @@ int main(int argc, char **argv) {
             "full render does not replace cached preview dimensions");
     REQUIRE(preview == make_pixels(preview_width, preview_height), "preview input remains unchanged");
 
+    constexpr uint32_t ricoh_lut_edge = 2;
+    std::vector<uint16_t> ricoh_lut(ricoh_lut_edge * ricoh_lut_edge * ricoh_lut_edge * 3);
+    for (uint32_t r = 0; r < ricoh_lut_edge; ++r) {
+        for (uint32_t g = 0; g < ricoh_lut_edge; ++g) {
+            for (uint32_t b = 0; b < ricoh_lut_edge; ++b) {
+                const size_t at = ((r * ricoh_lut_edge + g) * ricoh_lut_edge + b) * 3;
+                ricoh_lut[at] = static_cast<uint16_t>((1 - r) * 65535u);
+                ricoh_lut[at + 1] = static_cast<uint16_t>(g * 65535u);
+                ricoh_lut[at + 2] = static_cast<uint16_t>(b * 65535u);
+            }
+        }
+    }
+    REQUIRE(im_renderer_render_ricoh_full(renderer, full_width, full_height,
+                                          full_input.data(), full_input.size(),
+                                          ricoh_lut.data(), ricoh_lut.size() - 1,
+                                          ricoh_lut_edge) == IM_STATUS_INVALID_ARGUMENT,
+            "Ricoh full render validates LUT value count");
+    REQUIRE(im_renderer_render_ricoh_full(renderer, full_width, full_height,
+                                          full_input.data(), full_input.size(),
+                                          ricoh_lut.data(), ricoh_lut.size(),
+                                          ricoh_lut_edge) == IM_STATUS_OK,
+            "Ricoh full render applies a supplied 3D LUT");
+    std::vector<uint16_t> ricoh_output;
+    REQUIRE(read_output(renderer, ricoh_output, width, height), "read Ricoh output");
+    REQUIRE(width == full_width && height == full_height, "Ricoh output keeps full input dimensions");
+    REQUIRE(any_difference(ricoh_output, full_input), "Ricoh LUT changes rendered pixels");
+    REQUIRE(full_input == full_original, "Ricoh render does not modify input pixels");
+
+    const char *backend = im_renderer_backend_name(renderer);
+    std::printf("PASS: native renderer C ABI, cached levels, full-resolution path and filter resources; backend=%s\n",
+                backend ? backend : "unknown");
     im_renderer_destroy(renderer);
-    std::puts("PASS: native renderer C ABI, cached levels, full-resolution path and filter resources");
     return 0;
 }

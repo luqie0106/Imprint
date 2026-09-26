@@ -3,9 +3,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { BASE_URL } from "../stores/api";
+import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
 import {
   autoSaveError, clearAutoSaveErrors, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
-  previewUseGpu, sharedDehazeByPhoto, sharedPhotoSource, sharedPresetByPhoto,
+  sharedDehazeByPhoto, sharedPhotoSource, sharedPresetByPhoto,
   sharedSelectedPhotoId, sharePhotoSource,
   type PhotoSource,
 } from "../stores/photoSource";
@@ -105,11 +106,6 @@ let pointerDownY = 0;
 let pointerDownZoom = 1;
 let pointerMoved = false;
 const advancedOpen = ref(false);
-const gpuEnabled = previewUseGpu;
-const gpuDetecting = ref(true);
-const gpuAvailable = ref(false);
-const gpuLabel = ref("正在检测 GPU…");
-const gpuPreferenceTouched = ref(false);
 const job = ref<EnhanceJob | null>(null);
 const actionMessage = ref("");
 const savingXmp = ref(false);
@@ -412,35 +408,6 @@ async function saveXmp() {
   }
 }
 
-async function fetchGpuStatus() {
-  const baseUrl = BASE_URL.value;
-  if (!baseUrl) return;
-  gpuDetecting.value = true;
-  gpuAvailable.value = false;
-  gpuLabel.value = "正在检测 GPU…";
-  try {
-    const response = await fetch(`${baseUrl}/api/enhance/gpu-status`);
-    if (!response.ok) throw new Error("GPU 状态检测失败");
-    const data = await response.json() as {
-      available?: boolean;
-      backends?: string[];
-      label?: string;
-    };
-    gpuAvailable.value = Boolean(data.available && Array.isArray(data.backends) && data.backends.length);
-    if (gpuAvailable.value) {
-      if (!gpuPreferenceTouched.value) gpuEnabled.value = true;
-    } else {
-      gpuEnabled.value = false;
-    }
-    gpuLabel.value = gpuAvailable.value ? (data.label || "GPU 可用") : "未检测到可用 GPU";
-  } catch {
-    gpuAvailable.value = false;
-    gpuEnabled.value = false;
-    gpuLabel.value = "未检测到可用 GPU";
-  } finally {
-    gpuDetecting.value = false;
-  }
-}
 
 async function chooseSingle() {
   const result = await open({ multiple: false, directory: false, title: "选择一张照片" });
@@ -470,7 +437,8 @@ async function fetchPreview(mode: "original" | "dehazed", generation: number) {
       session_id: sessionId.value, photo_id: selectedId.value, params: params.value,
       basic_params: basicParams.value,
       ricoh_preset_id: ricohPresetId.value,
-      max_edge: 1800, mode, color_manage_srgb: true, use_gpu: gpuEnabled.value,
+      max_edge: 1800, mode, color_manage_srgb: true, render_backend: renderBackend.value,
+      basic_backend: basicBackend.value, ricoh_backend: ricohBackend.value,
     }),
   });
   if (!response.ok) {
@@ -567,7 +535,7 @@ async function startBatch() {
         params: cloneParams(params.value),
         params_by_photo: paramsByPhotoPayload,
         basic_params_by_photo: basicByPhoto.value,
-        use_gpu: gpuEnabled.value,
+        render_backend: renderBackend.value, basic_backend: basicBackend.value,
       }),
     });
     const data = await response.json();
@@ -605,13 +573,13 @@ watch(selectedId, () => {
 watch(params, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
 watch(basicParams, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
 watch(ricohPresetId, schedulePreview);
-watch(gpuEnabled, () => {
+watch(renderBackend, () => {
+  if (sessionId.value && selectedId.value) void refreshPreview(false);
+});
+watch([basicBackend, ricohBackend], () => {
   if (sessionId.value && selectedId.value) void refreshPreview(false);
 });
 watch([fitWidth, fitHeight], clampPan);
-watch(BASE_URL, (value) => {
-  if (value) void fetchGpuStatus();
-}, { immediate: true });
 watch(sharedPhotoSource, (source) => {
   if (source?.owner === "ricoh") adoptSession(source);
 }, { immediate: true });
@@ -783,13 +751,6 @@ onBeforeUnmount(() => {
               <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item.key] * 100) }}</span></span>
               <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ item.description }}</span>
               <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" />
-            </label>
-            <label class="flex cursor-pointer items-start gap-3 rounded-lg bg-slate-50 p-3 dark:bg-zinc-800" :class="gpuAvailable && !gpuDetecting ? '' : 'cursor-not-allowed opacity-60'">
-              <input v-model="gpuEnabled" @change="gpuPreferenceTouched = true" type="checkbox" :disabled="gpuDetecting || !gpuAvailable" class="mt-0.5 h-4 w-4 rounded accent-blue-600" aria-label="GPU 加速" />
-              <span class="min-w-0">
-                <span class="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-zinc-300">GPU 加速</span>
-                <span class="mt-1 block break-words text-[10px] leading-4" :class="gpuAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-zinc-500'">{{ gpuDetecting ? '正在检测 GPU…' : gpuLabel }}</span>
-              </span>
             </label>
             <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-blue-400">
               收起高级参数 <ChevronUp class="h-3.5 w-3.5" />

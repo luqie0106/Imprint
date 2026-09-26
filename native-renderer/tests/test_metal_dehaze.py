@@ -91,25 +91,31 @@ def _check_status(library: ctypes.CDLL, renderer: ctypes.c_void_p, status: int, 
 
 
 @pytest.fixture(scope="module")
-def metal_renderer():
+def native_renderer():
     library_path = os.environ.get("IMPRINT_NATIVE_RENDERER_LIB")
     if not library_path:
-        pytest.fail("Set IMPRINT_NATIVE_RENDERER_LIB to the CMake-built Metal renderer library")
+        pytest.fail("Set IMPRINT_NATIVE_RENDERER_LIB to the CMake-built native renderer library")
+
+    requested_backend = os.environ.get("IMPRINT_NATIVE_RENDERER_BACKEND", "Metal").strip().lower()
+    backend_kinds = {"metal": (1, "Metal"), "cuda": (2, "CUDA"), "d3d12": (3, "D3D12")}
+    if requested_backend not in backend_kinds:
+        pytest.fail("IMPRINT_NATIVE_RENDERER_BACKEND must be Metal, CUDA, or D3D12")
+    backend_kind, expected_backend = backend_kinds[requested_backend]
 
     library = ctypes.CDLL(library_path)
     _configure_library(library)
     renderer = ctypes.c_void_p()
-    # IM_BACKEND_METAL = 1. Fail instead of silently testing a fallback backend.
-    status = library.im_renderer_create(1, ctypes.byref(renderer))
+    # Explicit backend selection prevents an accidental fallback from passing.
+    status = library.im_renderer_create(backend_kind, ctypes.byref(renderer))
     if status != 0:
         detail = library.im_renderer_last_error(None)
         message = detail.decode("utf-8", errors="replace") if detail else "unknown native error"
-        pytest.fail(f"Could not create the Metal renderer (status {status}): {message}")
+        pytest.fail(f"Could not create the {expected_backend} renderer (status {status}): {message}")
 
     backend = library.im_renderer_backend_name(renderer)
-    if backend != b"Metal":
+    if backend != expected_backend.encode("ascii"):
         library.im_renderer_destroy(renderer)
-        pytest.fail(f"Expected the Metal backend, got {backend!r}")
+        pytest.fail(f"Expected the {expected_backend} backend, got {backend!r}")
 
     neutral_filter = NativeFilterParams(0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0)
     _check_status(
@@ -119,7 +125,7 @@ def metal_renderer():
         "upload neutral filter",
     )
     try:
-        yield library, renderer
+        yield library, renderer, expected_backend
     finally:
         library.im_renderer_destroy(renderer)
 
@@ -164,8 +170,8 @@ def metal_renderer():
         ),
     ],
 )
-def test_metal_rgb16_color_difference(scene_name: str, params: DehazeParams, metal_renderer):
-    library, renderer = metal_renderer
+def test_native_rgb16_color_difference(scene_name: str, params: DehazeParams, native_renderer):
+    library, renderer, backend = native_renderer
     image = np.ascontiguousarray(_scenes()[scene_name])
     original = image.copy()
     native_params = NativeParams(*(getattr(params, field) for field in DehazeParams.__dataclass_fields__))
@@ -188,7 +194,7 @@ def test_metal_rgb16_color_difference(scene_name: str, params: DehazeParams, met
         library,
         renderer,
         library.im_renderer_render(renderer, 0, ctypes.byref(native_params), ctypes.byref(basic)),
-        "render with Metal",
+        f"render with {backend}",
     )
 
     width = ctypes.c_uint32()
@@ -200,23 +206,23 @@ def test_metal_rgb16_color_difference(scene_name: str, params: DehazeParams, met
         library.im_renderer_get_output_size(
             renderer, ctypes.byref(width), ctypes.byref(height), ctypes.byref(value_count)
         ),
-        "get Metal output size",
+        f"get {backend} output size",
     )
     assert (width.value, height.value) == (image.shape[1], image.shape[0])
     assert value_count.value == image.size
-    metal = np.empty_like(image)
+    native = np.empty_like(image)
     _check_status(
         library,
         renderer,
         library.im_renderer_copy_output(
-            renderer, metal.ctypes.data_as(uint16_pointer), metal.size
+            renderer, native.ctypes.data_as(uint16_pointer), native.size
         ),
-        "copy Metal output",
+        f"copy {backend} output",
     )
     python = apply_dehaze(image, params, backend="cpu")
-    assert np.array_equal(image, original), "Metal/Python comparison must not modify the source"
+    assert np.array_equal(image, original), f"{backend}/Python comparison must not modify the source"
 
-    signed = metal.astype(np.int32) - python.astype(np.int32)
+    signed = native.astype(np.int32) - python.astype(np.int32)
     absolute = np.abs(signed)
     channel_mae = absolute.mean(axis=(0, 1))
     channel_bias = signed.mean(axis=(0, 1))

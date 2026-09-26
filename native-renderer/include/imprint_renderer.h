@@ -32,7 +32,8 @@ typedef enum im_status {
 typedef enum im_backend_kind {
     IM_BACKEND_AUTO = 0,
     IM_BACKEND_METAL = 1,
-    IM_BACKEND_CUDA = 2
+    IM_BACKEND_CUDA = 2,
+    IM_BACKEND_D3D12 = 3
 } im_backend_kind;
 
 /* L0 is the cached preview base. L1 and L2 are cached at approximately 1/2
@@ -120,6 +121,17 @@ IMPRINT_API im_status im_renderer_render_full(im_renderer *renderer,
                                                size_t value_count,
                                                const im_dehaze_params *dehaze,
                                                const im_basic_params *basic);
+
+/* Render one full-resolution RGB16 image through only the supplied 3D LUT.
+   This resets filter controls to neutral and uses zero dehaze/basic controls. */
+IMPRINT_API im_status im_renderer_render_ricoh_full(im_renderer *renderer,
+                                                     uint32_t width,
+                                                     uint32_t height,
+                                                     const uint16_t *rgb16,
+                                                     size_t value_count,
+                                                     const uint16_t *lut_rgb16,
+                                                     size_t lut_value_count,
+                                                     uint32_t lut_edge);
 
 IMPRINT_API im_status im_renderer_get_output_size(const im_renderer *renderer,
                                                    uint32_t *width,

@@ -3,6 +3,7 @@ import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from "vue"
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSse } from "../composables/useSse";
 import { BASE_URL, isServerReady } from "../stores/api";
+import { sortBackend } from "../stores/renderOptions";
 import {
   FolderOpen, Play, Square, SlidersHorizontal, CheckCircle2,
   AlertCircle, Cpu, Trash2, FileCheck2, ChevronDown,
@@ -398,6 +399,7 @@ async function handleStart() {
     keep_count: Number(keepCount.value),
     max_workers: Number(maxWorkers.value),
     use_gpu: Boolean(useGpu.value),
+    sort_backend: sortBackend.value,
     include_previews: reviewMode.value === "review",
     weight_mode: weightMode.value,
     custom_weights: weightMode.value === "custom" ? customWeights.value : null,

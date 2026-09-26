@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
@@ -55,10 +56,27 @@ for model_rel in [
     if os.path.exists(model_rel):
         datas.append((model_rel, 'models'))
 
+native_binaries = []
+candidate = Path('native-renderer/build/libimprint_renderer.dylib')
+if candidate.is_file():
+    native_binaries.append((str(candidate), '.'))
+for build_dir in (Path('native-renderer/build'), Path('native-renderer/build/Release')):
+    for candidate in build_dir.glob('imprint_renderer*.dll'):
+        if candidate.is_file():
+            native_binaries.append((str(candidate), '.'))
+for candidate in (
+    Path('native-sort/build/libimprint_sort.dylib'),
+    Path('native-sort/build/libimprint_sort.so'),
+    Path('native-sort/build/imprint_sort.dll'),
+    Path('native-sort/build/Release/imprint_sort.dll'),
+):
+    if candidate.is_file():
+        native_binaries.append((str(candidate), '.'))
+
 a = Analysis(
     ['src/app_api.py'],
     pathex=['src'],
-    binaries=lensfun_binaries + mediapipe_binaries + imagecodecs_binaries,
+    binaries=lensfun_binaries + mediapipe_binaries + imagecodecs_binaries + native_binaries,
     datas=datas,
     hiddenimports=[
         'burst_filter',
@@ -68,6 +86,8 @@ a = Analysis(
         'config',
         'dehaze',
         'dehaze_gpu',
+        'native_renderer',
+        'native_sort',
         'image_io',
         'dng_writer',
         'lens_correction',
@@ -91,7 +111,6 @@ a = Analysis(
         'fastapi',
         'cv2',
         'numpy',
-        'torch',
         'rawpy',
         'onnxruntime',
         'onnx',
@@ -111,7 +130,7 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=[
-        'torchvision', 'transformers',
+        'torch', 'torchvision', 'transformers',
         'PySide6', 'tkinter', 'matplotlib',
     ],
     cipher=block_cipher,

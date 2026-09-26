@@ -44,7 +44,6 @@ export const sharedSelectedPhotoId = ref("");
 export const sharedDehazeByPhoto = ref<Record<string, DehazeParams>>({});
 export const sharedBasicByPhoto = ref<Record<string, BasicParams>>({});
 export const sharedPresetByPhoto = ref<Record<string, string | null>>({});
-export const previewUseGpu = ref(false);
 export const autoSaveError = ref("");
 
 const savedSnapshots = new Map<string, string>();

@@ -6,6 +6,9 @@ namespace imprint { std::unique_ptr<Backend> create_metal_backend(std::string &e
 #if defined(IMPRINT_BACKEND_CUDA)
 namespace imprint { std::unique_ptr<Backend> create_cuda_backend(std::string &error); }
 #endif
+#if defined(IMPRINT_BACKEND_D3D12)
+namespace imprint { std::unique_ptr<Backend> create_d3d12_backend(std::string &error); }
+#endif
 
 namespace imprint {
 
@@ -13,6 +16,10 @@ std::unique_ptr<Backend> create_backend(im_backend_kind kind, std::string &error
     if (kind == IM_BACKEND_AUTO) {
 #if defined(IMPRINT_BACKEND_METAL)
         auto backend = create_metal_backend(error);
+        if (backend) return backend;
+#endif
+#if defined(IMPRINT_BACKEND_D3D12)
+        auto backend = create_d3d12_backend(error);
         if (backend) return backend;
 #endif
 #if defined(IMPRINT_BACKEND_CUDA)
@@ -37,6 +44,15 @@ std::unique_ptr<Backend> create_backend(im_backend_kind kind, std::string &error
         return create_cuda_backend(error);
 #else
         error = "CUDA backend is not available in this build";
+        return nullptr;
+#endif
+    }
+
+    if (kind == IM_BACKEND_D3D12) {
+#if defined(IMPRINT_BACKEND_D3D12)
+        return create_d3d12_backend(error);
+#else
+        error = "D3D12 backend is not available in this build";
         return nullptr;
 #endif
     }

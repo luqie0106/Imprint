@@ -308,6 +308,29 @@ im_status im_renderer_render_full(im_renderer *renderer, uint32_t width, uint32_
     }
 }
 
+im_status im_renderer_render_ricoh_full(im_renderer *renderer, uint32_t width, uint32_t height,
+                                        const uint16_t *rgb16, size_t value_count,
+                                        const uint16_t *lut_rgb16, size_t lut_value_count,
+                                        uint32_t lut_edge) {
+    if (!renderer || !rgb16 || !width || !height || width > 65535 || height > 65535 ||
+        !lut_rgb16 || lut_edge < 2 || lut_edge > 65) return IM_STATUS_INVALID_ARGUMENT;
+    const uint64_t expected_image_values = static_cast<uint64_t>(width) * height * 3;
+    if (expected_image_values > (1ull << 29) || value_count != expected_image_values) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    const uint64_t expected_lut_values = static_cast<uint64_t>(lut_edge) * lut_edge * lut_edge * 3;
+    if (expected_lut_values != lut_value_count) return IM_STATUS_INVALID_ARGUMENT;
+
+    const im_filter_params neutral_lut_filter{0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    const im_status filter_status = im_renderer_upload_filter(
+        renderer, &neutral_lut_filter, nullptr, 0, lut_rgb16, lut_value_count, lut_edge);
+    if (filter_status != IM_STATUS_OK) return filter_status;
+
+    const im_dehaze_params no_dehaze{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const im_basic_params no_basic{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    return im_renderer_render_full(renderer, width, height, rgb16, value_count, &no_dehaze, &no_basic);
+}
+
 im_status im_renderer_get_output_size(const im_renderer *renderer, uint32_t *width,
                                       uint32_t *height, size_t *value_count) {
     if (!renderer || !width || !height || !value_count) return IM_STATUS_INVALID_ARGUMENT;

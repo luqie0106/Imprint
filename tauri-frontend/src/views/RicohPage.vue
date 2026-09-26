@@ -2,9 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { BASE_URL, isServerReady } from "../stores/api";
+import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
 import {
   autoSaveError, clearAutoSaveErrors, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
-  previewUseGpu, sharedDehazeByPhoto,
+  sharedDehazeByPhoto,
   sharedPhotoSource, sharedPresetByPhoto, sharedSelectedPhotoId, sharePhotoSource,
   type PhotoSource,
 } from "../stores/photoSource";
@@ -82,7 +83,6 @@ const imageHeight = ref(0);
 const isScrubbing = ref(false);
 const loading = ref(false);
 const busy = ref(false);
-const previewLoading = ref(false);
 const error = ref("");
 const message = ref("");
 const summary = ref<Summary | null>(null);
@@ -90,7 +90,7 @@ const job = ref<Job | null>(null);
 const currentFile = computed(() => files.value.find(file => file.photo_id === selectedId.value));
 const basicParams = computed<BasicParams>(() => basicParamsByPhoto.value[selectedId.value] ?? defaultBasicParams);
 const dehazeParams = computed(() => sharedDehazeByPhoto.value[selectedId.value]);
-const effectReady = computed(() => Boolean(effectUrl.value) && !previewLoading.value);
+const effectReady = computed(() => Boolean(effectUrl.value));
 const showComparePreview = computed(() => mode.value === "compare" && effectReady.value);
 const previewImageUrl = computed(() => mode.value !== "original" && effectReady.value ? effectUrl.value : originalUrl.value);
 const isRunning = computed(() => job.value?.status === "queued" || job.value?.status === "running");
@@ -330,16 +330,12 @@ async function refreshPreview(includeOriginal = false) {
   const token = ++generation;
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) {
     releasePreview();
-    previewLoading.value = false;
     return;
   }
-  if (effectUrl.value) URL.revokeObjectURL(effectUrl.value);
-  effectUrl.value = "";
   if (includeOriginal) {
     if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
     originalUrl.value = "";
   }
-  previewLoading.value = true;
   error.value = "";
   try {
     const common = { session_id: sessionId.value, photo_id: selectedId.value, max_edge: 1800 };
@@ -353,7 +349,8 @@ async function refreshPreview(includeOriginal = false) {
       params: dehazeParams.value,
       basic_params: cloneBasicParams(basicParams.value),
       ricoh_preset_id: selectedPreset.value || null,
-      use_gpu: previewUseGpu.value,
+      render_backend: renderBackend.value,
+      basic_backend: basicBackend.value, ricoh_backend: ricohBackend.value,
     }, token));
     const results = await Promise.allSettled(requests);
     if (token !== generation) return;
@@ -364,11 +361,14 @@ async function refreshPreview(includeOriginal = false) {
       if (result?.status === "fulfilled") originalUrl.value = result.value;
     }
     const effectResult = results[resultIndex];
-    if (effectResult?.status === "fulfilled") effectUrl.value = effectResult.value;
+    if (effectResult?.status === "fulfilled") {
+      if (effectUrl.value) URL.revokeObjectURL(effectUrl.value);
+      effectUrl.value = effectResult.value;
+    }
     if (rejected?.status === "rejected") throw rejected.reason;
   } catch (cause) {
     if (token === generation) error.value = cause instanceof Error ? cause.message : "预览失败";
-  } finally { if (token === generation) previewLoading.value = false; }
+  }
 }
 
 function schedulePreview() {
@@ -429,6 +429,7 @@ async function exportDng() {
         file.photo_id, sharedPresetByPhoto.value[file.photo_id] || presets.value[0]?.id || selectedPreset.value,
       ])),
       output_dir: outputDir.value,
+      ricoh_backend: ricohBackend.value,
       basic_params_by_photo: Object.fromEntries(files.value.map(file => [
         file.photo_id, cloneBasicParams(basicParamsByPhoto.value[file.photo_id] ?? file.basic_params),
       ])),
@@ -462,7 +463,7 @@ watch([sessionId, selectedId], () => {
 });
 watch(selectedPreset, () => { schedulePreview(); });
 watch(dehazeParams, schedulePreview, { deep: true });
-watch(previewUseGpu, schedulePreview);
+watch([renderBackend, basicBackend, ricohBackend], schedulePreview);
 watch(basicParams, (next, previous) => {
   schedulePreview();
   if (selectedId.value && next === previous) {
@@ -569,8 +570,7 @@ onBeforeUnmount(() => {
               </template>
               <span v-else class="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/55 px-2 py-1 text-[11px] text-white">{{ mode === "effect" && effectReady ? "综合效果" : "原图" }}</span>
             </template>
-            <p v-if="!originalUrl" class="text-sm text-slate-400">{{ previewLoading ? "正在生成预览…" : "选择照片开始预览" }}</p>
-            <div v-if="previewLoading" class="absolute inset-0 flex items-center justify-center bg-white/45 text-sm text-blue-600 backdrop-blur-[1px] dark:bg-black/35">正在生成预览…</div>
+            <p v-if="!originalUrl && !selectedId" class="text-sm text-slate-400">选择照片开始预览</p>
           </div>
         </section>
         <section v-if="files.length && photoListLayout === 'horizontal'" class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">

@@ -166,15 +166,18 @@ static float3 apply_dehaze(float3 original, constant DehazeParams &p, constant I
 
 static float3 apply_basic(float3 rgb, constant BasicParams &p) {
     rgb *= exp2(p.exposure);
-    rgb = (rgb - float3(0.18)) * (1.0 + p.contrast / 100.0) + float3(0.18);
+    rgb = (rgb - float3(0.5)) * (1.0 + p.contrast / 100.0) + float3(0.5);
     float y = luma(rgb);
-    rgb += float3((p.highlights * y * y + p.shadows * (1.0 - y) * (1.0 - y)) / 100.0);
-    float white_mask = smoothstep(0.70, 1.0, y);
-    float black_mask = 1.0 - smoothstep(0.0, 0.30, y);
-    rgb += float3((p.whites * white_mask + p.blacks * black_mask) / 100.0);
-    float chroma = max(rgb.r, max(rgb.g, rgb.b)) - min(rgb.r, min(rgb.g, rgb.b));
-    float saturation = (1.0 + p.saturation / 100.0) * (1.0 + p.vibrance / 100.0 * (1.0 - chroma));
-    return with_saturation(clamp(rgb, 0.0, 1.0), saturation);
+    float shadow_mask = pow(clamp((0.62 - y) / 0.62, 0.0, 1.0), 1.5);
+    float highlight_mask = pow(clamp((y - 0.38) / 0.62, 0.0, 1.0), 1.5);
+    float tone = (p.shadows * 0.0022 + p.blacks * 0.0008) * shadow_mask
+               + (p.highlights * 0.0018 + p.whites * 0.0008) * highlight_mask;
+    rgb += float3(tone);
+    y = luma(rgb);
+    float3 chroma = rgb - float3(y);
+    float chroma_level = max(abs(chroma.r), max(abs(chroma.g), abs(chroma.b)));
+    float vibrance = 1.0 + p.vibrance / 100.0 * clamp(1.0 - chroma_level, 0.0, 1.0);
+    return clamp(float3(y) + chroma * (1.0 + p.saturation / 100.0) * vibrance, 0.0, 1.0);
 }
 
 static float3 apply_filter_controls(float3 rgb, constant FilterParams &p) {

@@ -1,10 +1,14 @@
 # Native GPU renderer prototype
 
-This directory contains an independent C++17 shared library with a narrow C ABI. It is not connected to the Python Sidecar, Vue, Rust, or the current package build. The C ABI is declared in [`include/imprint_renderer.h`](include/imprint_renderer.h).
+This directory contains an independent C++17 shared library with a narrow C ABI. The Python Sidecar loads it through `src/native_renderer.py` for dehaze and basic adjustments when the renderer setting selects native or automatic mode. The C ABI is declared in [`include/imprint_renderer.h`](include/imprint_renderer.h). Python retains decode, XMP, color management, lens correction, job state, and DNG export. The Sidecar calls the native stages separately so those Python steps stay in their existing order. Runtime failures fall back to Python rendering.
+
+The settings page selects dehaze, basic, Ricoh, and burst scoring independently. The native basic adjustment math can differ from the current Python preview approximation. For Ricoh, Python still parses XMP and samples the current effect onto a bounded RGB16 3D LUT; the C++ renderer interpolates that LUT over the full image. This is an approximation and can differ visibly near sharp color transitions. Bundled Photoshop `.cube` LUTs are not used as substitutes for Ricoh presets. The Ricoh native option defaults to off.
+
+The release workflow builds Metal on macOS and D3D12 on Windows before PyInstaller, then bundles the native library with the Sidecar. Windows does not install the CUDA PyTorch wheel. The separate `native-sort` C++ library is built for both platforms. For local development, build in `native-renderer/build` or set `IMPRINT_NATIVE_RENDERER_LIB` to a trusted compiled library path.
 
 ## Pipeline
 
-The Metal backend (macOS) and optional CUDA backend (Linux/Windows) apply the same stages in one GPU dispatch:
+The Metal backend (macOS), D3D12 backend (Windows), and optional CUDA backend (Linux) apply the same stages in one GPU dispatch:
 
 1. Dehaze ported from the Python `natural-global-v8-source-hue-brightness-guard` algorithm using the nine existing UI parameters.
 2. Basic exposure, tone, vibrance, and saturation adjustments using the eight existing UI parameters.
@@ -12,7 +16,7 @@ The Metal backend (macOS) and optional CUDA backend (Linux/Windows) apply the sa
 
 The renderer caches an uploaded RGB16 preview, its L0/L1/L2 pyramid, per-level dehaze statistics, and filter resources. Each level estimates one RGB atmospheric-light vector from the highest 0.1% of dark-channel values (at least 16 candidates), then takes the median of the brightest one eighth of those candidates. Its global haze level comes from that level's dark-channel 75th percentile. `im_renderer_render_full` calculates both statistics again from the newly decoded full-resolution input and bypasses the preview cache. Input buffers are copied and never modified.
 
-Metal and CUDA port the `natural-global-v8-source-hue-brightness-guard` transform in `src/dehaze.py`: one global transmission, natural blend and source-luminance mix, source-hue confidence and chroma recovery, smooth gamut handling, the fixed-endpoint global S-curve, highlight/shadow protection, the global brightness guard, near-saturation caps, and round-to-even RGB16 output. The atmospheric-light candidate ordering can differ for exact ties, and shader floating-point arithmetic can cause small quantization differences.
+Metal, D3D12, and CUDA port the `natural-global-v8-source-hue-brightness-guard` transform in `src/dehaze.py`: one global transmission, natural blend and source-luminance mix, source-hue confidence and chroma recovery, smooth gamut handling, the fixed-endpoint global S-curve, highlight/shadow protection, the global brightness guard, near-saturation caps, and round-to-even RGB16 output. The atmospheric-light candidate ordering can differ for exact ties, and shader floating-point arithmetic can cause small quantization differences.
 
 The brightness guard needs the median of the pre-guard image on source-selected midtones. Before each protected render, the host reproduces the pre-guard pixel transform over the selected cached level (or fresh full input), calculates the two medians, and sends one compensation gain to the shader. This costs one full CPU image pass and median-selection storage for up to two luma arrays on every such render, in addition to the one-time per-level statistics scans at preview upload. It preserves the CPU reference's global behavior without reading a GPU intermediate image, but its latency and memory cost have not been benchmarked and may affect 30 fps preview rendering. A future optimization can compute GPU partial median histograms or reductions and compare their gain against this CPU reference before removing the host scan.
 
@@ -30,9 +34,21 @@ The Metal shader text is embedded into the shared library at build time and comp
 
 Metal device visibility depends on the process environment. The restricted Codex command environment can return no device, while the ordinary macOS Terminal on the Apple M2 Pro development host exposes Metal. In Terminal, the GPU contract test passed and the default L2 benchmark measured 0.364 ms/render (356 MPix/s) for a 1920x1080 preview rendered at 480x270. This is a native-renderer microbenchmark, not an end-to-end application frame rate.
 
-## Optional CUDA build
+## Build on Windows
 
-CUDA is enabled by default when CMake finds a CUDA compiler. Set `-DIMPRINT_ENABLE_CUDA=OFF` to disable it. CUDA remains optional so a machine without `nvcc` can still configure the shared ABI. This prototype's CUDA source has not been compiled or run on the current macOS development host; use a CUDA-enabled Linux or Windows build to validate that backend.
+Run from a Visual Studio Developer PowerShell with the Windows SDK and CMake:
+
+```powershell
+cmake -S native-renderer -B native-renderer/build -DBUILD_TESTING=ON
+cmake --build native-renderer/build --config Release --parallel
+ctest --test-dir native-renderer/build -C Release --output-on-failure
+```
+
+The HLSL source is embedded at build time and compiled with the Windows D3D compiler at runtime. The installed app does not need CUDA Toolkit, `nvcc`, CMake, or a C++ compiler. A D3D12 capable driver is needed to use native rendering; the Sidecar retains its Python fallback when no compatible GPU is available. To compare RGB16 output with Python on a Windows GPU, run `tests/test_metal_dehaze.py` with `IMPRINT_NATIVE_RENDERER_BACKEND=d3d12` and `IMPRINT_NATIVE_RENDERER_LIB` pointing at the built DLL. This comparison has not yet been run on Windows hardware.
+
+## Optional CUDA build on Linux
+
+CUDA is enabled on Linux when CMake finds a CUDA compiler. Set `-DIMPRINT_ENABLE_CUDA=OFF` to disable it. Windows builds select D3D12 regardless of this option and do not require `nvcc`.
 
 ## Contract tests and local benchmark
 

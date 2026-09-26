@@ -35,6 +35,13 @@ import numpy as np
 import rawpy
 from PIL import Image
 
+try:
+    from native_sort import native_exposure_score, native_region_sharpness_many
+except Exception:
+    # Keep Python sorting usable when an optional native bridge cannot import.
+    native_exposure_score = None
+    native_region_sharpness_many = None
+
 # ── 注册现代高效率图像格式解码器 (HIF / HEIF / HEIC / JPEG XL) ───────────
 try:
     import pillow_heif
@@ -367,6 +374,9 @@ class RawEvaluator:
       - exposure_score : 0.0~1.0，对高光过曝重罚、对欠曝宽容。
     """
 
+    def __init__(self, sort_backend: str = "python") -> None:
+        self.sort_backend = "native" if str(sort_backend).strip().lower() == "native" else "python"
+
     def extract_preview(self, path: Path) -> np.ndarray:
         suffix = path.suffix.lower()
         if suffix in RAW_SUFFIXES:
@@ -493,19 +503,18 @@ class RawEvaluator:
         gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
         regions = self._face_regions(gray)
         if regions:
-            scores = [self._region_sharpness(gray, x, y, w, h) for x, y, w, h in regions]
-            return "face", scores
+            return "face", self._score_region_sharpness_many(gray, regions)
 
         height, width = gray.shape
-        scores: list[float] = []
+        regions = []
         for row in range(3):
             for col in range(3):
                 x0 = round(width * col / 3)
                 x1 = round(width * (col + 1) / 3)
                 y0 = round(height * row / 3)
                 y1 = round(height * (row + 1) / 3)
-                scores.append(self._region_sharpness(gray, x0, y0, x1 - x0, y1 - y0))
-        return "grid", scores
+                regions.append((x0, y0, x1 - x0, y1 - y0))
+        return "grid", self._score_region_sharpness_many(gray, regions)
 
     @staticmethod
     def _aggregate_sharpness_regions(scores: Sequence[float]) -> float:
@@ -539,6 +548,20 @@ class RawEvaluator:
         sy = cv2.Sobel(roi, cv2.CV_64F, 0, 1, ksize=3)
         return lap + float((sx ** 2 + sy ** 2).mean())
 
+    def _score_region_sharpness_many(
+        self, gray: np.ndarray, regions: Sequence[tuple[int, int, int, int]]
+    ) -> list[float]:
+        """显式 native 模式批量评分各区域，只复制一次灰度图；失败时逐区回退。"""
+        if self.sort_backend == "native" and native_region_sharpness_many is not None:
+            try:
+                return [float(value) for value in native_region_sharpness_many(gray, regions)]
+            except Exception:
+                pass
+        return [
+            self._region_sharpness(gray, x, y, w, h)
+            for x, y, w, h in regions
+        ]
+
     def _center_sharpness(self, gray: np.ndarray) -> float:
         """无人脸时：计算画面中心 60% 区域的锐度。"""
         h, w = gray.shape
@@ -560,6 +583,16 @@ class RawEvaluator:
         pct_white = float(np.sum(gray >= 250)) / total
         raw = 1.0 - pct_white * 2.0 - pct_black * 0.5
         return float(np.clip(raw, 0.0, 1.0))
+
+    def score_exposure(self, img_rgb: np.ndarray) -> float:
+        """显式 native 模式调用灰度阈值统计；失败时回退到 Python 公式。"""
+        if self.sort_backend == "native" and native_exposure_score is not None:
+            try:
+                gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+                return float(native_exposure_score(gray))
+            except Exception:
+                pass
+        return self.exposure_score(img_rgb)
 
     # ── 向后兼容：旧的 score() 接口仍可用（BurstGrouper 不使用此方法）──────
 
@@ -965,6 +998,7 @@ class BurstFilter:
         custom_weights: dict[str, float] | None = None,
         all_blurry_action: str = "keep",
         eye_detection: bool = False,
+        sort_backend: str = "python",
     ) -> None:
         self.gap_seconds = gap_seconds
         self.max_hamming_distance = max_hamming_distance
@@ -983,10 +1017,11 @@ class BurstFilter:
         if self.all_blurry_action not in {"keep", "review", "reject"}:
             self.all_blurry_action = "keep"
         self.eye_detection = bool(eye_detection)
+        self.sort_backend = "native" if str(sort_backend).strip().lower() == "native" else "python"
         self._eye_evaluator = self._load_eye_evaluator() if self.eye_detection else None
 
         self._exif_reader = RawExifReader()
-        self._scorer = RawEvaluator()
+        self._scorer = RawEvaluator(sort_backend=self.sort_backend)
         self._grouper = BurstGrouper(
             exif_reader=self._exif_reader,
             preview_extractor=self._scorer,
@@ -1163,7 +1198,7 @@ class BurstFilter:
                 preview = self._scorer.extract_preview(shot.primary_path)
                 es._sharp_mode, es._sharp_profile = self._scorer.sharpness_profile(preview)
                 es.sharpness = self._scorer._aggregate_sharpness_regions(es._sharp_profile)
-                es.exposure  = self._scorer.exposure_score(preview)
+                es.exposure  = self._scorer.score_exposure(preview)
                 es.aesthetic = self._aesthetic_scorer.score(preview)
                 absolute_fn = getattr(self._scorer, "absolute_sharpness_quality", None)
                 if callable(absolute_fn):

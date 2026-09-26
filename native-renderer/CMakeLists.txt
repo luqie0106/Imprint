@@ -30,6 +30,21 @@ if(APPLE)
     add_custom_target(imprint_embedded_shader DEPENDS "${IMPRINT_EMBEDDED_SHADER}")
     list(APPEND IMPRINT_RENDERER_SOURCES src/metal_backend.mm)
     set(IMPRINT_BACKEND_DEFINITIONS IMPRINT_BACKEND_METAL=1)
+elseif(WIN32)
+    set(IMPRINT_EMBEDDED_HLSL "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_hlsl_shader.hpp")
+    add_custom_command(
+        OUTPUT "${IMPRINT_EMBEDDED_HLSL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/src/renderer.hlsl"
+                "-DOUTPUT_FILE=${IMPRINT_EMBEDDED_HLSL}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedHlslShader.cmake"
+        DEPENDS src/renderer.hlsl cmake/EmbedHlslShader.cmake
+        VERBATIM
+    )
+    add_custom_target(imprint_embedded_hlsl DEPENDS "${IMPRINT_EMBEDDED_HLSL}")
+    list(APPEND IMPRINT_RENDERER_SOURCES src/d3d12_backend.cpp)
+    set(IMPRINT_BACKEND_DEFINITIONS IMPRINT_BACKEND_D3D12=1)
 elseif(IMPRINT_ENABLE_CUDA)
     check_language(CUDA)
     if(CMAKE_CUDA_COMPILER)
@@ -64,6 +79,9 @@ if(APPLE)
     add_dependencies(imprint_renderer imprint_embedded_shader)
     set_source_files_properties(src/metal_backend.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(imprint_renderer PRIVATE "-framework Foundation" "-framework Metal")
+elseif(WIN32)
+    add_dependencies(imprint_renderer imprint_embedded_hlsl)
+    target_link_libraries(imprint_renderer PRIVATE d3d12 dxgi d3dcompiler)
 elseif(CMAKE_CUDA_COMPILER)
     set_target_properties(imprint_renderer PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()

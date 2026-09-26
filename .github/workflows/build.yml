@@ -74,16 +74,30 @@ jobs:
       - name: Install Python sidecar dependencies
         run: pip install -r requirements-build.txt
 
-      - name: Install CUDA-enabled PyTorch (Windows)
+      - name: Build native Metal renderer
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S native-renderer -B native-renderer/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build native-renderer/build --config Release --target imprint_renderer -j
+
+      - name: Build native D3D12 renderer (Windows)
         if: runner.os == 'Windows'
-        run: pip install "torch>=2.0.0" --index-url https://download.pytorch.org/whl/cu128
+        run: |
+          cmake -S native-renderer -B native-renderer/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build native-renderer/build --config Release --target imprint_renderer imprint_renderer_tests --parallel
+          ctest --test-dir native-renderer/build -C Release --output-on-failure
+
+      - name: Build native sort operators
+        run: |
+          cmake -S native-sort -B native-sort/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build native-sort/build --config Release --target imprint_sort --parallel
 
       - name: Cache Python sidecar
         id: cache-sidecar
         uses: actions/cache@v4
         with:
           path: tauri-frontend/dist-python
-          key: sidecar-onedir-v4-${{ runner.os }}-${{ hashFiles('src/*.py', 'assets/acr_measured/*.npz', 'third_party/lensfun-db/*.xml', 'third_party/licenses/*', 'THIRD_PARTY_NOTICES.md', 'LICENSE', 'app_api.spec', 'requirements-build.txt') }}
+          key: sidecar-onedir-v7-${{ runner.os }}-${{ hashFiles('src/*.py', 'native-renderer/src/*', 'native-renderer/include/*', 'native-renderer/cmake/*', 'native-renderer/CMakeLists.txt', 'native-sort/src/*', 'native-sort/include/*', 'native-sort/CMakeLists.txt', 'assets/acr_measured/*.npz', 'third_party/lensfun-db/*.xml', 'third_party/licenses/*', 'THIRD_PARTY_NOTICES.md', 'LICENSE', 'app_api.spec', 'requirements-build.txt') }}
 
       - name: Build Python sidecar (macOS onedir)
         if: steps.cache-sidecar.outputs.cache-hit != 'true' && runner.os == 'macOS'

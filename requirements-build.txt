@@ -8,9 +8,8 @@ opencv-python-headless>=4.8.0
 lensfunpy==1.18.0
 mediapipe>=0.10.14,<0.11
 numpy>=1.24.0
-# macOS wheel includes the MPS backend.  The release workflow installs the
-# CUDA wheel explicitly on Windows from PyTorch's CUDA package index.
-torch>=2.0.0 ; sys_platform != 'win32'
+# Release sidecars use ONNX Runtime for model inference and the native renderer
+# for image processing. PyTorch is only an optional local model-export dependency.
 onnxruntime>=1.15.0 ; sys_platform != 'win32'
 onnxruntime-directml>=1.15.0 ; sys_platform == 'win32'
 huggingface-hub>=0.20.0

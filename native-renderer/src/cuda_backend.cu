@@ -169,18 +169,23 @@ __device__ float3 basic_adjust(float3 c, const im_basic_params &p) {
     const float exposure = exp2f(p.exposure);
     c.x *= exposure; c.y *= exposure; c.z *= exposure;
     const float contrast = 1.0f + p.contrast / 100.0f;
-    c = make_float3((c.x - 0.18f) * contrast + 0.18f,
-                    (c.y - 0.18f) * contrast + 0.18f,
-                    (c.z - 0.18f) * contrast + 0.18f);
+    c = make_float3((c.x - 0.5f) * contrast + 0.5f,
+                    (c.y - 0.5f) * contrast + 0.5f,
+                    (c.z - 0.5f) * contrast + 0.5f);
     const float y = luminance(c);
-    const float tone = (p.highlights * y * y + p.shadows * (1.0f - y) * (1.0f - y)) / 100.0f;
-    const float whites = p.whites * smooth(0.70f, 1.0f, y) / 100.0f;
-    const float blacks = p.blacks * (1.0f - smooth(0.0f, 0.30f, y)) / 100.0f;
-    c.x += tone + whites + blacks; c.y += tone + whites + blacks; c.z += tone + whites + blacks;
-    const float chroma = fmaxf(c.x, fmaxf(c.y, c.z)) - fminf(c.x, fminf(c.y, c.z));
-    const float saturation = (1.0f + p.saturation / 100.0f) * (1.0f + p.vibrance / 100.0f * (1.0f - chroma));
-    c = make_float3(clamp01(c.x), clamp01(c.y), clamp01(c.z));
-    return sat_adjust(c, saturation);
+    const float shadow_mask = powf(clamp01((0.62f - y) / 0.62f), 1.5f);
+    const float highlight_mask = powf(clamp01((y - 0.38f) / 0.62f), 1.5f);
+    const float tone = (p.shadows * 0.0022f + p.blacks * 0.0008f) * shadow_mask
+                     + (p.highlights * 0.0018f + p.whites * 0.0008f) * highlight_mask;
+    c.x += tone; c.y += tone; c.z += tone;
+    const float adjusted_y = luminance(c);
+    const float3 chroma = make_float3(c.x - adjusted_y, c.y - adjusted_y, c.z - adjusted_y);
+    const float chroma_level = fmaxf(fabsf(chroma.x), fmaxf(fabsf(chroma.y), fabsf(chroma.z)));
+    const float vibrance = 1.0f + p.vibrance / 100.0f * clamp01(1.0f - chroma_level);
+    const float saturation = (1.0f + p.saturation / 100.0f) * vibrance;
+    return make_float3(clamp01(adjusted_y + chroma.x * saturation),
+                       clamp01(adjusted_y + chroma.y * saturation),
+                       clamp01(adjusted_y + chroma.z * saturation));
 }
 
 __device__ float3 filter_controls(float3 c, const im_filter_params &p) {

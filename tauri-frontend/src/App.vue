@@ -16,6 +16,7 @@ import ModelsPage from "./views/ModelsPage.vue";
 import TrainerPage from "./views/TrainerPage.vue";
 import EnhancePage from "./views/EnhancePage.vue";
 import RicohPage from "./views/RicohPage.vue";
+import SettingsPage from "./views/SettingsPage.vue";
 import appLogo from "./assets/logo.png";
 import {
   Images,
@@ -29,9 +30,10 @@ import {
   Monitor,
   WandSparkles,
   Camera,
+  Settings,
 } from "lucide-vue-next";
 
-type TabType = "burst" | "enhance" | "ricoh" | "models" | "trainer";
+type TabType = "burst" | "enhance" | "ricoh" | "models" | "trainer" | "settings";
 const activeTab = ref<TabType>("burst");
 watch(activeTab, () => { void flushPendingSaves(); });
 
@@ -123,6 +125,7 @@ onMounted(() => {
           <BrainCircuit class="w-3.5 h-3.5" />
           偏好训练
         </button>
+        <button @click="activeTab = 'settings'" class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full" :class="activeTab === 'settings' ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 after:bg-transparent'"><Settings class="w-3.5 h-3.5" />设置</button>
       </nav>
 
       <!-- 右侧控制区: 后端状态指标 + 主题切换按钮 -->
@@ -210,6 +213,7 @@ onMounted(() => {
       <RicohPage v-show="activeTab === 'ricoh'" />
       <ModelsPage v-show="activeTab === 'models'" />
       <TrainerPage v-show="activeTab === 'trainer'" />
+      <SettingsPage v-show="activeTab === 'settings'" />
     </main>
   </div>
 </template>
