@@ -59,14 +59,16 @@ from model_manager import (
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
 from dehaze import ALGORITHM_VERSION as DEHAZE_ALGORITHM_VERSION
 from dehaze import DehazeParams, apply_dehaze, get_gpu_status
-from native_renderer import get_native_status, native_dehaze, native_basic, native_ricoh
+from native_renderer import (
+    get_native_status, native_dehaze, native_dehaze_preview, native_basic, native_ricoh,
+)
 from native_sort import get_native_sort_status
 from dng_writer import write_enhanced_dng, write_linear_dng
 from image_io import (
     OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES,
     EnhancedDNGColorError, camera_profile_names, enhanced_dng_source_data,
     matching_embedded_profile_dng, read_image,
-    scan_photo_directory, to_uint16,
+    read_photo_metadata, scan_photo_directory, to_uint16,
 )
 from ricoh_filter import (
     apply_basic_preview_effect,
@@ -88,7 +90,7 @@ import cv2
 import onnx
 import onnxruntime as ort
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import rawpy
 from ricoh_filter import (
     apply_ricoh_preset_to_session,
@@ -126,7 +128,7 @@ _MAX_PREVIEW_GROUPS = 40
 # 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
 _ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
 _ENHANCE_PREVIEW_CACHE: dict[tuple, bytes] = {}
-_ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str], bytes] = {}
+_ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str, int], bytes] = {}
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _RICOH_PREVIEW_CACHE: dict[tuple, bytes] = {}
 _RICOH_JOBS: dict[str, dict[str, Any]] = {}
@@ -136,6 +138,8 @@ _DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DISPLAY_PREVIEW_BYTES = 64 * 1024 * 1024
 _DEHAZED_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DEHAZED_PREVIEW_BYTES = 64 * 1024 * 1024
+_PROCESSING_PREVIEW_CACHE: OrderedDict[tuple, tuple[np.ndarray, Any]] = OrderedDict()
+_MAX_PROCESSING_PREVIEW_BYTES = 96 * 1024 * 1024
 _MAX_ENHANCE_SESSIONS = 8
 _MAX_ENHANCE_THUMBNAILS = 256
 
@@ -238,6 +242,7 @@ class EnhancePreviewRequest(BaseModel):
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
     basic_params: BasicParamsRequest = Field(default_factory=BasicParamsRequest)
     max_edge: int = Field(default=1800, ge=320, le=3000)
+    preview_level: Literal[0, 1, 2] = 0
     mode: Literal["original", "dehazed"] = "dehazed"
     color_manage_srgb: bool = False
     use_gpu: bool = False
@@ -506,7 +511,7 @@ def _cached_display_preview(session_id: str, photo_id: str, path: Path,
     """Share decoded, color-managed previews across original/effect requests.
 
     A bounded cache avoids decoding the same RAW again for every slider change.
-    The dedicated lock also coalesces simultaneous first loads of one photo.
+    Decoding happens outside the cache lock so different photos can load in parallel.
     """
     stat = path.stat()
     key = (session_id, photo_id, max_edge, stat.st_mtime_ns, stat.st_size)
@@ -515,12 +520,19 @@ def _cached_display_preview(session_id: str, photo_id: str, path: Path,
         if cached is not None:
             _DISPLAY_PREVIEW_CACHE.move_to_end(key)
             return cached
-        image, metadata = read_image(path, preview=True, max_edge=max_edge)
-        display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
-        if getattr(metadata, "source_kind", "") == "rgb":
-            display = standard_preview_to_srgb(display, path)
-        display.setflags(write=False)
-        if display.nbytes <= _MAX_DISPLAY_PREVIEW_BYTES:
+
+    image, metadata = read_image(path, preview=True, max_edge=max_edge)
+    display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+    if getattr(metadata, "source_kind", "") == "rgb":
+        display = standard_preview_to_srgb(display, path)
+    display.setflags(write=False)
+
+    if display.nbytes <= _MAX_DISPLAY_PREVIEW_BYTES:
+        with _DISPLAY_PREVIEW_LOCK:
+            cached = _DISPLAY_PREVIEW_CACHE.get(key)
+            if cached is not None:
+                _DISPLAY_PREVIEW_CACHE.move_to_end(key)
+                return cached
             for old_key in [old_key for old_key in _DISPLAY_PREVIEW_CACHE
                             if old_key[:2] == key[:2] and old_key != key]:
                 _DISPLAY_PREVIEW_CACHE.pop(old_key, None)
@@ -529,7 +541,7 @@ def _cached_display_preview(session_id: str, photo_id: str, path: Path,
                    + display.nbytes > _MAX_DISPLAY_PREVIEW_BYTES):
                 _DISPLAY_PREVIEW_CACHE.popitem(last=False)
             _DISPLAY_PREVIEW_CACHE[key] = display
-        return display
+    return display
 
 
 def _render_mode(render_backend: str | None, use_gpu: bool = False) -> str:
@@ -582,6 +594,38 @@ def _render_ricoh(image: np.ndarray, preset_id: str, basic: dict[str, float] | N
     return apply_ricoh_preview_effect(image, preset_id, basic)
 
 
+def _cached_processing_preview(
+    session_id: str, photo_id: str, path: Path, max_edge: int,
+) -> tuple[np.ndarray, Any]:
+    """Keep one decoded preview for rapid parameter changes on fallback paths."""
+    stat = path.stat()
+    key = (session_id, photo_id, stat.st_mtime_ns, stat.st_size, max_edge)
+    with _DISPLAY_PREVIEW_LOCK:
+        cached = _PROCESSING_PREVIEW_CACHE.get(key)
+        if cached is not None:
+            _PROCESSING_PREVIEW_CACHE.move_to_end(key)
+            return cached
+
+    image, metadata = read_image(path, preview=True, max_edge=max_edge)
+    image.setflags(write=False)
+    result = (image, metadata)
+    if image.nbytes <= _MAX_PROCESSING_PREVIEW_BYTES:
+        with _DISPLAY_PREVIEW_LOCK:
+            cached = _PROCESSING_PREVIEW_CACHE.get(key)
+            if cached is not None:
+                _PROCESSING_PREVIEW_CACHE.move_to_end(key)
+                return cached
+            for old_key in [old_key for old_key in _PROCESSING_PREVIEW_CACHE
+                            if old_key[:2] == key[:2] and old_key != key]:
+                _PROCESSING_PREVIEW_CACHE.pop(old_key, None)
+            while (_PROCESSING_PREVIEW_CACHE and
+                   sum(value[0].nbytes for value in _PROCESSING_PREVIEW_CACHE.values())
+                   + image.nbytes > _MAX_PROCESSING_PREVIEW_BYTES):
+                _PROCESSING_PREVIEW_CACHE.popitem(last=False)
+            _PROCESSING_PREVIEW_CACHE[key] = result
+    return result
+
+
 def _cached_dehazed_display_preview(
     session_id: str,
     photo_id: str,
@@ -590,13 +634,14 @@ def _cached_dehazed_display_preview(
     params: DehazeParams,
     backend: str,
     color_manage_srgb: bool,
+    preview_level: int = 0,
 ) -> np.ndarray:
     """Cache the post-dehaze display base so basic and Ricoh edits stay responsive."""
     stat = path.stat()
     dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
     key = (
         session_id, photo_id, stat.st_mtime_ns, stat.st_size,
-        DEHAZE_ALGORITHM_VERSION, dehaze_values, max_edge, backend,
+        DEHAZE_ALGORITHM_VERSION, dehaze_values, max_edge, preview_level, backend,
         bool(color_manage_srgb),
     )
     with _DISPLAY_PREVIEW_LOCK:
@@ -605,16 +650,55 @@ def _cached_dehazed_display_preview(
             _DEHAZED_PREVIEW_CACHE.move_to_end(key)
             return cached
 
-        image, metadata = read_image(path, preview=True, max_edge=max_edge)
-        dehazed = _render_dehaze(image, params, backend)
-        display = _display_rgb8(
-            dehazed, linear=getattr(metadata, "color_space", "") == "Linear sRGB",
+    if backend in ("auto", "native"):
+        native_key = (
+            session_id, photo_id, str(path), stat.st_mtime_ns, stat.st_size,
+            max_edge,
         )
-        if color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
-            display = standard_preview_to_srgb(display, path)
-        display.setflags(write=False)
+        try:
+            dehazed, metadata = native_dehaze_preview(
+                native_key,
+                lambda: read_image(path, preview=True, max_edge=max_edge),
+                params,
+                preview_level,
+            )
+        except Exception:
+            # The native renderer is optional. Keep the same preview level
+            # when it is unavailable, using the existing Python fallback.
+            image, metadata = _cached_processing_preview(
+                session_id, photo_id, path, max_edge,
+            )
+            if preview_level:
+                scale = 2 ** preview_level
+                image = cv2.resize(image, (max(1, image.shape[1] // scale),
+                                           max(1, image.shape[0] // scale)),
+                                   interpolation=cv2.INTER_AREA)
+            dehazed = _render_dehaze(
+                image, params, "pytorch" if backend == "auto" else "cpu",
+            )
+    else:
+        image, metadata = _cached_processing_preview(
+            session_id, photo_id, path, max_edge,
+        )
+        if preview_level:
+            scale = 2 ** preview_level
+            image = cv2.resize(image, (max(1, image.shape[1] // scale),
+                                       max(1, image.shape[0] // scale)),
+                               interpolation=cv2.INTER_AREA)
+        dehazed = _render_dehaze(image, params, backend)
+    display = _display_rgb8(
+        dehazed, linear=getattr(metadata, "color_space", "") == "Linear sRGB",
+    )
+    if color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
+        display = standard_preview_to_srgb(display, path)
+    display.setflags(write=False)
 
-        if display.nbytes <= _MAX_DEHAZED_PREVIEW_BYTES:
+    if display.nbytes <= _MAX_DEHAZED_PREVIEW_BYTES:
+        with _DISPLAY_PREVIEW_LOCK:
+            cached = _DEHAZED_PREVIEW_CACHE.get(key)
+            if cached is not None:
+                _DEHAZED_PREVIEW_CACHE.move_to_end(key)
+                return cached
             # Drop stale copies if the source file changed during the session.
             for old_key in [
                 old_key for old_key in _DEHAZED_PREVIEW_CACHE
@@ -628,7 +712,7 @@ def _cached_dehazed_display_preview(
             ):
                 _DEHAZED_PREVIEW_CACHE.popitem(last=False)
             _DEHAZED_PREVIEW_CACHE[key] = display
-        return display
+    return display
 
 
 @app.post("/api/ricoh/preview")
@@ -1059,6 +1143,8 @@ def create_enhance_session(req: EnhanceSessionRequest):
                         _DISPLAY_PREVIEW_CACHE.pop(key, None)
                     for key in [key for key in _DEHAZED_PREVIEW_CACHE if key[0] == expired]:
                         _DEHAZED_PREVIEW_CACHE.pop(key, None)
+                    for key in [key for key in _PROCESSING_PREVIEW_CACHE if key[0] == expired]:
+                        _PROCESSING_PREVIEW_CACHE.pop(key, None)
         return {
             "session_id": session_id,
             "count": len(files),
@@ -1069,6 +1155,40 @@ def create_enhance_session(req: EnhanceSessionRequest):
         }
     except Exception as exc:
         return JSONResponse(status_code=400, content={"error": _enhance_error_message(exc)})
+
+
+@app.get("/api/enhance/metadata/{session_id}/{photo_id}")
+def get_enhance_photo_metadata(session_id: str, photo_id: str):
+    """Return compact capture metadata for a photo scoped to an active session."""
+    with _ENHANCE_LOCK:
+        session = _ENHANCE_SESSIONS.get(session_id)
+        path = session.get("files", {}).get(photo_id) if session else None
+    if path is None:
+        return JSONResponse(status_code=404, content={"error": "照片会话或照片已失效"})
+
+    try:
+        current_path = Path(path).resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError):
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    if not current_path.is_file():
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+
+    try:
+        metadata = read_photo_metadata(current_path)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    except Exception:
+        # Do not include local paths or parser details in this public response.
+        return JSONResponse(status_code=422, content={"error": "读取照片信息失败"})
+
+    # The session may be evicted while metadata is being read. Re-check that
+    # the same opaque IDs still authorize this response before returning it.
+    with _ENHANCE_LOCK:
+        current_session = _ENHANCE_SESSIONS.get(session_id)
+        current_record = current_session.get("files", {}).get(photo_id) if current_session else None
+    if current_record is None or Path(current_record) != path:
+        return JSONResponse(status_code=404, content={"error": "照片会话或照片已失效"})
+    return metadata
 
 
 @app.post("/api/enhance/xmp")
@@ -1136,7 +1256,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     render_mode = _render_mode(req.render_backend, req.use_gpu)
     basic_mode = _basic_mode(req.basic_backend, render_mode)
     cache_key = (req.session_id, req.photo_id, stat.st_mtime_ns, stat.st_size,
-                 DEHAZE_ALGORITHM_VERSION, dehaze_values, req.max_edge, req.mode,
+                 DEHAZE_ALGORITHM_VERSION, dehaze_values, req.max_edge,
+                 req.preview_level, req.mode,
                  effective_preset_id, render_mode, basic_mode, req.ricoh_backend,
                  bool(req.color_manage_srgb),
                  tuple(basic[key] for key in sorted(basic)))
@@ -1159,6 +1280,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 req.session_id, req.photo_id, Path(path), req.max_edge, params,
                 backend=render_mode,
                 color_manage_srgb=req.color_manage_srgb,
+                preview_level=req.preview_level,
             )
             if effective_preset_id is not None:
                 effected = _render_ricoh(
@@ -1193,10 +1315,52 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         return JSONResponse(status_code=status_code, content={"error": _enhance_error_message(exc)})
 
 
+def _orient_enhance_thumbnail(thumbnail: Image.Image, path: Path) -> Image.Image:
+    """Match the list thumbnail to the camera's displayed orientation."""
+    if path.suffix.lower() in RAW_SUFFIXES:
+        # LibRaw rotates postprocessed previews, but extract_thumb returns the
+        # embedded JPEG's pixels unchanged. Some cameras already rotate that
+        # JPEG, so only rotate when its aspect still matches the sensor.
+        try:
+            with rawpy.imread(str(path)) as raw:
+                flip = int(raw.sizes.flip)
+                sensor_landscape = raw.sizes.width > raw.sizes.height
+        except Exception:
+            return thumbnail
+        if flip in (5, 6) and (thumbnail.width > thumbnail.height) == sensor_landscape:
+            return thumbnail.transpose(
+                Image.Transpose.ROTATE_90 if flip == 5 else Image.Transpose.ROTATE_270
+            )
+        return thumbnail
+
+    # RawEvaluator converts standard files to RGB without applying EXIF.
+    try:
+        with Image.open(path) as source:
+            orientation = int(source.getexif().get(274, 1))
+    except Exception:
+        return thumbnail
+    transpose = {
+        2: Image.Transpose.FLIP_LEFT_RIGHT,
+        3: Image.Transpose.ROTATE_180,
+        4: Image.Transpose.FLIP_TOP_BOTTOM,
+        5: Image.Transpose.TRANSPOSE,
+        6: Image.Transpose.ROTATE_270,
+        7: Image.Transpose.TRANSVERSE,
+        8: Image.Transpose.ROTATE_90,
+    }.get(orientation)
+    return thumbnail.transpose(transpose) if transpose is not None else thumbnail
+
+
 @app.get("/api/enhance/thumbnail/{session_id}/{photo_id}")
-def get_enhance_thumbnail(session_id: str, photo_id: str):
+def get_enhance_thumbnail(
+    session_id: str,
+    photo_id: str,
+    max_edge: int = 360,
+):
     """Return a small, cached JPEG for a photo in an active enhance session."""
-    cache_key = (session_id, photo_id)
+    if not 1 <= max_edge <= 1800:
+        return JSONResponse(status_code=422, content={"error": "缩略图尺寸无效"})
+    cache_key = (session_id, photo_id, max_edge)
     with _ENHANCE_LOCK:
         path = _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).get(photo_id)
         cached = _ENHANCE_THUMBNAIL_CACHE.get(cache_key)
@@ -1212,8 +1376,26 @@ def get_enhance_thumbnail(session_id: str, photo_id: str):
         )
 
     try:
-        image, metadata = read_image(path, preview=True, max_edge=360)
-        payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+        # The list needs a small visual cue, so use the camera's embedded RAW
+        # preview when available instead of postprocessing every full RAW.
+        # RawEvaluator retains its half-size decode fallback for RAW files
+        # without an embedded preview.
+        if Path(path).suffix.lower() in RAW_SUFFIXES:
+            image_rgb = RawEvaluator().extract_preview(Path(path))
+            thumbnail = _orient_enhance_thumbnail(
+                Image.fromarray(image_rgb, "RGB"), Path(path),
+            )
+        else:
+            # Let Pillow decode a JPEG near the requested size instead of
+            # expanding the entire photo into a NumPy array first.
+            with Image.open(path) as source:
+                if source.format == "JPEG":
+                    source.draft("RGB", (max_edge, max_edge))
+                thumbnail = ImageOps.exif_transpose(source).convert("RGB")
+        thumbnail.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        thumbnail.save(output, format="JPEG", quality=84, optimize=True)
+        payload = output.getvalue()
         with _ENHANCE_LOCK:
             current_path = _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).get(photo_id)
             if current_path is None or Path(current_path) != Path(path):
@@ -1621,6 +1803,12 @@ def cancel_enhance_job(job_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 # 接口二：GET /api/models/status (模型状态检测)
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/health")
+def get_health():
+    """Lightweight readiness check that does not inspect model state."""
+    return {"ok": True}
 
 
 def _get_gpu_info() -> tuple[bool, str]:

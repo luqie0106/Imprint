@@ -554,12 +554,24 @@ def apply_ricoh_preview_effect(image: "object", preset_id: str,
         rgb[..., 2] *= max(0.6, 1.0 - temperature / 10000.0 + tint / 20000.0)
         rgb *= float(2.0 ** float(controls["exposure"]))
 
-        rgb = (rgb - 0.5) * max(0.2, 1.0 + contrast / 100.0) + 0.5
-        # Work from a valid display RGB base, then apply tone controls as a
-        # luminance remap. Multiplying each pixel by one common scale keeps its
-        # channel ratios (and therefore its hue/saturation) intact until the
-        # requested lift reaches the sRGB gamut boundary.
-        rgb = np.clip(rgb, 0.0, 1.0)
+        luminance = rgb @ luminance_weights
+        # Apply contrast as a smooth luminance curve. Its correction is zero at
+        # black, white, and middle gray, so dark channel values stay positive
+        # and RGB ratios survive until the shadow lift. The curve stays
+        # monotonic for the full supported contrast range [-100, 100].
+        contrast_luminance = np.clip(luminance, 0.0, 1.0)
+        contrast_offset = (
+            16.0 * contrast_luminance**2 * (1.0 - contrast_luminance)**2
+            * (contrast_luminance - 0.5)
+        )
+        target_contrast_luminance = np.clip(
+            contrast_luminance + (contrast / 100.0) * contrast_offset,
+            0.0,
+            1.0,
+        )
+        rgb = _adjust_luminance_preserving_color(
+            rgb, luminance, target_contrast_luminance, np,
+        )
         luminance = rgb @ luminance_weights
         shadow_mask = np.clip((0.62 - luminance) / 0.62, 0.0, 1.0) ** 1.5
         highlight_mask = np.clip((luminance - 0.38) / 0.62, 0.0, 1.0) ** 1.5

@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import ctypes
 from collections import OrderedDict
+from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
 import sys
 import threading
-from typing import Mapping
+from typing import Callable, Mapping
+from weakref import WeakValueDictionary
 
 import numpy as np
 
@@ -45,6 +47,7 @@ _RICOH_LUT_EDGE = 65
 _RICOH_LUT_CACHE_LIMIT = 4
 _ricoh_lut_cache: OrderedDict[tuple[object, ...], np.ndarray] = OrderedDict()
 _ricoh_lut_lock = threading.Lock()
+_PREVIEW_CACHE_LIMIT = 4
 
 
 class NativeRendererError(RuntimeError):
@@ -57,6 +60,22 @@ class _DehazeParams(ctypes.Structure):
 
 class _BasicParams(ctypes.Structure):
     _fields_ = [(field, ctypes.c_float) for field in _BASIC_FIELDS]
+
+
+@dataclass
+class _PreviewCacheEntry:
+    library: object
+    renderer: ctypes.c_void_p
+    metadata: object
+    width: int
+    height: int
+    was_uint8: bool
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_preview_cache: OrderedDict[tuple[object, ...], _PreviewCacheEntry] = OrderedDict()
+_preview_cache_lock = threading.RLock()
+_preview_creation_locks: WeakValueDictionary[tuple[object, ...], threading.Lock] = WeakValueDictionary()
 
 
 _load_lock = threading.Lock()
@@ -122,6 +141,14 @@ def _configure_library(library: ctypes.CDLL) -> None:
         ctypes.POINTER(_BasicParams),
     ]
     library.im_renderer_render_full.restype = ctypes.c_int
+    library.im_renderer_upload_preview_image.argtypes = [
+        renderer, ctypes.c_uint32, ctypes.c_uint32, uint16_pointer, ctypes.c_size_t
+    ]
+    library.im_renderer_upload_preview_image.restype = ctypes.c_int
+    library.im_renderer_render.argtypes = [
+        renderer, ctypes.c_int, ctypes.POINTER(_DehazeParams), ctypes.POINTER(_BasicParams)
+    ]
+    library.im_renderer_render.restype = ctypes.c_int
     library.im_renderer_render_ricoh_full.argtypes = [
         renderer,
         ctypes.c_uint32,
@@ -328,6 +355,176 @@ def native_dehaze(image: object, params: object) -> np.ndarray:
     library/backend is unavailable so the caller can use its Python fallback.
     """
     return _render_one_stage(image, params, stage="dehaze")
+
+
+def _destroy_preview_entry(entry: _PreviewCacheEntry) -> None:
+    entry.library.im_renderer_destroy(entry.renderer)
+
+
+def _clear_preview_cache() -> None:
+    """Destroy cached preview handles. Intended for orderly shutdown and tests."""
+    with _preview_cache_lock:
+        entries = list(_preview_cache.values())
+        _preview_cache.clear()
+        for entry in entries:
+            with entry.lock:
+                _destroy_preview_entry(entry)
+
+
+def _render_preview_entry(
+    entry: _PreviewCacheEntry,
+    params: object,
+    level: int,
+) -> np.ndarray:
+    dehaze_values = _values(
+        params, _DEHAZE_FIELDS, ((0.0, 1.0),) * len(_DEHAZE_FIELDS), "dehaze"
+    )
+    dehaze = _DehazeParams(*dehaze_values)
+    basic = _BasicParams(*([0.0] * len(_BASIC_FIELDS)))
+    library = entry.library
+    renderer = entry.renderer
+
+    status = library.im_renderer_render(
+        renderer, level, ctypes.byref(dehaze), ctypes.byref(basic)
+    )
+    if status != 0:
+        raise NativeRendererError(
+            f"Native dehaze preview render failed (status {status}): "
+            f"{_native_error(library, renderer)}"
+        )
+
+    output_width = ctypes.c_uint32()
+    output_height = ctypes.c_uint32()
+    output_count = ctypes.c_size_t()
+    status = library.im_renderer_get_output_size(
+        renderer,
+        ctypes.byref(output_width),
+        ctypes.byref(output_height),
+        ctypes.byref(output_count),
+    )
+    if status != 0:
+        raise NativeRendererError(
+            f"Could not query native preview output size (status {status}): "
+            f"{_native_error(library, renderer)}"
+        )
+    expected_count = int(output_width.value) * int(output_height.value) * 3
+    if (
+        output_width.value == 0
+        or output_height.value == 0
+        or output_width.value > 65535
+        or output_height.value > 65535
+        or expected_count > _MAX_IMAGE_VALUES
+        or output_count.value != expected_count
+    ):
+        raise NativeRendererError("Native preview renderer returned an invalid output size")
+
+    output16 = np.empty((output_height.value, output_width.value, 3), dtype=np.uint16)
+    output_pointer = output16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
+    status = library.im_renderer_copy_output(renderer, output_pointer, output16.size)
+    if status != 0:
+        raise NativeRendererError(
+            f"Could not copy native preview output (status {status}): "
+            f"{_native_error(library, renderer)}"
+        )
+    if entry.was_uint8:
+        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+    return output16
+
+
+def native_dehaze_preview(
+    cache_key: tuple[object, ...],
+    image_factory: Callable[[], tuple[np.ndarray, object]],
+    params: object,
+    level: int,
+) -> tuple[np.ndarray, object]:
+    """Render a cached preview image with native dehaze at L0, L1, or L2.
+
+    ``cache_key`` must identify the preview source and its decoding dimensions.
+    ``image_factory`` is called only for a cache miss and returns an RGB uint8 or
+    uint16 image plus lightweight metadata. The returned ndarray has the input
+    dtype; the metadata is the value returned by the factory on the first miss.
+    Native failures raise :class:`NativeRendererError` so callers can fall back.
+    """
+    if not isinstance(cache_key, tuple):
+        raise TypeError("Native preview cache key must be a tuple")
+    try:
+        hash(cache_key)
+    except TypeError as exc:
+        raise TypeError("Native preview cache key values must be hashable") from exc
+    if isinstance(level, bool) or not isinstance(level, int) or level not in (0, 1, 2):
+        raise ValueError("Native preview level must be 0, 1, or 2")
+    if not callable(image_factory):
+        raise TypeError("Native preview image_factory must be callable")
+
+    # Validate parameters before creating or touching a renderer. Basic controls
+    # intentionally remain zero: the existing API merges them with Ricoh state.
+    _values(params, _DEHAZE_FIELDS, ((0.0, 1.0),) * len(_DEHAZE_FIELDS), "dehaze")
+
+    with _preview_cache_lock:
+        entry = _preview_cache.get(cache_key)
+        if entry is not None:
+            _preview_cache.move_to_end(cache_key)
+            entry.lock.acquire()
+        else:
+            creation_lock = _preview_creation_locks.get(cache_key)
+            if creation_lock is None:
+                creation_lock = threading.Lock()
+                _preview_creation_locks[cache_key] = creation_lock
+    if entry is None:
+        # Calls for one photo share a first decode, while another photo can
+        # decode without waiting for it. The weak lock table stays bounded by
+        # requests in flight rather than all photos ever previewed.
+        with creation_lock:
+            with _preview_cache_lock:
+                entry = _preview_cache.get(cache_key)
+                if entry is not None:
+                    _preview_cache.move_to_end(cache_key)
+                    entry.lock.acquire()
+            if entry is None:
+                library, _ = _get_library()
+                renderer, _ = _create_renderer(library)
+                try:
+                    factory_result = image_factory()
+                    if not isinstance(factory_result, tuple) or len(factory_result) != 2:
+                        raise TypeError("Native preview image_factory must return (image, metadata)")
+                    image, metadata = factory_result
+                    rgb16, width, height, was_uint8 = _prepare_image(image)
+                    pointer = rgb16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
+                    status = library.im_renderer_upload_preview_image(
+                        renderer, width, height, pointer, rgb16.size
+                    )
+                    if status != 0:
+                        raise NativeRendererError(
+                            f"Could not upload native preview image (status {status}): "
+                            f"{_native_error(library, renderer)}"
+                        )
+                    entry = _PreviewCacheEntry(
+                        library=library,
+                        renderer=renderer,
+                        metadata=metadata,
+                        width=width,
+                        height=height,
+                        was_uint8=was_uint8,
+                    )
+                    entry.lock.acquire()
+                    with _preview_cache_lock:
+                        _preview_cache[cache_key] = entry
+                        while len(_preview_cache) > _PREVIEW_CACHE_LIMIT:
+                            evicted_key, evicted = _preview_cache.popitem(last=False)
+                            if evicted_key == cache_key:
+                                _preview_cache[evicted_key] = evicted
+                                raise RuntimeError("Native preview cache evicted its new entry")
+                            with evicted.lock:
+                                _destroy_preview_entry(evicted)
+                except BaseException:
+                    library.im_renderer_destroy(renderer)
+                    raise
+
+    try:
+        result = _render_preview_entry(entry, params, level)
+        return result, entry.metadata
+    finally:
+        entry.lock.release()
 
 
 def native_basic(image: object, params: object) -> np.ndarray:

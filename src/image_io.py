@@ -195,6 +195,98 @@ def _safe_exif(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _metadata_number(value: Any) -> int | float | None:
+    """Convert common EXIF numeric representations to finite JSON numbers."""
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        numerator = _normalise_exif_value(value[0])
+        denominator = _normalise_exif_value(value[1])
+        try:
+            if denominator == 0:
+                return None
+            number = float(numerator) / float(denominator)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    else:
+        normalised = _normalise_exif_value(value)
+        try:
+            if isinstance(normalised, str):
+                number = float(normalised.strip())
+            elif isinstance(normalised, (int, float)) and not isinstance(normalised, bool):
+                number = float(normalised)
+            else:
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def read_photo_metadata(path: str | Path) -> dict[str, Any]:
+    """Read compact capture metadata without decoding image pixels.
+
+    Standard images are inspected through Pillow's header and EXIF readers.
+    RAW files are opened through LibRaw for its dimensions and camera fields;
+    this deliberately never calls ``postprocess`` or accesses the pixel array.
+    """
+    source = Path(path)
+    stat = source.stat()
+    width: int | None = None
+    height: int | None = None
+
+    if source.suffix.lower() in RAW_SUFFIXES:
+        exif = _safe_exif(source)
+        try:
+            with rawpy.imread(str(source)) as raw:
+                sizes = getattr(raw, "sizes", None)
+                width_value = getattr(sizes, "width", None)
+                height_value = getattr(sizes, "height", None)
+                if width_value is not None and height_value is not None:
+                    width, height = int(width_value), int(height_value)
+                _raw_metadata(raw, exif)
+        except Exception:
+            # Filename and file size are still useful for a RAW file whose
+            # metadata cannot be parsed by this LibRaw build.
+            pass
+    else:
+        exif = {}
+        try:
+            with Image.open(source) as image:
+                width, height = (int(image.width), int(image.height))
+                exif = _exif_from_pil(image)
+        except Exception:
+            pass
+
+    try:
+        orientation = int(exif.get("Orientation", 1) or 1)
+    except (TypeError, ValueError, OverflowError):
+        orientation = 1
+    if width is not None and height is not None and orientation in (5, 6, 7, 8):
+        width, height = height, width
+
+    camera_model = exif.get("Model")
+    if not isinstance(camera_model, str) or not camera_model.strip():
+        camera_model = exif.get("Make")
+    if not isinstance(camera_model, str) or not camera_model.strip():
+        camera_model = None
+    else:
+        camera_model = camera_model.strip()
+
+    return {
+        "filename": source.name,
+        "size_bytes": int(stat.st_size),
+        "width": width,
+        "height": height,
+        "iso": _metadata_number(
+            exif.get("ISO", exif.get("ISOSpeedRatings", exif.get("PhotographicSensitivity")))
+        ),
+        "aperture": _metadata_number(exif.get("FNumber")),
+        "exposure_time": _metadata_number(exif.get("ExposureTime")),
+        "focal_length": _metadata_number(exif.get("FocalLength")),
+        "camera_model": camera_model,
+    }
+
+
 def _set_missing(exif: dict[str, Any], key: str, value: Any) -> None:
     if key not in exif and value is not None:
         normalised = _normalise_exif_value(value)
@@ -413,7 +505,10 @@ def _raw_bit_depth(raw: Any) -> int:
 
 def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
     with rawpy.imread(str(path)) as raw:
-        source_bit_depth = _raw_bit_depth(raw)
+        # Previews only use the decoded pixels, their dimensions, and color
+        # space. The source bit depth and camera metadata are needed for the
+        # full-resolution export path, where preserving them is important.
+        source_bit_depth = 16 if preview else _raw_bit_depth(raw)
         kwargs: dict[str, Any] = {
             "use_camera_wb": True,
             # Both the quick preview and final export use the same linear
@@ -427,30 +522,32 @@ def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
             "half_size": preview,
         }
         rgb = raw.postprocess(**kwargs)
-        camera = getattr(raw, "camera_whitebalance", None)
-        # Nikon and other TIFF-based RAW files commonly keep LensModel and
-        # LensSpecification in the RAW container but omit them from the
-        # embedded JPEG.  Read the container first, then use the thumbnail and
-        # LibRaw only to fill fields that are genuinely absent.
-        exif: dict[str, Any] = _safe_exif(path)
-        try:
-            thumb = raw.extract_thumb()
-            if thumb.format == rawpy.ThumbFormat.JPEG:
-                with Image.open(BytesIO(thumb.data)) as thumb_image:
-                    for key, value in _exif_from_pil(thumb_image).items():
-                        _set_missing(exif, key, value)
-        except Exception:
-            pass
-        _raw_metadata(raw, exif)
-        if (
-            _metadata_candidate(exif.get("LensModel")) is None
-            or "LensSpecification" not in exif
-        ):
-            for key, value in _exiftool_lens_metadata(path).items():
-                _set_missing(exif, key, value)
-        _fill_lens_specification(exif)
-        if camera is not None:
-            exif["CameraWhiteBalance"] = tuple(camera)
+        exif: dict[str, Any] = {}
+        if not preview:
+            camera = getattr(raw, "camera_whitebalance", None)
+            # Nikon and other TIFF-based RAW files commonly keep LensModel and
+            # LensSpecification in the RAW container but omit them from the
+            # embedded JPEG. Read the container first, then use the thumbnail
+            # and LibRaw only to fill fields that are genuinely absent.
+            exif = _safe_exif(path)
+            try:
+                thumb = raw.extract_thumb()
+                if thumb.format == rawpy.ThumbFormat.JPEG:
+                    with Image.open(BytesIO(thumb.data)) as thumb_image:
+                        for key, value in _exif_from_pil(thumb_image).items():
+                            _set_missing(exif, key, value)
+            except Exception:
+                pass
+            _raw_metadata(raw, exif)
+            if (
+                _metadata_candidate(exif.get("LensModel")) is None
+                or "LensSpecification" not in exif
+            ):
+                for key, value in _exiftool_lens_metadata(path).items():
+                    _set_missing(exif, key, value)
+            _fill_lens_specification(exif)
+            if camera is not None:
+                exif["CameraWhiteBalance"] = tuple(camera)
     metadata = ImageMetadata(
         width=int(rgb.shape[1]),
         height=int(rgb.shape[0]),
