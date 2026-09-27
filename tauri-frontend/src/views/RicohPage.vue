@@ -56,7 +56,7 @@ const selectedPreset = computed({
   get: () => sharedPresetByPhoto.value[selectedId.value] || "",
   set: (presetId: string) => {
     if (!selectedId.value) return;
-    sharedPresetByPhoto.value[selectedId.value] = presetId;
+    sharedPresetByPhoto.value[selectedId.value] = presetId || null;
     markPhotoChanged(selectedId.value);
   },
 });
@@ -418,18 +418,20 @@ async function pollJob() {
   }
 }
 async function exportDng() {
-  if (!sessionId.value || !selectedPreset.value || isRunning.value) return;
+  if (!sessionId.value || isRunning.value) return;
   error.value = "";
   try {
     await flushPendingSaves();
     job.value = await postJson("/api/ricoh/run", {
       session_id: sessionId.value,
-      preset_id: selectedPreset.value,
-      preset_ids_by_photo: Object.fromEntries(files.value.map(file => [
-        file.photo_id, sharedPresetByPhoto.value[file.photo_id] || presets.value[0]?.id || selectedPreset.value,
-      ])),
+      preset_id: selectedPreset.value || null,
+      preset_ids_by_photo: Object.fromEntries(files.value.flatMap(file => {
+        const presetId = sharedPresetByPhoto.value[file.photo_id];
+        return presetId ? [[file.photo_id, presetId]] : [];
+      })),
       output_dir: outputDir.value,
       ricoh_backend: ricohBackend.value,
+      basic_backend: basicBackend.value,
       basic_params_by_photo: Object.fromEntries(files.value.map(file => [
         file.photo_id, cloneBasicParams(basicParamsByPhoto.value[file.photo_id] ?? file.basic_params),
       ])),
@@ -611,6 +613,7 @@ onBeforeUnmount(() => {
           <h2 class="mb-2 text-sm font-semibold">理光风格</h2>
           <p class="mb-3 text-[11px] text-slate-500">所选风格自动保存到同名 XMP，与去朦胧参数共享。</p>
           <div class="max-h-72 space-y-2 overflow-y-auto">
+            <button @click="selectedPreset = ''" class="w-full rounded-xl border p-2.5 text-left text-xs" :class="!selectedPreset ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-slate-200 dark:border-zinc-700'"><span class="font-semibold">无</span><span class="mt-1 block text-[11px] text-slate-500">不应用理光风格，仅保留基础调整</span></button>
             <button v-for="preset in presets" :key="preset.id" @click="selectedPreset = preset.id" class="w-full rounded-xl border p-2.5 text-left text-xs" :class="selectedPreset === preset.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-slate-200 dark:border-zinc-700'"><span class="font-semibold">{{ preset.model }} · {{ preset.name }}</span><span class="mt-1 block text-[11px] text-slate-500">{{ preset.description }}</span></button>
           </div>
         </section>
@@ -619,9 +622,9 @@ onBeforeUnmount(() => {
           <button @click="saveXmp" :disabled="!files.length || busy" class="w-full rounded-xl border border-blue-300 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-40 dark:text-blue-300">手动补写 XMP</button>
           <p v-if="autoSaveError" class="mt-2 text-[11px] text-rose-600">{{ autoSaveError }}</p>
           <button @click="chooseOutput" :title="outputDir" class="mt-3 w-full truncate rounded-xl border px-3 py-2 text-left text-[11px] text-slate-500 dark:border-zinc-700">{{ outputDir || "选择 DNG 输出目录" }}</button>
-          <button v-if="!isRunning" @click="exportDng" :disabled="!files.length || !selectedPreset" class="mt-3 w-full rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white disabled:opacity-40">导出 DNG</button>
+          <button v-if="!isRunning" @click="exportDng" :disabled="!files.length" class="mt-3 w-full rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white disabled:opacity-40">导出 DNG</button>
           <button v-else @click="cancelExport" class="mt-3 w-full rounded-xl bg-rose-600 px-3 py-2.5 text-xs font-semibold text-white">停止后续处理</button>
-          <p class="mt-2 text-[11px] text-slate-500">DNG 使用近似风格处理；原照片保持不变。</p>
+          <p class="mt-2 text-[11px] text-slate-500">DNG 会渲染所选风格；选“无”时仅应用基础调整。</p>
         </section>
         <p v-if="job" class="text-xs">DNG 进度：{{ job.processed }}/{{ job.total }} · 成功 {{ job.success }} · 失败 {{ job.failed }}</p>
         <p v-if="summary" class="text-xs">XMP：写入 {{ summary.written }} · 跳过 {{ summary.skipped }} · 失败 {{ summary.failed }}</p>

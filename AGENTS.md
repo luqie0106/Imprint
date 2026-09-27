@@ -62,6 +62,25 @@ Imprint 是一个本地优先的照片桌面工具，使用 Vue 3 + Tauri 2 构�
 - 不要在日志、回复、测试产物或示例配置中泄露本地照片路径之外的个人信息、密钥或令牌。
 - 未经用户明确要求，不要创建分支、提交、推送、发布 Release 或修改远端状态。
 
+## Process lifecycle safety
+
+When modifying or running ImprintMac:
+
+- ImprintMac may spawn a Python/Uvicorn backend process. Any backend process
+  spawned by the application must be owned and tracked by that specific
+  ImprintMac instance.
+- The spawned backend must be terminated on normal application exit,
+  Ctrl+C / SIGINT, SIGTERM, and startup failure after the backend has started.
+- Repeated launch/exit cycles must not leave orphaned backend processes,
+  especially processes reparented to PID 1 that continue listening on
+  localhost ports.
+- Never use broad cleanup commands such as `killall python`, `pkill python`,
+  or equivalent commands that may terminate unrelated processes.
+- Never terminate unrelated Codex, ChatGPT, VS Code, Python, or development
+  processes.
+- When changing backend lifecycle code, verify cleanup using targeted
+  `ps`, `pgrep`, and/or `lsof` checks after application termination.
+
 ## 开发与验证
 
 本机开发优先使用项目已配置的 `py311` Conda 环境：

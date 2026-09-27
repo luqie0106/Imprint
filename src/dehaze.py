@@ -11,7 +11,7 @@ import threading
 import numpy as np
 
 
-ALGORITHM_VERSION = "natural-global-v8-source-hue-brightness-guard"
+ALGORITHM_VERSION = "spatial-v3-scene-airlight-highlight"
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,28 @@ def _apply_brightness_protection(
     return _smooth_chroma_gamut(protected)
 
 
-def _apply_dehaze_cpu(image_rgb: np.ndarray, params: DehazeParams | None = None) -> np.ndarray:
+def _global_transmission(source: np.ndarray, p: DehazeParams) -> tuple[float, float]:
+    """Return the legacy scalar transmission and its lower bound."""
+    dark_reference = float(np.percentile(np.min(source, axis=2), 75))
+    if not np.isfinite(dark_reference):
+        dark_reference = 0.5
+    haze_level = float(np.clip((dark_reference - 0.03) / 0.92, 0.12, 0.92))
+    omega = (
+        p.strength
+        * (0.66 - 0.14 * p.fog_retention)
+        * (0.90 + 0.10 * (1.0 - p.naturalness))
+        * (0.92 + 0.08 * haze_level)
+    )
+    floor = 0.27 + 0.21 * p.fog_retention + 0.11 * p.naturalness
+    return float(np.clip(1.0 - omega, floor, 1.0)), floor
+
+
+def _apply_dehaze_cpu(
+    image_rgb: np.ndarray,
+    params: DehazeParams | None = None,
+    transmission_map: np.ndarray | None = None,
+    atmosphere_override: np.ndarray | None = None,
+) -> np.ndarray:
     """Return a dehazed RGB image while preserving shape, dtype, and the input array."""
     if not isinstance(image_rgb, np.ndarray):
         raise TypeError("image_rgb must be a numpy array")
@@ -185,34 +206,33 @@ def _apply_dehaze_cpu(image_rgb: np.ndarray, params: DehazeParams | None = None)
 
     peak = float(np.iinfo(image_rgb.dtype).max)
     source = image_rgb.astype(np.float32) / peak
-    atmosphere = _atmospheric_light(source)
-    dark_reference = float(np.percentile(np.min(source, axis=2), 75))
-    if not np.isfinite(dark_reference):
-        dark_reference = 0.5
-    # The image statistic is deliberately only a small correction.  In a
-    # backlit city, a large dark building area must not turn a strong setting
-    # into an almost-identity transform.
-    haze_level = float(np.clip((dark_reference - 0.03) / 0.92, 0.12, 0.92))
-
-    # All pixels use this one scalar transmission.  Strength is the primary,
-    # monotonic control; fog retention and naturalness soften it.  Image
-    # statistics only make a small correction inside ``omega``: multiplying
-    # by ``haze_level`` again here would make a dark, backlit city nearly an
-    # identity transform even when the strength slider is close to maximum.
-    omega = (
-        p.strength
-        * (0.66 - 0.14 * p.fog_retention)
-        * (0.90 + 0.10 * (1.0 - p.naturalness))
-        * (0.92 + 0.08 * haze_level)
-    )
-    min_transmission = 0.27 + 0.21 * p.fog_retention + 0.11 * p.naturalness
-    transmission = float(np.clip(1.0 - omega, min_transmission, 1.0))
+    atmosphere = (_atmospheric_light(source) if atmosphere_override is None
+                  else np.asarray(atmosphere_override, dtype=np.float32))
+    if atmosphere.shape != (3,) or not np.isfinite(atmosphere).all():
+        raise ValueError("atmospheric light must be a finite RGB vector")
+    if transmission_map is None:
+        transmission, min_transmission = _global_transmission(source, p)
+    else:
+        min_transmission = 0.27 + 0.21 * p.fog_retention + 0.11 * p.naturalness
+        transmission = 1.0
+    if transmission_map is not None:
+        if transmission_map.shape != image_rgb.shape[:2]:
+            raise ValueError("transmission map must match image dimensions")
+        transmission = np.clip(
+            np.nan_to_num(transmission_map, nan=transmission, posinf=1.0,
+                          neginf=min_transmission),
+            min_transmission, 1.0,
+        )
 
     neutral_atmosphere = float(np.mean(atmosphere))
     neutral_mix = 0.45 * p.color_protection * (0.65 + 0.35 * p.naturalness)
     atmosphere = atmosphere * (1.0 - neutral_mix) + neutral_atmosphere * neutral_mix
-    atmosphere = np.clip(atmosphere, 0.35, 1.0)
-    recovered = (source - atmosphere.reshape(1, 1, 3)) / transmission + atmosphere.reshape(1, 1, 3)
+    # The legacy estimate has a 0.35 floor. A scene-aware override must keep
+    # its measured RAW-linear scale: raising a dim sky to 0.35 or 1.0 turns
+    # dehazing into a broad exposure cut and suppresses small bright lights.
+    atmosphere = np.clip(atmosphere, 0.01 if atmosphere_override is not None else 0.35, 1.0)
+    divisor = transmission if np.isscalar(transmission) else transmission[..., None]
+    recovered = (source - atmosphere.reshape(1, 1, 3)) / divisor + atmosphere.reshape(1, 1, 3)
     recovered = np.clip(recovered, 0.0, 1.0)
 
     luminance = source @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -318,6 +338,13 @@ def _apply_dehaze_cpu(image_rgb: np.ndarray, params: DehazeParams | None = None)
     # not local/edge statistics, so they cannot create spatial seams.
     highlight_position = np.clip((luminance - 0.58) / 0.40, 0.0, 1.0)
     highlight_position = highlight_position * highlight_position * (3.0 - 2.0 * highlight_position)
+    if atmosphere_override is not None:
+        # Coloured lamps can have a modest luminance yet a nearly saturated
+        # channel. Limit this guard to the spatial path so the legacy CPU,
+        # native and GPU implementations stay numerically compatible.
+        peak_position = np.clip((np.max(source, axis=2) - 0.35) / 0.55, 0.0, 1.0)
+        peak_position = peak_position * peak_position * (3.0 - 2.0 * peak_position)
+        highlight_position = np.maximum(highlight_position, peak_position)
     highlight_blend = np.clip(highlight_position * p.highlight_protection, 0.0, 1.0)
     natural = natural * (1.0 - highlight_blend[..., None]) + source * highlight_blend[..., None]
 

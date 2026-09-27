@@ -69,6 +69,8 @@ struct EditorView: View, Equatable {
     @State private var thumbnailLoading = false
     @State private var originalTask: Task<Void, Never>?
     @State private var originalRequestID: UUID?
+    @State private var originalFullResolution = false
+    @State private var originalTaskFullResolution = false
     @State private var originalLoading = false
     @State private var previewing = false
     @State private var previewMode: PreviewMode = .effect
@@ -79,8 +81,11 @@ struct EditorView: View, Equatable {
     @State private var previewTask: Task<Void, Never>?
     @State private var previewWorkerID: UUID?
     @State private var pendingPreviewLevel: Int?
+    @State private var pendingPreviewFullResolution = false
     @State private var previewThrottleTask: Task<Void, Never>?
     @State private var previewRefinementTask: Task<Void, Never>?
+    @State private var previewIdleTask: Task<Void, Never>?
+    @State private var previewIdleRequestID: UUID?
     @State private var sliderPreviewPending = false
     @State private var sliderEditing = false
     @State private var presetTask: Task<Void, Never>?
@@ -105,6 +110,7 @@ struct EditorView: View, Equatable {
         sliderPreviewPending = false
         sliderEditing = false
         original = nil
+        originalFullResolution = false
         edited = nil
         quickThumbnail = nil
         metadata = [:]
@@ -191,7 +197,10 @@ struct EditorView: View, Equatable {
             selectionDidChange()
         }
         .onChange(of: previewMode) { _, newMode in
-            if newMode != .effect { loadOriginalPreviewIfNeeded() }
+            if newMode != .effect {
+                loadOriginalPreviewIfNeeded()
+                scheduleFullResolutionPreview()
+            }
         }
         .onChange(of: isActive) { _, active in
             if active {
@@ -217,6 +226,9 @@ struct EditorView: View, Equatable {
             previewThrottleTask = nil
             previewRefinementTask?.cancel()
             previewRefinementTask = nil
+            previewIdleTask?.cancel()
+            previewIdleTask = nil
+            previewIdleRequestID = nil
             presetTask?.cancel()
             metadataTask?.cancel()
             pollTask?.cancel()
@@ -481,11 +493,28 @@ struct EditorView: View, Equatable {
             LazyVStack(alignment: .leading, spacing: 16) {
                 if mode == .enhance {
                     editorCard("去朦胧", icon: "wand.and.stars") {
+                        Toggle("自动处理", isOn: Binding(
+                            get: { library.dehazeAutoModeByPhoto[library.selectedID] ?? false },
+                            set: { enabled in
+                                let photoID = library.selectedID
+                                library.dehazeAutoModeByPhoto[photoID] = enabled
+                                scheduleAutoSave(photoID: photoID)
+                                refreshPreview()
+                            }
+                        ))
+                        .disabled(library.selectedID.isEmpty)
+                        if library.dehazeAutoModeByPhoto[library.selectedID] ?? false {
+                            Text("自动分析照片并调整去朦胧效果。关闭后可手动微调高级参数。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                         slider(dehazeAdjustments[0], basic: false)
-                        EditorDisclosure(title: "高级参数") {
-                            VStack(spacing: 12) {
-                                ForEach(dehazeAdjustments.dropFirst()) { adjustment in
-                                    slider(adjustment, basic: false)
+                        if !(library.dehazeAutoModeByPhoto[library.selectedID] ?? false) {
+                            EditorDisclosure(title: "高级参数") {
+                                VStack(spacing: 12) {
+                                    ForEach(dehazeAdjustments.dropFirst()) { adjustment in
+                                        slider(adjustment, basic: false)
+                                    }
                                 }
                             }
                         }
@@ -501,7 +530,7 @@ struct EditorView: View, Equatable {
                                 scheduleAutoSave(photoID: photoID)
                             }
                         )) {
-                            Text("请选择").tag("")
+                            Text("无").tag("")
                             ForEach(presets.indices, id: \.self) { index in
                                 let preset = presets[index]
                                 Text(string(preset, "name")).tag(string(preset, "id"))
@@ -535,7 +564,7 @@ struct EditorView: View, Equatable {
                         } else {
                             Button("导出 DNG") { Task { await startJob() } }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(library.sessionID.isEmpty || (mode == .ricoh && selectedPreset.isEmpty))
+                                .disabled(library.sessionID.isEmpty)
                         }
                     }
                     if !xmpStatus.isEmpty {
@@ -581,7 +610,10 @@ struct EditorView: View, Equatable {
         let value = Binding<Double>(
             get: {
                 let data = basic ? library.basicByPhoto[library.selectedID] : library.dehazeByPhoto[library.selectedID]
-                return data?[adjustment.id] as? Double ?? 0
+                if basic { return data?[adjustment.id] as? Double ?? 0 }
+                return data?[adjustment.id] as? Double
+                    ?? library.dehazeDefaults[adjustment.id] as? Double
+                    ?? 0
             },
             set: { newValue in
                 let photoID = library.selectedID
@@ -630,8 +662,13 @@ struct EditorView: View, Equatable {
     }
 
     private func scheduleSliderPreview() {
+        // Invalidate any response rendered from an older slider value immediately,
+        // while keeping the throttled L2/L1 requests on the existing fast path.
+        previewRequestID = UUID()
+        pendingPreviewLevel = nil
+        pendingPreviewFullResolution = false
         sliderPreviewPending = true
-        if pendingPreviewLevel == 1 { pendingPreviewLevel = nil }
+        scheduleFullResolutionPreview()
         previewRefinementTask?.cancel()
         previewRefinementTask = Task {
             do {
@@ -642,7 +679,7 @@ struct EditorView: View, Equatable {
             guard !Task.isCancelled else { return }
             previewRefinementTask = nil
             guard sliderEditing else { return }
-            refreshPreview(previewLevel: 1, invalidatingInFlight: false)
+            refreshPreview(previewLevel: 1, invalidatingInFlight: false, schedulesFullResolution: false)
         }
 
         guard previewThrottleTask == nil else { return }
@@ -656,17 +693,24 @@ struct EditorView: View, Equatable {
             previewThrottleTask = nil
             guard sliderEditing, sliderPreviewPending else { return }
             sliderPreviewPending = false
-            refreshPreview(previewLevel: 2, invalidatingInFlight: false)
+            refreshPreview(previewLevel: 2, invalidatingInFlight: false, schedulesFullResolution: false)
         }
     }
 
-    private func refreshPreview(previewLevel: Int = 0, invalidatingInFlight: Bool = true) {
+    private func refreshPreview(
+        previewLevel: Int = 0,
+        invalidatingInFlight: Bool = true,
+        fullResolution: Bool = false,
+        schedulesFullResolution: Bool = true
+    ) {
         guard isActive, !library.sessionID.isEmpty, !library.selectedID.isEmpty, engine.ready else { return }
-        if previewMode != .effect { loadOriginalPreviewIfNeeded() }
+        if previewMode != .effect && !fullResolution { loadOriginalPreviewIfNeeded() }
         if invalidatingInFlight || previewRequestID == nil {
             previewRequestID = UUID()
         }
-        pendingPreviewLevel = previewLevel
+        pendingPreviewLevel = fullResolution ? 0 : previewLevel
+        pendingPreviewFullResolution = fullResolution
+        if schedulesFullResolution && !fullResolution { scheduleFullResolutionPreview() }
         guard previewTask == nil else { return }
 
         let workerID = UUID()
@@ -674,13 +718,22 @@ struct EditorView: View, Equatable {
         previewTask = Task { await runPreviewQueue(workerID: workerID) }
     }
 
-    private func loadOriginalPreviewIfNeeded() {
-        guard original == nil, originalTask == nil,
-              !library.sessionID.isEmpty, !library.selectedID.isEmpty, engine.ready else { return }
+    private func loadOriginalPreviewIfNeeded(fullResolution: Bool = false) {
+        guard isActive, !library.sessionID.isEmpty, !library.selectedID.isEmpty, engine.ready else { return }
+        if fullResolution && originalFullResolution { return }
+        if originalTask != nil {
+            if !fullResolution || originalTaskFullResolution { return }
+            originalTask?.cancel()
+            originalTask = nil
+            originalRequestID = nil
+            originalLoading = false
+        }
+        if !fullResolution && original != nil { return }
         let sessionID = library.sessionID
         let photoID = library.selectedID
         let requestID = UUID()
         originalRequestID = requestID
+        originalTaskFullResolution = fullResolution
         originalLoading = true
         originalTask = Task {
             defer {
@@ -697,18 +750,49 @@ struct EditorView: View, Equatable {
                     "max_edge": 1800,
                     "color_manage_srgb": true,
                     "preview_level": 0,
+                    "full_resolution": fullResolution,
                     "mode": "original",
+                    "auto_mode": library.dehazeAutoModeByPhoto[photoID] ?? false,
                 ]
                 let image = try await engine.api.image("/api/enhance/preview", body: request)
                 try Task.checkCancellation()
                 guard library.sessionID == sessionID, library.selectedID == photoID,
                       originalRequestID == requestID else { return }
                 original = image
+                originalFullResolution = fullResolution
             } catch {
                 guard !Task.isCancelled, library.sessionID == sessionID,
                       library.selectedID == photoID, originalRequestID == requestID else { return }
                 showError(error)
             }
+        }
+    }
+
+    private func scheduleFullResolutionPreview() {
+        previewIdleTask?.cancel()
+        let idleID = UUID()
+        previewIdleRequestID = idleID
+        let sessionID = library.sessionID
+        let photoID = library.selectedID
+        let requestID = previewRequestID
+        previewIdleTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(650))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, previewIdleRequestID == idleID,
+                  previewRequestID == requestID,
+                  library.sessionID == sessionID, library.selectedID == photoID,
+                  isActive else { return }
+            previewIdleTask = nil
+            previewIdleRequestID = nil
+            refreshPreview(
+                previewLevel: 0,
+                invalidatingInFlight: false,
+                fullResolution: true,
+                schedulesFullResolution: false
+            )
         }
     }
 
@@ -725,21 +809,27 @@ struct EditorView: View, Equatable {
         while !Task.isCancelled {
             guard let previewLevel = pendingPreviewLevel,
                   let requestID = previewRequestID else { break }
+            let fullResolution = pendingPreviewFullResolution
             pendingPreviewLevel = nil
+            pendingPreviewFullResolution = false
 
             let photoID = library.selectedID
             let sessionID = library.sessionID
             let dehaze = library.dehazeByPhoto[photoID] ?? [:]
+            let autoMode = library.dehazeAutoModeByPhoto[photoID] ?? false
             let basic = library.basicByPhoto[photoID] ?? [:]
             let preset = library.presetByPhoto[photoID]
             error = ""
             do {
                 let common: [String: Any] = ["session_id": sessionID, "photo_id": photoID, "max_edge": 1800,
-                                             "color_manage_srgb": true, "preview_level": previewLevel]
+                                             "color_manage_srgb": true,
+                                             "preview_level": fullResolution ? 0 : previewLevel,
+                                             "full_resolution": fullResolution]
                 guard previewRequestID == requestID else { continue }
                 var request = common
                 request["mode"] = "dehazed"
                 request["params"] = dehaze
+                request["auto_mode"] = autoMode
                 request["basic_params"] = basic
                 request["ricoh_preset_id"] = preset as Any? ?? NSNull()
                 request["render_backend"] = engine.renderBackend
@@ -750,8 +840,14 @@ struct EditorView: View, Equatable {
                 guard library.sessionID == sessionID, library.selectedID == photoID,
                       previewRequestID == requestID else { continue }
                 edited = image
+                // Serialize full-resolution decodes so the source and processed
+                // image do not compete for peak memory on large RAW files.
+                if fullResolution && previewMode != .effect {
+                    loadOriginalPreviewIfNeeded(fullResolution: true)
+                }
                 if previewLevel == 2 && !sliderEditing && pendingPreviewLevel == nil {
                     pendingPreviewLevel = 0
+                    pendingPreviewFullResolution = false
                 }
             } catch {
                 // URLSession reports Task cancellation as URLError.cancelled on
@@ -759,6 +855,9 @@ struct EditorView: View, Equatable {
                 if library.sessionID == sessionID, library.selectedID == photoID,
                    previewRequestID == requestID {
                     showError(error)
+                    if fullResolution && previewMode != .effect {
+                        loadOriginalPreviewIfNeeded(fullResolution: true)
+                    }
                 }
             }
         }
@@ -769,8 +868,12 @@ struct EditorView: View, Equatable {
         previewTask = nil
         previewWorkerID = nil
         pendingPreviewLevel = nil
+        pendingPreviewFullResolution = false
         previewRequestID = nil
         previewing = false
+        previewIdleTask?.cancel()
+        previewIdleTask = nil
+        previewIdleRequestID = nil
         thumbnailTask?.cancel()
         thumbnailTask = nil
         thumbnailRequestID = nil
@@ -829,6 +932,7 @@ struct EditorView: View, Equatable {
             let result = try await engine.api.json("/api/enhance/xmp", body: [
                 "session_id": library.sessionID,
                 "params_by_photo": library.dehazeByPhoto,
+                "auto_modes_by_photo": library.dehazeAutoModeByPhoto,
                 "basic_params_by_photo": library.basicByPhoto,
                 "preset_ids_by_photo": library.presetByPhoto,
             ])
@@ -845,13 +949,17 @@ struct EditorView: View, Equatable {
                 path = "/api/enhance/run"
                 body = ["session_id": library.sessionID, "output_dir": library.dehazeOutput,
                         "params_by_photo": library.dehazeByPhoto,
+                        "auto_modes_by_photo": library.dehazeAutoModeByPhoto,
                         "basic_params_by_photo": library.basicByPhoto,
                         "render_backend": engine.renderBackend, "basic_backend": engine.basicBackend]
             } else {
                 path = "/api/ricoh/run"
-                body = ["session_id": library.sessionID, "output_dir": library.ricohOutput,
-                        "preset_id": selectedPreset, "preset_ids_by_photo": library.presetByPhoto,
-                        "basic_params_by_photo": library.basicByPhoto, "ricoh_backend": engine.ricohBackend]
+                var ricohBody: [String: Any] = ["session_id": library.sessionID,
+                        "output_dir": library.ricohOutput, "preset_ids_by_photo": library.presetByPhoto,
+                        "basic_params_by_photo": library.basicByPhoto, "ricoh_backend": engine.ricohBackend,
+                        "basic_backend": engine.basicBackend]
+                if !selectedPreset.isEmpty { ricohBody["preset_id"] = selectedPreset }
+                body = ricohBody
             }
             setJob(try await engine.api.json(path, body: body))
             pollTask?.cancel()

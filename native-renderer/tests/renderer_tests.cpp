@@ -48,6 +48,57 @@ int run_null_handle_checks() {
             "null renderer filter uploads are rejected");
     REQUIRE(im_renderer_render(nullptr, IM_RENDER_L0, &no_dehaze, &no_basic) == IM_STATUS_INVALID_ARGUMENT,
             "null renderer render calls are rejected");
+
+    const uint16_t pixels[] = {10000, 12000, 9000, 10000, 12000, 9000};
+    const float transmission[] = {0.27f, 1.0f};
+    const float atmosphere[] = {0.08f, 0.10f, 0.12f};
+    uint16_t output[] = {0xaaaa, 0xbbbb, 0xcccc, 0xdddd, 0xeeee, 0xffff, 0x1234};
+    im_dehaze_params spatial_params{};
+    REQUIRE(im_native_dehaze_spatial_run(nullptr, 2, 1, transmission, 2, atmosphere,
+                                          &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
+            "spatial operator rejects a null image");
+    REQUIRE(im_native_dehaze_spatial_run(pixels, 0, 1, transmission, 0, atmosphere,
+                                          &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
+            "spatial operator rejects empty dimensions");
+    REQUIRE(im_native_dehaze_spatial_run(pixels, 2, 1, transmission, 1, atmosphere,
+                                          &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
+            "spatial operator requires one transmission per pixel");
+    REQUIRE(im_native_dehaze_spatial_run(pixels, 2, 1, transmission, 2, atmosphere,
+                                          &spatial_params, output, 5) == IM_STATUS_INVALID_ARGUMENT,
+            "spatial operator validates destination capacity");
+    const float invalid_transmission[] = {0.27f, std::numeric_limits<float>::infinity()};
+    REQUIRE(im_native_dehaze_spatial_run(pixels, 2, 1, invalid_transmission, 2, atmosphere,
+                                          &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
+            "spatial operator rejects non-finite transmission values");
+    const float invalid_atmosphere[] = {0.08f, std::numeric_limits<float>::quiet_NaN(), 0.12f};
+    REQUIRE(im_native_dehaze_spatial_run(pixels, 2, 1, transmission, 2, invalid_atmosphere,
+                                          &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
+            "spatial operator rejects non-finite airlight values");
+    spatial_params.local_contrast = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE(im_native_dehaze_spatial_run(pixels, 2, 1, transmission, 2, atmosphere,
+                                          &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
+            "spatial operator rejects non-finite parameters");
+
+    spatial_params = {};
+    const uint16_t original[] = {10000, 12000, 9000, 65535, 0, 32768};
+    uint16_t copied[6]{};
+    REQUIRE(im_native_dehaze_spatial_run(original, 2, 1, transmission, 2, atmosphere,
+                                          &spatial_params, copied, 6) == IM_STATUS_OK,
+            "zero-strength spatial call succeeds");
+    REQUIRE(std::equal(std::begin(original), std::end(original), std::begin(copied)),
+            "zero-strength spatial call is an exact RGB16 copy");
+
+    spatial_params.strength = 1.0f;
+    uint16_t spatial_output[7] = {};
+    spatial_output[6] = 0x4567;
+    REQUIRE(im_native_dehaze_spatial_run(pixels, 2, 1, transmission, 2, atmosphere,
+                                          &spatial_params, spatial_output, 7) == IM_STATUS_OK,
+            "spatial operator processes a valid transmission map");
+    REQUIRE(std::equal(pixels, pixels + 3, spatial_output) == false,
+            "spatial dehaze changes the low-transmission pixel");
+    REQUIRE(std::equal(pixels + 3, pixels + 6, spatial_output + 3),
+            "unit transmission preserves the second uniform pixel");
+    REQUIRE(spatial_output[6] == 0x4567, "spatial operator leaves excess destination capacity untouched");
     return 0;
 }
 
@@ -57,7 +108,7 @@ int main(int argc, char **argv) {
     const int null_checks = run_null_handle_checks();
     if (null_checks != 0) return null_checks;
     if (argc > 1) {
-        std::puts("PASS: C ABI null-handle validation");
+        std::puts("PASS: C ABI argument validation and spatial dehaze checks");
         return 0;
     }
 

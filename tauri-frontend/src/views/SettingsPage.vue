@@ -5,14 +5,16 @@ import { basicBackend, renderBackend, ricohBackend, sortBackend, type RenderBack
 
 const nativeAvailable = ref(false);
 const nativeName = ref("原生渲染");
+const spatialAvailable = ref(false);
+const spatialName = ref("自动空间去雾");
 const pytorchAvailable = ref(false);
 const pytorchName = ref("PyTorch");
 const sortAvailable = ref(false);
 const sortName = ref("连拍原生算子");
 const loading = ref(false);
 const options: { value: RenderBackend; label: string; detail: string }[] = [
-  { value: "auto", label: "自动", detail: "优先原生，随后 PyTorch，最后使用 Python CPU" },
-  { value: "native", label: "原生渲染", detail: "macOS Metal / Windows D3D12；失败时回退 Python" },
+  { value: "auto", label: "自动", detail: "普通去雾优先 GPU；自动空间去雾优先 C++ 算子" },
+  { value: "native", label: "原生渲染", detail: "普通去雾用 Metal / D3D12；自动空间去雾用 C++ CPU" },
   { value: "pytorch", label: "PyTorch", detail: "仅在已安装并可用时用于去朦胧；基础调整使用 Python" },
   { value: "cpu", label: "Python CPU", detail: "使用现有 Python 计算" },
 ];
@@ -25,20 +27,25 @@ async function refreshStatus() {
     if (!response.ok) throw new Error("检测失败");
     const data = await response.json() as {
       native?: { available?: boolean; backend?: string | null };
+      spatial?: { available?: boolean; backend?: string | null };
       pytorch?: { available?: boolean; backends?: string[] };
       sort?: { available?: boolean; backend?: string | null };
     };
     nativeAvailable.value = Boolean(data.native?.available);
     nativeName.value = nativeAvailable.value ? `原生渲染 · ${data.native?.backend || "GPU"}` : "原生渲染 · 不可用";
+    spatialAvailable.value = Boolean(data.spatial?.available);
+    spatialName.value = spatialAvailable.value ? "自动空间去雾 · C++ CPU" : "自动空间去雾 · Python CPU 回退";
     pytorchAvailable.value = Boolean(data.pytorch?.available);
     pytorchName.value = pytorchAvailable.value ? `PyTorch · ${data.pytorch?.backends?.join(" / ") || "GPU"}` : "PyTorch · 不可用";
     sortAvailable.value = Boolean(data.sort?.available);
     sortName.value = sortAvailable.value ? "连拍原生算子 · C++ CPU" : "连拍原生算子 · 不可用";
   } catch {
     nativeAvailable.value = false;
+    spatialAvailable.value = false;
     pytorchAvailable.value = false;
     sortAvailable.value = false;
     nativeName.value = "原生渲染 · 检测失败";
+    spatialName.value = "自动空间去雾 · 检测失败";
     pytorchName.value = "PyTorch · 检测失败";
     sortName.value = "连拍原生算子 · 检测失败";
   } finally {
@@ -77,7 +84,7 @@ watch(BASE_URL, refreshStatus, { immediate: true });
       </section>
       <section class="rounded-2xl border border-slate-200 bg-white p-5 text-sm dark:border-zinc-800 dark:bg-zinc-900">
         <h3 class="mb-3 font-semibold">可用状态</h3>
-        <div class="space-y-2"><p :class="nativeAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">{{ nativeName }}</p><p :class="pytorchAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">{{ pytorchName }}</p><p :class="sortAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">{{ sortName }}</p></div>
+        <div class="space-y-2"><p :class="nativeAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">{{ nativeName }}</p><p :class="spatialAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">{{ spatialName }}</p><p :class="pytorchAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">{{ pytorchName }}</p><p :class="sortAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">{{ sortName }}</p></div>
       </section>
     </div>
   </div>

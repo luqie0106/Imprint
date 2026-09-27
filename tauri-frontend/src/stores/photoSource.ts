@@ -13,12 +13,14 @@ export interface DehazeParams {
 export interface SessionPhoto {
   photo_id: string; name: string; extension: string;
   dehaze_params?: Partial<DehazeParams> | null;
+  dehaze_auto_mode?: boolean;
   ricoh_preset_id?: string | null;
   basic_params?: Partial<BasicParams> | null;
 }
 export interface PhotoSession {
   session_id: string;
   files: SessionPhoto[];
+  dehaze_defaults: DehazeParams;
   default_output_dir: string;
   ricoh_default_output_dir: string;
 }
@@ -33,15 +35,10 @@ export const basicDefaults: BasicParams = {
   exposure: 0, contrast: 0, highlights: 0, shadows: 0,
   whites: 0, blacks: 0, vibrance: 0, saturation: 0,
 };
-export const dehazeDefaults: DehazeParams = {
-  strength: 0, naturalness: 0.70, fog_retention: 0.55,
-  local_contrast: 0.25, color_recovery: 0.35, color_protection: 0.80,
-  highlight_protection: 0.75, shadow_protection: 0.75, brightness_protection: 0.70,
-};
-
 export const sharedPhotoSource = ref<PhotoSource | null>(null);
 export const sharedSelectedPhotoId = ref("");
 export const sharedDehazeByPhoto = ref<Record<string, DehazeParams>>({});
+export const sharedDehazeAutoByPhoto = ref<Record<string, boolean>>({});
 export const sharedBasicByPhoto = ref<Record<string, BasicParams>>({});
 export const sharedPresetByPhoto = ref<Record<string, string | null>>({});
 export const autoSaveError = ref("");
@@ -57,6 +54,7 @@ function snapshot(photoId: string) {
     session_id: sharedPhotoSource.value?.session_id ?? "",
     photo_id: photoId,
     dehaze_params: { ...sharedDehazeByPhoto.value[photoId] },
+    auto_mode: sharedDehazeAutoByPhoto.value[photoId] ?? false,
     basic_params: { ...sharedBasicByPhoto.value[photoId] },
     ricoh_preset_id: sharedPresetByPhoto.value[photoId] ?? null,
   };
@@ -112,7 +110,10 @@ export async function sharePhotoSource(
   saveChains.clear();
   saveErrors.clear();
   sharedDehazeByPhoto.value = Object.fromEntries(session.files.map(file => [
-    file.photo_id, { ...dehazeDefaults, ...file.dehaze_params },
+    file.photo_id, { ...session.dehaze_defaults, ...file.dehaze_params },
+  ]));
+  sharedDehazeAutoByPhoto.value = Object.fromEntries(session.files.map(file => [
+    file.photo_id, typeof file.dehaze_auto_mode === "boolean" ? file.dehaze_auto_mode : false,
   ]));
   sharedBasicByPhoto.value = Object.fromEntries(session.files.map(file => [
     file.photo_id, { ...basicDefaults, ...file.basic_params },

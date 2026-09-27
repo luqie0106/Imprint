@@ -6,9 +6,9 @@ import { BASE_URL } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
 import {
   autoSaveError, clearAutoSaveErrors, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
-  sharedDehazeByPhoto, sharedPhotoSource, sharedPresetByPhoto,
+  sharedDehazeAutoByPhoto, sharedDehazeByPhoto, sharedPhotoSource, sharedPresetByPhoto,
   sharedSelectedPhotoId, sharePhotoSource,
-  type PhotoSource,
+  type DehazeParams, type PhotoSource,
 } from "../stores/photoSource";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
@@ -16,24 +16,14 @@ import {
   Maximize2, Minus, Plus, Rows2, Sparkles,
 } from "lucide-vue-next";
 
-interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: EnhanceParams | null; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
+interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: Partial<DehazeParams> | null; dehaze_auto_mode?: boolean; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
 interface JobFile { photo_id: string; name: string; status: string; output?: string; error?: string }
 interface EnhanceJob {
   job_id: string; status: string; total: number; processed: number; success: number;
   failed: number; progress: number; current_file: string; output_dir: string; files: JobFile[];
 }
 
-interface EnhanceParams {
-  strength: number;
-  naturalness: number;
-  fog_retention: number;
-  local_contrast: number;
-  color_recovery: number;
-  color_protection: number;
-  highlight_protection: number;
-  shadow_protection: number;
-  brightness_protection: number;
-}
+type EnhanceParams = DehazeParams;
 interface BasicParams { exposure: number; contrast: number; highlights: number; shadows: number; whites: number; blacks: number; vibrance: number; saturation: number }
 const basicDefaults: BasicParams = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, vibrance: 0, saturation: 0 };
 const basicControls: Array<{ key: keyof BasicParams; label: string; min: number; max: number; step: number }> = [
@@ -53,11 +43,6 @@ type PhotoListLayout = "vertical" | "horizontal";
 
 type AdvancedParamKey = Exclude<keyof EnhanceParams, "strength">;
 
-const defaults: EnhanceParams = {
-  strength: 0, naturalness: 0.70, fog_retention: 0.55,
-  local_contrast: 0.25, color_recovery: 0.35, color_protection: 0.80,
-  highlight_protection: 0.75, shadow_protection: 0.75, brightness_protection: 0.70,
-};
 const advancedParameters: Array<{ key: AdvancedParamKey; label: string; description?: string }> = [
   { key: "naturalness", label: "自然度" },
   { key: "fog_retention", label: "雾气保留" },
@@ -69,13 +54,13 @@ const advancedParameters: Array<{ key: AdvancedParamKey; label: string; descript
   { key: "brightness_protection", label: "亮度保护", description: "仅在结果异常变暗时抬高中间调；0为关闭" },
 ];
 
-function cloneParams(source: EnhanceParams = defaults): EnhanceParams {
+function cloneParams(source: EnhanceParams): EnhanceParams {
   return { ...source };
 }
 
 const paramsByPhoto = sharedDehazeByPhoto;
 const basicByPhoto = sharedBasicByPhoto;
-const emptyParams = ref<EnhanceParams>(cloneParams());
+const emptyParams = ref<EnhanceParams>({} as EnhanceParams);
 const sessionId = ref("");
 const files = ref<SessionFile[]>([]);
 const thumbnailStates = ref<Record<string, ThumbnailState>>({});
@@ -112,13 +97,25 @@ const savingXmp = ref(false);
 const revealMenu = ref<{ left: number; top: number } | null>(null);
 const revealBusy = ref(false);
 let previewTimer: number | undefined;
+let intermediatePreviewTimer: number | undefined;
+let fullResolutionTimer: number | undefined;
 let previewGeneration = 0;
+let previewController: AbortController | undefined;
 let pollTimer: number | undefined;
+let displayedPhotoId = "";
+let displayedSessionId = "";
 
 const params = computed<EnhanceParams>(() => paramsByPhoto.value[selectedId.value] ?? emptyParams.value);
+const dehazeAutoMode = computed({
+  get: () => sharedDehazeAutoByPhoto.value[selectedId.value] ?? false,
+  set: (enabled: boolean) => {
+    if (!selectedId.value) return;
+    sharedDehazeAutoByPhoto.value[selectedId.value] = enabled;
+  },
+});
 const basicParams = computed<BasicParams>(() => basicByPhoto.value[selectedId.value] ?? basicDefaults);
 const ricohPresetId = computed(() => sharedPresetByPhoto.value[selectedId.value] ?? null);
-const enhancedReady = computed(() => Boolean(enhancedUrl.value) && !previewLoading.value);
+const enhancedReady = computed(() => Boolean(enhancedUrl.value));
 const showComparePreview = computed(() => previewMode.value === "compare" && enhancedReady.value);
 const previewImageUrl = computed(() => {
   if (previewMode.value !== "original" && enhancedReady.value) return enhancedUrl.value;
@@ -349,6 +346,7 @@ function onPreviewImageLoad(event: Event) {
 }
 
 function adoptSession(source: PhotoSource) {
+  const sessionChanged = sessionId.value !== source.session_id;
   sessionId.value = source.session_id;
   files.value = source.files as SessionFile[];
   thumbnailStates.value = Object.fromEntries(
@@ -358,7 +356,9 @@ function adoptSession(source: PhotoSource) {
   selectedId.value = sharedSelectedPhotoId.value || source.files[0]?.photo_id || "";
   outputDir.value = source.default_output_dir;
   job.value = null;
+  emptyParams.value = cloneParams(source.dehaze_defaults);
   actionMessage.value = `已载入 ${source.files.length} 张照片`;
+  if (sessionChanged && selectedId.value) schedulePreview(true);
 }
 
 async function createSession(payload: { paths?: string[]; input_dir?: string }) {
@@ -392,7 +392,8 @@ async function saveXmp() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         session_id: sessionId.value,
-        params_by_photo: Object.fromEntries(files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? defaults)])),
+        params_by_photo: Object.fromEntries(files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? emptyParams.value)])),
+        auto_modes_by_photo: { ...sharedDehazeAutoByPhoto.value },
         basic_params_by_photo: basicByPhoto.value,
         preset_ids_by_photo: Object.fromEntries(files.value.map(file => [file.photo_id, sharedPresetByPhoto.value[file.photo_id] ?? null])),
       }),
@@ -430,16 +431,52 @@ async function chooseOutput() {
   if (typeof result === "string") outputDir.value = result;
 }
 
-async function fetchPreview(mode: "original" | "dehazed", generation: number) {
+interface PreviewAsset { url: string; width: number; height: number }
+interface PreviewRequestContext {
+  sessionId: string;
+  photoId: string;
+  params: EnhanceParams;
+  autoMode: boolean;
+  basicParams: BasicParams;
+  ricohPresetId: string | null;
+  renderBackend: string;
+  basicBackend: string;
+  ricohBackend: string;
+}
+
+function capturePreviewContext(): PreviewRequestContext {
+  return {
+    sessionId: sessionId.value,
+    photoId: selectedId.value,
+    params: cloneParams(params.value),
+    autoMode: sharedDehazeAutoByPhoto.value[selectedId.value] ?? false,
+    basicParams: { ...basicParams.value },
+    ricohPresetId: ricohPresetId.value,
+    renderBackend: renderBackend.value,
+    basicBackend: basicBackend.value,
+    ricohBackend: ricohBackend.value,
+  };
+}
+
+async function fetchPreview(
+  mode: "original" | "dehazed",
+  context: PreviewRequestContext,
+  previewLevel: 0 | 2,
+  fullResolution: boolean,
+  signal: AbortSignal,
+): Promise<PreviewAsset> {
   const response = await fetch(`${BASE_URL.value}/api/enhance/preview`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      session_id: sessionId.value, photo_id: selectedId.value, params: params.value,
-      basic_params: basicParams.value,
-      ricoh_preset_id: ricohPresetId.value,
-      max_edge: 1800, mode, color_manage_srgb: true, render_backend: renderBackend.value,
-      basic_backend: basicBackend.value, ricoh_backend: ricohBackend.value,
+      session_id: context.sessionId, photo_id: context.photoId, params: context.params,
+      auto_mode: context.autoMode,
+      basic_params: context.basicParams,
+      ricoh_preset_id: context.ricohPresetId,
+      max_edge: 1800, preview_level: previewLevel, full_resolution: fullResolution,
+      mode, color_manage_srgb: true, render_backend: context.renderBackend,
+      basic_backend: context.basicBackend, ricoh_backend: context.ricohBackend,
     }),
+    signal,
   });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
@@ -447,47 +484,127 @@ async function fetchPreview(mode: "original" | "dehazed", generation: number) {
   }
   const width = response.headers.get("X-Image-Width");
   const height = response.headers.get("X-Image-Height");
-  if (width && height) {
-    imageWidth.value = Number(width) || imageWidth.value;
-    imageHeight.value = Number(height) || imageHeight.value;
-    imageSize.value = `${width} × ${height} 预览`;
-    await nextTick();
-    updateViewportSize();
-  }
   const url = URL.createObjectURL(await response.blob());
-  if (generation !== previewGeneration) { releaseUrl(url); return; }
-  if (mode === "original") { releaseUrl(originalUrl.value); originalUrl.value = url; }
-  else { releaseUrl(enhancedUrl.value); enhancedUrl.value = url; }
+  return { url, width: Number(width) || 0, height: Number(height) || 0 };
 }
 
-async function refreshPreview(includeOriginal = false) {
-  if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
-  const generation = ++previewGeneration;
+async function refreshPreview(
+  generation: number,
+  context: PreviewRequestContext,
+  includeOriginal: boolean,
+  previewLevel: 0 | 2,
+  fullResolution: boolean,
+) {
+  if (!context.sessionId || !context.photoId || !BASE_URL.value || generation !== previewGeneration) return;
+  const controller = new AbortController();
+  previewController = controller;
   previewLoading.value = true;
-  previewError.value = "";
+  const stagedAssets: PreviewAsset[] = [];
   try {
-    const tasks = [fetchPreview("dehazed", generation)];
-    if (includeOriginal || !originalUrl.value) tasks.push(fetchPreview("original", generation));
-    await Promise.all(tasks);
+    let original: PreviewAsset | undefined;
+    if (includeOriginal) {
+      original = await fetchPreview("original", context, previewLevel, fullResolution, controller.signal);
+      stagedAssets.push(original);
+      if (generation !== previewGeneration) {
+        releaseUrl(original.url);
+        return;
+      }
+    }
+    const enhanced = await fetchPreview("dehazed", context, previewLevel, fullResolution, controller.signal);
+    stagedAssets.push(enhanced);
+    if (generation !== previewGeneration) {
+      for (const asset of stagedAssets) releaseUrl(asset.url);
+      return;
+    }
+    if (original) {
+      releaseUrl(originalUrl.value);
+      originalUrl.value = original.url;
+    }
+    releaseUrl(enhancedUrl.value);
+    enhancedUrl.value = enhanced.url;
+    stagedAssets.length = 0;
+    displayedPhotoId = context.photoId;
+    displayedSessionId = context.sessionId;
+    const width = enhanced.width || original?.width || 0;
+    const height = enhanced.height || original?.height || 0;
+    imageWidth.value = width || imageWidth.value;
+    imageHeight.value = height || imageHeight.value;
+    const resolutionLabel = fullResolution
+      ? "全分辨率"
+      : `低分辨率预览 · L${previewLevel}`;
+    imageSize.value = width && height ? `${resolutionLabel} · ${width} × ${height}` : resolutionLabel;
+    previewError.value = "";
+    await nextTick();
+    if (generation === previewGeneration) updateViewportSize();
   } catch (error) {
-    if (generation === previewGeneration) previewError.value = error instanceof Error ? error.message : String(error);
+    for (const asset of stagedAssets) releaseUrl(asset.url);
+    if (generation === previewGeneration && !(error instanceof DOMException && error.name === "AbortError")) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const hasCurrentLowResolution = displayedPhotoId === context.photoId
+        && displayedSessionId === context.sessionId
+        && imageSize.value.startsWith("低分辨率预览");
+      previewError.value = fullResolution && hasCurrentLowResolution
+        ? `全分辨率预览失败，继续显示低分辨率预览。${reason}`
+        : fullResolution ? `全分辨率预览失败：${reason}` : reason;
+    }
   } finally {
+    if (previewController === controller) previewController = undefined;
     if (generation === previewGeneration) previewLoading.value = false;
   }
 }
 
-function schedulePreview() {
+function schedulePreview(includeOriginal = false) {
   window.clearTimeout(previewTimer);
-  previewTimer = window.setTimeout(() => void refreshPreview(false), 180);
+  window.clearTimeout(intermediatePreviewTimer);
+  window.clearTimeout(fullResolutionTimer);
+  previewController?.abort();
+  const generation = ++previewGeneration;
+  if (!sessionId.value || !selectedId.value || !BASE_URL.value) {
+    previewLoading.value = false;
+    return;
+  }
+  const context = capturePreviewContext();
+  const shouldFetchOriginal = includeOriginal
+    || displayedPhotoId !== context.photoId
+    || displayedSessionId !== context.sessionId
+    || !originalUrl.value;
+  previewError.value = "";
+  previewLoading.value = true;
+  if (shouldFetchOriginal && originalUrl.value) {
+    imageSize.value = "正在载入低分辨率预览，暂显上一张照片";
+  }
+  let fastPreviewTask: Promise<void> | undefined;
+  let intermediatePreviewTask: Promise<void> | undefined;
+  const ensureFastPreview = () => fastPreviewTask ??= refreshPreview(
+    generation, context, shouldFetchOriginal, 2, false,
+  );
+  const ensureIntermediatePreview = () => intermediatePreviewTask ??= (async () => {
+    await ensureFastPreview();
+    if (generation === previewGeneration)
+      await refreshPreview(generation, context, true, 0, false);
+  })();
+  previewTimer = window.setTimeout(() => {
+    void ensureFastPreview();
+  }, 140);
+  intermediatePreviewTimer = window.setTimeout(() => {
+    void ensureIntermediatePreview();
+  }, 425);
+  fullResolutionTimer = window.setTimeout(() => {
+    // Fit view already has enough pixels at L0. Decoding and processing a
+    // full-resolution RAW after every slider edit keeps the sidecar busy long
+    // after the browser has aborted its old request.
+    if (zoom.value <= 1.5) return;
+    void (async () => {
+      await ensureIntermediatePreview();
+      if (generation === previewGeneration) await refreshPreview(generation, context, true, 0, true);
+    })();
+  }, 800);
 }
 
 function resetParams() {
-  if (selectedId.value) {
-    paramsByPhoto.value[selectedId.value] = cloneParams();
-  } else {
-    emptyParams.value = cloneParams();
-  }
-  void refreshPreview(false);
+  if (!selectedId.value) return;
+  paramsByPhoto.value[selectedId.value] = cloneParams(emptyParams.value);
+  schedulePreview();
 }
 
 function syncParamsToAll() {
@@ -525,7 +642,7 @@ async function startBatch() {
   try {
     await flushPendingSaves();
     const paramsByPhotoPayload = Object.fromEntries(
-      files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? defaults)]),
+      files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? emptyParams.value)]),
     );
     const response = await fetch(`${BASE_URL.value}/api/enhance/run`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -534,6 +651,7 @@ async function startBatch() {
         output_dir: outputDir.value,
         params: cloneParams(params.value),
         params_by_photo: paramsByPhotoPayload,
+        auto_modes_by_photo: { ...sharedDehazeAutoByPhoto.value },
         basic_params_by_photo: basicByPhoto.value,
         render_backend: renderBackend.value, basic_backend: basicBackend.value,
       }),
@@ -562,24 +680,25 @@ watch(selectedId, () => {
     sharedSelectedPhotoId.value = selectedId.value;
   closeRevealMenu();
   resetView();
-  imageWidth.value = 0;
-  imageHeight.value = 0;
-  releaseUrl(originalUrl.value);
-  releaseUrl(enhancedUrl.value);
-  originalUrl.value = "";
-  enhancedUrl.value = "";
-  void refreshPreview(true);
+  if (originalUrl.value) imageSize.value = "正在载入低分辨率预览，暂显上一张照片";
+  schedulePreview(true);
 });
 watch(params, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
+watch(dehazeAutoMode, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); });
 watch(basicParams, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
-watch(ricohPresetId, schedulePreview);
+watch(ricohPresetId, () => schedulePreview());
 watch(renderBackend, () => {
-  if (sessionId.value && selectedId.value) void refreshPreview(false);
+  if (sessionId.value && selectedId.value) schedulePreview();
 });
 watch([basicBackend, ricohBackend], () => {
-  if (sessionId.value && selectedId.value) void refreshPreview(false);
+  if (sessionId.value && selectedId.value) schedulePreview();
 });
 watch([fitWidth, fitHeight], clampPan);
+watch(zoom, (value, previous) => {
+  if (value > 1.5 && previous <= 1.5 && sessionId.value && selectedId.value) {
+    schedulePreview();
+  }
+});
 watch(sharedPhotoSource, (source) => {
   if (source?.owner === "ricoh") adoptSession(source);
 }, { immediate: true });
@@ -602,7 +721,10 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onWindowKeyDown);
   window.removeEventListener("blur", closeRevealMenu);
   releaseUrl(originalUrl.value); releaseUrl(enhancedUrl.value);
-  window.clearTimeout(previewTimer); window.clearInterval(pollTimer);
+  previewGeneration += 1;
+  previewController?.abort();
+  window.clearTimeout(previewTimer); window.clearTimeout(intermediatePreviewTimer);
+  window.clearTimeout(fullResolutionTimer); window.clearInterval(pollTimer);
   resizeObserver?.disconnect();
 });
 </script>
@@ -742,23 +864,33 @@ onBeforeUnmount(() => {
           </label>
         </section>
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button type="button" @click="resetParams" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
-          <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-400">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
-          <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" /></label>
-          <button type="button" @click="advancedOpen = !advancedOpen" :aria-expanded="advancedOpen" class="mt-4 flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-medium dark:border-zinc-800">高级参数<ChevronDown class="h-3.5 w-3.5 transition" :class="advancedOpen ? 'rotate-180' : ''" /></button>
-          <div v-if="advancedOpen" class="mt-3 space-y-3">
-            <label v-for="item in advancedParameters" :key="item.key" class="block text-[11px]">
-              <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item.key] * 100) }}</span></span>
-              <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ item.description }}</span>
-              <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" />
+          <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button type="button" @click="resetParams" :disabled="!selectedId" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
+          <div v-if="selectedId">
+            <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-400">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
+            <label class="mb-3 flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2.5 text-xs dark:border-zinc-700">
+              <span class="font-medium">自动处理</span>
+              <input v-model="dehazeAutoMode" type="checkbox" class="h-4 w-4 accent-blue-600" />
             </label>
-            <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-blue-400">
-              收起高级参数 <ChevronUp class="h-3.5 w-3.5" />
+            <p v-if="dehazeAutoMode" class="mb-3 text-[11px] leading-5 text-slate-500 dark:text-zinc-400">自动分析照片并调整去朦胧效果。关闭后可手动微调高级参数。</p>
+            <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" /></label>
+            <template v-if="!dehazeAutoMode">
+              <button type="button" @click="advancedOpen = !advancedOpen" :aria-expanded="advancedOpen" class="mt-4 flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-medium dark:border-zinc-800">高级参数<ChevronDown class="h-3.5 w-3.5 transition" :class="advancedOpen ? 'rotate-180' : ''" /></button>
+              <div v-if="advancedOpen" class="mt-3 space-y-3">
+                <label v-for="item in advancedParameters" :key="item.key" class="block text-[11px]">
+                  <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item.key] * 100) }}</span></span>
+                  <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ item.description }}</span>
+                  <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" />
+                </label>
+                <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-blue-400">
+                  收起高级参数 <ChevronUp class="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </template>
+            <button v-if="files.length > 1" type="button" @click="syncParamsToAll" class="mt-4 flex w-full items-center justify-center rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-blue-900/70 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:border-blue-800 dark:hover:bg-blue-900/50" aria-label="将当前照片参数同步到全部照片">
+              同步到全部照片（{{ files.length }}）
             </button>
           </div>
-          <button v-if="files.length > 1" type="button" @click="syncParamsToAll" class="mt-4 flex w-full items-center justify-center rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-blue-900/70 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:border-blue-800 dark:hover:bg-blue-900/50" aria-label="将当前照片参数同步到全部照片">
-            同步到全部照片（{{ files.length }}）
-          </button>
+          <p v-else class="text-[11px] leading-5 text-slate-500 dark:text-zinc-400">载入照片后可调整去朦胧参数。</p>
         </section>
 
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">

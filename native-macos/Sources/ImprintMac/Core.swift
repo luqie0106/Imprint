@@ -253,10 +253,16 @@ enum FilePicker {
 func string(_ object: [String: Any], _ key: String) -> String { object[key] as? String ?? "" }
 func int(_ object: [String: Any], _ key: String) -> Int { object[key] as? Int ?? 0 }
 
+private let dehazeDefaultKeys = [
+    "strength", "naturalness", "fog_retention", "local_contrast", "color_recovery",
+    "color_protection", "highlight_protection", "shadow_protection", "brightness_protection",
+]
+
 struct Photo: Identifiable {
     let id: String
     let name: String
     let dehaze: [String: Any]
+    let dehazeAutoMode: Bool
     let basic: [String: Any]
     let preset: String?
 
@@ -265,6 +271,7 @@ struct Photo: Identifiable {
         self.id = id
         name = string(object, "name")
         dehaze = object["dehaze_params"] as? [String: Any] ?? [:]
+        dehazeAutoMode = object["dehaze_auto_mode"] as? Bool ?? false
         basic = object["basic_params"] as? [String: Any] ?? [:]
         preset = object["ricoh_preset_id"] as? String
     }
@@ -277,7 +284,9 @@ struct Photo: Identifiable {
     @Published var dehazeOutput = ""
     @Published var ricohOutput = ""
     @Published var message = ""
+    @Published var dehazeDefaults: [String: Any] = [:]
     @Published var dehazeByPhoto: [String: [String: Any]] = [:]
+    @Published var dehazeAutoModeByPhoto: [String: Bool] = [:]
     @Published var basicByPhoto: [String: [String: Any]] = [:]
     @Published var presetByPhoto: [String: String] = [:]
     @Published var enhanceJob: [String: Any] = [:]
@@ -293,12 +302,23 @@ struct Photo: Identifiable {
         }
         do {
             let result = try await api.json("/api/enhance/session", body: folder.map { ["input_dir": $0] } ?? ["paths": paths ?? []])
+            guard let defaults = result["dehaze_defaults"] as? [String: Any],
+                  dehazeDefaultKeys.allSatisfy({ defaults[$0] as? Double != nil }) else {
+                throw NSError(domain: "Imprint", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "服务未返回完整的去朦胧默认值"])
+            }
             sessionID = string(result, "session_id")
+            dehazeDefaults = defaults
             photos = (result["files"] as? [[String: Any]] ?? []).compactMap(Photo.init)
             selectedID = photos.first?.id ?? ""
             dehazeOutput = string(result, "default_output_dir")
             ricohOutput = string(result, "ricoh_default_output_dir")
-            dehazeByPhoto = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.dehaze) })
+            dehazeByPhoto = Dictionary(uniqueKeysWithValues: photos.map {
+                ($0.id, defaults.merging($0.dehaze) { _, savedValue in savedValue })
+            })
+            dehazeAutoModeByPhoto = Dictionary(uniqueKeysWithValues: photos.map {
+                ($0.id, $0.dehazeAutoMode)
+            })
             basicByPhoto = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.basic) })
             presetByPhoto = Dictionary(uniqueKeysWithValues: photos.compactMap { photo in photo.preset.map { (photo.id, $0) } })
             enhanceJob = [:]
@@ -312,6 +332,7 @@ struct Photo: Identifiable {
             "session_id": sessionID,
             "photo_id": photoID,
             "dehaze_params": dehazeByPhoto[photoID] ?? [:],
+            "auto_mode": dehazeAutoModeByPhoto[photoID] ?? false,
             "basic_params": basicByPhoto[photoID] ?? [:],
             "ricoh_preset_id": presetByPhoto[photoID] as Any? ?? NSNull(),
         ])

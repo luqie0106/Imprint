@@ -79,6 +79,20 @@ typedef struct im_filter_params {
     float fade;                     /* [-1, 1] */
 } im_filter_params;
 
+/* CPU reference operator for automatic spatial dehaze. rgb16 is interleaved
+   RGB with width*height pixels; transmission_count must equal width*height;
+   airlight_rgb contains three finite RAW-linear RGB values. destination_samples
+   must be at least width*height*3. The input is never modified. */
+IMPRINT_API im_status im_native_dehaze_spatial_run(const uint16_t *rgb16,
+                                                    uint32_t width,
+                                                    uint32_t height,
+                                                    const float *transmission,
+                                                    size_t transmission_count,
+                                                    const float *airlight_rgb,
+                                                    const im_dehaze_params *params,
+                                                    uint16_t *destination,
+                                                    size_t destination_samples);
+
 /* Curves are 3 x 256 RGB16 samples (R plane, then G, then B).
    A 3D LUT is optional; its RGB16 entries are ordered ((r * edge + g) * edge + b) * 3 + channel. */
 IMPRINT_API im_status im_renderer_create(im_backend_kind backend, im_renderer **out_renderer);

@@ -169,6 +169,63 @@ def _configure_library(library: ctypes.CDLL) -> None:
     library.im_renderer_get_output_size.restype = ctypes.c_int
     library.im_renderer_copy_output.argtypes = [renderer, uint16_pointer, ctypes.c_size_t]
     library.im_renderer_copy_output.restype = ctypes.c_int
+    # Optional in older packaged renderers. The spatial path checks for the
+    # symbol before use and retains the Python reference as its fallback.
+    spatial = getattr(library, "im_native_dehaze_spatial_run", None)
+    if spatial is not None:
+        spatial.argtypes = [
+            uint16_pointer, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.POINTER(_DehazeParams),
+            uint16_pointer, ctypes.c_size_t,
+        ]
+        spatial.restype = ctypes.c_int
+
+
+def native_spatial_dehaze(
+    image: np.ndarray,
+    params: object,
+    transmission: np.ndarray,
+    atmosphere: np.ndarray,
+) -> np.ndarray:
+    """Run the bounded spatial map through the native C++ pixel operator."""
+    rgb16, width, height, was_uint8 = _prepare_image(image)
+    values = _values(params, _DEHAZE_FIELDS, ((0.0, 1.0),) * len(_DEHAZE_FIELDS), "dehaze")
+    if not isinstance(transmission, np.ndarray) or transmission.shape != (height, width):
+        raise ValueError("Spatial transmission must match image dimensions")
+    if not isinstance(atmosphere, np.ndarray) or atmosphere.shape != (3,):
+        raise ValueError("Spatial airlight must contain three channels")
+    if not np.isfinite(transmission).all() or not np.isfinite(atmosphere).all():
+        raise ValueError("Spatial transmission and airlight must be finite")
+    transmission32 = np.ascontiguousarray(transmission, dtype=np.float32)
+    atmosphere32 = np.ascontiguousarray(atmosphere, dtype=np.float32)
+    library, _ = _get_library()
+    spatial = getattr(library, "im_native_dehaze_spatial_run", None)
+    if spatial is None:
+        raise NativeRendererError("Native spatial dehaze operator is unavailable")
+    output16 = np.empty_like(rgb16)
+    status = spatial(
+        rgb16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), width, height,
+        transmission32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), transmission32.size,
+        atmosphere32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.byref(_DehazeParams(*values)),
+        output16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), output16.size,
+    )
+    if status != 0:
+        raise NativeRendererError(f"Native spatial dehaze failed (status {status})")
+    if was_uint8:
+        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+    return output16
+
+
+def get_native_spatial_status() -> dict[str, object]:
+    """Report the optional C++ spatial operator independently of GPU support."""
+    try:
+        library, _ = _get_library()
+        available = getattr(library, "im_native_dehaze_spatial_run", None) is not None
+    except NativeRendererError:
+        available = False
+    return {"available": available, "backend": "C++ CPU" if available else None}
 
 
 def _get_library() -> tuple[ctypes.CDLL, str]:

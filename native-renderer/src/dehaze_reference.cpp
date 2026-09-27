@@ -75,11 +75,16 @@ Vec3 smooth_chroma_caps(Vec3 image, Vec3 caps) {
     return {y + chroma.r * scale, y + chroma.g * scale, y + chroma.b * scale};
 }
 
-Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageStats &stats) {
+Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageStats &stats,
+                          float spatial_transmission = 0.0f,
+                          const float *spatial_airlight = nullptr,
+                          bool spatial_mode = false) {
     if (p.strength <= 1e-6f) return source;
 
     const float source_y = luma(source);
-    Vec3 atmosphere{stats.air_r, stats.air_g, stats.air_b};
+    Vec3 atmosphere = spatial_airlight
+                          ? Vec3{spatial_airlight[0], spatial_airlight[1], spatial_airlight[2]}
+                          : Vec3{stats.air_r, stats.air_g, stats.air_b};
     const float atmosphere_mean = (atmosphere.r + atmosphere.g + atmosphere.b) / 3.0f;
     const float neutral_mix = 0.45f * p.color_protection * (0.65f + 0.35f * p.naturalness);
     atmosphere = {
@@ -87,15 +92,21 @@ Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageSta
         clamp01(atmosphere.g * (1.0f - neutral_mix) + atmosphere_mean * neutral_mix),
         clamp01(atmosphere.b * (1.0f - neutral_mix) + atmosphere_mean * neutral_mix),
     };
-    atmosphere.r = std::max(0.35f, atmosphere.r);
-    atmosphere.g = std::max(0.35f, atmosphere.g);
-    atmosphere.b = std::max(0.35f, atmosphere.b);
+    const float atmosphere_floor = spatial_mode ? 0.01f : 0.35f;
+    atmosphere.r = std::min(1.0f, std::max(atmosphere_floor, atmosphere.r));
+    atmosphere.g = std::min(1.0f, std::max(atmosphere_floor, atmosphere.g));
+    atmosphere.b = std::min(1.0f, std::max(atmosphere_floor, atmosphere.b));
 
-    const float omega = p.strength * (0.66f - 0.14f * p.fog_retention) *
-                        (0.90f + 0.10f * (1.0f - p.naturalness)) *
-                        (0.92f + 0.08f * stats.haze_level);
     const float transmission_floor = 0.27f + 0.21f * p.fog_retention + 0.11f * p.naturalness;
-    const float transmission = std::min(1.0f, std::max(transmission_floor, 1.0f - omega));
+    float transmission = spatial_transmission;
+    if (spatial_mode) {
+        transmission = std::min(1.0f, std::max(transmission_floor, spatial_transmission));
+    } else {
+        const float omega = p.strength * (0.66f - 0.14f * p.fog_retention) *
+                            (0.90f + 0.10f * (1.0f - p.naturalness)) *
+                            (0.92f + 0.08f * stats.haze_level);
+        transmission = std::min(1.0f, std::max(transmission_floor, 1.0f - omega));
+    }
     const Vec3 recovered{
         clamp01((source.r - atmosphere.r) / transmission + atmosphere.r),
         clamp01((source.g - atmosphere.g) / transmission + atmosphere.g),
@@ -174,7 +185,11 @@ Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageSta
         natural = {natural.r * ratio, natural.g * ratio, natural.b * ratio};
     }
 
-    const float highlight_position = smoothstep(0.58f, 0.98f, source_y);
+    float highlight_position = smoothstep(0.58f, 0.98f, source_y);
+    if (spatial_mode) {
+        const float source_peak = std::max(source.r, std::max(source.g, source.b));
+        highlight_position = std::max(highlight_position, smoothstep(0.35f, 0.90f, source_peak));
+    }
     const float highlight_blend = clamp01(highlight_position * p.highlight_protection);
     natural = {
         natural.r * (1.0f - highlight_blend) + source.r * highlight_blend,
@@ -340,6 +355,101 @@ void apply_dehaze_reference(const uint16_t *rgb16, size_t pixels,
         destination[i * 3] = static_cast<uint16_t>(std::nearbyint(clamp01(result.r) * kPeak));
         destination[i * 3 + 1] = static_cast<uint16_t>(std::nearbyint(clamp01(result.g) * kPeak));
         destination[i * 3 + 2] = static_cast<uint16_t>(std::nearbyint(clamp01(result.b) * kPeak));
+    }
+}
+
+void apply_dehaze_spatial_reference(const uint16_t *rgb16, uint32_t width, uint32_t height,
+                                    const float *transmission,
+                                    const float *airlight_rgb,
+                                    const im_dehaze_params &params,
+                                    uint16_t *destination) {
+    if (!rgb16 || !transmission || !airlight_rgb || !destination || width == 0 || height == 0) return;
+    const size_t pixels = static_cast<size_t>(width) * height;
+    const size_t samples = pixels * 3;
+    if (params.strength <= 1e-6f) {
+        std::copy(rgb16, rgb16 + samples, destination);
+        return;
+    }
+    const ImageStats stats{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    std::vector<uint16_t> first_pass(samples);
+    for (size_t pixel = 0; pixel < pixels; ++pixel) {
+        const Vec3 source = read_pixel(rgb16, pixel);
+        const Vec3 before_brightness = pre_brightness_pixel(
+            source, params, stats, transmission[pixel], airlight_rgb, true);
+        const Vec3 result = post_brightness_pixel(source, before_brightness, params, 1.0f);
+        first_pass[pixel * 3] = static_cast<uint16_t>(std::nearbyint(clamp01(result.r) * kPeak));
+        first_pass[pixel * 3 + 1] = static_cast<uint16_t>(std::nearbyint(clamp01(result.g) * kPeak));
+        first_pass[pixel * 3 + 2] = static_cast<uint16_t>(std::nearbyint(clamp01(result.b) * kPeak));
+    }
+
+    float gain = 1.0f;
+    if (params.brightness_protection > 1e-6f) {
+        const size_t stride = std::max<size_t>(1, static_cast<size_t>(
+            std::sqrt(static_cast<double>(pixels) / 250000.0)));
+        std::vector<float> source_lumas;
+        std::vector<float> result_lumas;
+        source_lumas.reserve((pixels + stride * stride - 1) / (stride * stride));
+        result_lumas.reserve(source_lumas.capacity());
+        for (size_t y = 0; y < height; y += stride) {
+            for (size_t x = 0; x < width; x += stride) {
+                const size_t pixel = y * width + x;
+                const Vec3 source = read_pixel(rgb16, pixel);
+                const Vec3 result = read_pixel(first_pass.data(), pixel);
+                const float source_y = luma(source);
+                const float result_y = luma(result);
+                if (source_y > 0.08f && source_y < 0.88f &&
+                    std::isfinite(source_y) && std::isfinite(result_y)) {
+                    source_lumas.push_back(source_y);
+                    result_lumas.push_back(result_y);
+                }
+            }
+        }
+        if (source_lumas.size() >= 8) {
+            const float source_median = median(source_lumas);
+            const float result_median = median(result_lumas);
+            if (source_median > 1e-5f && result_median > 1e-5f &&
+                std::isfinite(source_median) && std::isfinite(result_median)) {
+                const float drop_ev = std::log2(source_median / result_median);
+                if (std::isfinite(drop_ev)) {
+                    const float allowed_ev = 0.08f + 0.22f * params.strength;
+                    const float compensation_ev = std::min(
+                        0.40f, std::max(0.0f, drop_ev - allowed_ev) * params.brightness_protection);
+                    if (std::isfinite(compensation_ev) && compensation_ev > 1e-6f) {
+                        gain = std::exp2(compensation_ev);
+                        if (!std::isfinite(gain)) gain = 1.0f;
+                    }
+                }
+            }
+        }
+    }
+
+    if (gain <= 1.0f + 1e-6f) {
+        std::copy(first_pass.begin(), first_pass.end(), destination);
+        return;
+    }
+
+    const float saturation_threshold = 0.97f;
+    const float saturation_limit = std::max(0.0f, saturation_threshold - 1.5f / kPeak);
+    for (size_t pixel = 0; pixel < pixels; ++pixel) {
+        const Vec3 source = read_pixel(rgb16, pixel);
+        Vec3 image = read_pixel(first_pass.data(), pixel);
+        const float image_y = luma(image);
+        const float curve_y = image_y * gain / (1.0f + (gain - 1.0f) * image_y);
+        const float ratio = image_y > 1e-6f ? curve_y / image_y : 1.0f;
+        image = {clamp01(image.r * ratio), clamp01(image.g * ratio), clamp01(image.b * ratio)};
+        image = smooth_chroma_gamut(image);
+
+        const float source_y = luma(source);
+        const float luma_cap = source_y < saturation_threshold ? saturation_limit : 1.0f;
+        const float luma_scale = std::min(1.0f, luma_cap / std::max(luma(image), 1e-4f));
+        image = {image.r * luma_scale, image.g * luma_scale, image.b * luma_scale};
+        const Vec3 caps{source.r < saturation_threshold ? saturation_limit : 1.0f,
+                        source.g < saturation_threshold ? saturation_limit : 1.0f,
+                        source.b < saturation_threshold ? saturation_limit : 1.0f};
+        image = smooth_chroma_caps(image, caps);
+        destination[pixel * 3] = static_cast<uint16_t>(std::nearbyint(clamp01(image.r) * kPeak));
+        destination[pixel * 3 + 1] = static_cast<uint16_t>(std::nearbyint(clamp01(image.g) * kPeak));
+        destination[pixel * 3 + 2] = static_cast<uint16_t>(std::nearbyint(clamp01(image.b) * kPeak));
     }
 }
 

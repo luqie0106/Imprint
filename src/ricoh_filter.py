@@ -856,6 +856,7 @@ def read_photo_settings(photo: str | Path) -> dict[str, object]:
     path = Path(photo)
     sidecar = _sidecar_path(path)
     result: dict[str, object] = {"dehaze_params": None, "ricoh_preset_id": None,
+                                 "dehaze_auto_mode": True,
                                  "basic_params": {key: 0.0 for key in _BASIC_FIELDS}}
     if sidecar is None:
         return result
@@ -877,6 +878,18 @@ def read_photo_settings(photo: str | Path) -> dict[str, object]:
                 from dehaze import DehazeParams
                 values = {**DehazeParams().__dict__, **values}
             result["dehaze_params"] = values
+        raw_auto_mode = _find_simple(description, _IMPRINT_NS, "DehazeAutoMode")
+        if raw_auto_mode is not None:
+            normalized_auto_mode = raw_auto_mode.strip().casefold()
+            if normalized_auto_mode in {"true", "1", "yes"}:
+                result["dehaze_auto_mode"] = True
+            elif normalized_auto_mode in {"false", "0", "no"}:
+                result["dehaze_auto_mode"] = False
+            else:
+                raise ValueError("invalid dehaze mode")
+        elif values:
+            # Older Imprint sidecars only stored the global/manual parameters.
+            result["dehaze_auto_mode"] = False
         preset_id = _find_simple(description, _IMPRINT_NS, "RicohPresetId")
         result["ricoh_preset_id"] = preset_id if preset_id in _PRESETS_BY_ID else None
         basic = {}
@@ -896,6 +909,16 @@ def _serialize_xmp(root: ET.Element) -> bytes:
     ET.register_namespace("imprint", _IMPRINT_NS)
     body = ET.tostring(root, encoding="utf-8", xml_declaration=False)
     return b'<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>\n' + body + b'\n<?xpacket end="w"?>'
+
+
+def _write_dehaze_auto_mode(description: ET.Element, auto_mode: bool | None) -> None:
+    """Write the independent UI mode when supplied; None preserves the sidecar."""
+    if auto_mode is None:
+        return
+    if not isinstance(auto_mode, bool):
+        raise ValueError("invalid dehaze mode")
+    description.set("{" + _IMPRINT_NS + "}DehazeAutoMode",
+                    "true" if auto_mode else "false")
 
 
 def _atomic_write_sidecar(photo: Path, payload: bytes, *, create_only: bool = False) -> None:
@@ -949,15 +972,7 @@ def _atomic_write_sidecar(photo: Path, payload: bytes, *, create_only: bool = Fa
             raise
 
 
-def _merge_preset_payload(existing_payload: bytes | None, preset_id: str,
-                          basic_params: dict[str, float] | None = None) -> bytes:
-    preset_root = _parse_xmp(_preset_payload(preset_id))
-    source = _description(preset_root)
-    if source is None:
-        raise RuntimeError("invalid preset resource")
-    root = _parse_xmp(existing_payload) if existing_payload is not None else ET.Element("{adobe:ns:meta/}xmpmeta")
-    destination = _description(root, create=True)
-    assert destination is not None
+def _preset_processing_keys() -> tuple[set[str], set[str]]:
     global _PRESET_PROCESSING_KEYS
     if _PRESET_PROCESSING_KEYS is None:
         attributes: set[str] = set()
@@ -976,14 +991,30 @@ def _merge_preset_payload(existing_payload: bytes | None, preset_id: str,
                 if child.tag.startswith("{" + _CRS_NS + "}")
             )
         _PRESET_PROCESSING_KEYS = attributes, elements
-    attribute_keys, element_keys = _PRESET_PROCESSING_KEYS
+    return _PRESET_PROCESSING_KEYS
+
+
+def _remove_preset_processing_fields(description: ET.Element) -> None:
+    attribute_keys, element_keys = _preset_processing_keys()
     # Remove all processing fields owned by any built-in preset first. This
     # prevents a previous preset's extra settings from leaking into a switch.
     for key in attribute_keys:
-        destination.attrib.pop(key, None)
-    for child in tuple(destination):
+        description.attrib.pop(key, None)
+    for child in tuple(description):
         if child.tag in element_keys:
-            destination.remove(child)
+            description.remove(child)
+
+
+def _merge_preset_payload(existing_payload: bytes | None, preset_id: str,
+                          basic_params: dict[str, float] | None = None) -> bytes:
+    preset_root = _parse_xmp(_preset_payload(preset_id))
+    source = _description(preset_root)
+    if source is None:
+        raise RuntimeError("invalid preset resource")
+    root = _parse_xmp(existing_payload) if existing_payload is not None else ET.Element("{adobe:ns:meta/}xmpmeta")
+    destination = _description(root, create=True)
+    assert destination is not None
+    _remove_preset_processing_fields(destination)
     # Replace only Camera Raw processing properties supplied by this preset.
     # Everything else, including custom Imprint values and vendor metadata,
     # stays in the existing sidecar.
@@ -1035,7 +1066,8 @@ def write_ricoh_preset(photo: str | Path, preset_id: str,
 
 
 def write_dehaze_settings(photo: str | Path, params: dict[str, float],
-                          basic_params: dict[str, float] | None = None) -> str:
+                          basic_params: dict[str, float] | None = None,
+                          auto_mode: bool | None = None) -> str:
     """Merge the nine validated dehaze parameters into a photo's XMP packet."""
     if set(params) != set(_DEHAZE_FIELDS):
         raise ValueError("invalid dehaze settings")
@@ -1058,6 +1090,7 @@ def write_dehaze_settings(photo: str | Path, params: dict[str, float],
         for field_name, value in values.items():
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
+        _write_dehaze_auto_mode(description, auto_mode)
         if basic_params is not None:
             basic = validate_basic_params(basic_params)
             preset_id = _find_simple(description, _IMPRINT_NS, "RicohPresetId")
@@ -1076,6 +1109,7 @@ def write_photo_settings(
     dehaze_params: dict[str, float],
     basic_params: dict[str, float],
     ricoh_preset_id: str | None,
+    auto_mode: bool | None = None,
 ) -> dict[str, str]:
     """Atomically merge one complete Imprint photo-settings snapshot into XMP."""
     if set(dehaze_params) != set(_DEHAZE_FIELDS):
@@ -1109,10 +1143,10 @@ def write_photo_settings(
             description = _description(root, create=True)
             assert description is not None
             existing_preset_id = _find_simple(description, _IMPRINT_NS, "RicohPresetId")
-            baseline = (
-                _preset_controls(existing_preset_id)
-                if existing_preset_id in _PRESETS_BY_ID else {}
-            )
+            if existing_preset_id in _PRESETS_BY_ID:
+                _remove_preset_processing_fields(description)
+            description.attrib.pop("{" + _IMPRINT_NS + "}RicohPresetId", None)
+            baseline: dict[str, float] = {}
             for key, (crs_name, low, high) in _BASIC_FIELDS.items():
                 description.set("{" + _IMPRINT_NS + "}Basic" + key.title(),
                                 format(basic_values[key], ".8g"))
@@ -1124,6 +1158,7 @@ def write_photo_settings(
         for field_name, value in dehaze_values.items():
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
+        _write_dehaze_auto_mode(description, auto_mode)
         _atomic_write_sidecar(photo_path, _serialize_xmp(root))
         return {
             "name": (sidecar or photo_path.with_suffix(".xmp")).name,
@@ -1244,6 +1279,8 @@ def write_dehaze_session_settings(
     photos: Iterable[tuple[str, str | Path, dict[str, float]]],
     basic_params_by_photo: dict[str, dict[str, float]] | None = None,
     preset_ids_by_photo: dict[str, str | None] | None = None,
+    auto_modes_by_photo: dict[str, bool] | None = None,
+    auto_mode: bool | None = None,
 ) -> dict[str, object]:
     """Write per-photo dehaze values through active session records."""
     if any(value is not None and value not in _PRESETS_BY_ID
@@ -1270,9 +1307,13 @@ def write_dehaze_session_settings(
                     basic = read_photo_settings(photo)["basic_params"]
                 name = write_photo_settings(
                     photo, params, basic, preset_ids_by_photo[photo_id],
+                    (auto_modes_by_photo or {}).get(photo_id, auto_mode),
                 )["name"]
             else:
-                name = write_dehaze_settings(photo, params, basic)
+                name = write_dehaze_settings(
+                    photo, params, basic,
+                    auto_mode=(auto_modes_by_photo or {}).get(photo_id, auto_mode),
+                )
             files.append({"photo_id": photo_id, "name": name, "status": "updated" if existing else "written"})
         except (OSError, RuntimeError, ValueError, ET.ParseError) as exc:
             files.append({"photo_id": photo_id, "name": name, "status": "failed", "error": _safe_error(exc)})

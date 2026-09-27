@@ -9,6 +9,7 @@ import asyncio
 import concurrent.futures
 import copy
 from collections import OrderedDict
+from dataclasses import asdict
 import json
 import os
 import shutil
@@ -59,8 +60,10 @@ from model_manager import (
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
 from dehaze import ALGORITHM_VERSION as DEHAZE_ALGORITHM_VERSION
 from dehaze import DehazeParams, apply_dehaze, get_gpu_status
+from dehaze_spatial import apply_spatial_dehaze
 from native_renderer import (
-    get_native_status, native_dehaze, native_dehaze_preview, native_basic, native_ricoh,
+    get_native_status, get_native_spatial_status, native_dehaze,
+    native_dehaze_preview, native_basic, native_ricoh,
 )
 from native_sort import get_native_sort_status
 from dng_writer import write_enhanced_dng, write_linear_dng
@@ -103,6 +106,8 @@ from ricoh_filter import (
     validate_basic_params,
 )
 
+_DEHAZE_DEFAULTS = asdict(DehazeParams())
+
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -127,12 +132,13 @@ _MAX_PREVIEW_GROUPS = 40
 # 去朦胧使用完全独立的会话、预览缓存和后台任务；会话中保存真实路径，HTTP
 # 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
 _ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
-_ENHANCE_PREVIEW_CACHE: dict[tuple, bytes] = {}
+_ENHANCE_PREVIEW_CACHE: dict[tuple, tuple[bytes, int, int]] = {}
 _ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str, int], bytes] = {}
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _RICOH_PREVIEW_CACHE: dict[tuple, bytes] = {}
 _RICOH_JOBS: dict[str, dict[str, Any]] = {}
 _ENHANCE_LOCK = threading.RLock()
+_FULL_RESOLUTION_PREVIEW_LOCK = threading.Lock()
 _DISPLAY_PREVIEW_LOCK = threading.RLock()
 _DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DISPLAY_PREVIEW_BYTES = 64 * 1024 * 1024
@@ -203,15 +209,15 @@ class TrainerRequest(BaseModel):
 
 
 class EnhanceParamsRequest(BaseModel):
-    strength: float = Field(default=0.0, ge=0.0, le=1.0)
-    naturalness: float = Field(default=0.70, ge=0.0, le=1.0)
-    fog_retention: float = Field(default=0.55, ge=0.0, le=1.0)
-    local_contrast: float = Field(default=0.25, ge=0.0, le=1.0)
-    color_recovery: float = Field(default=0.35, ge=0.0, le=1.0)
-    color_protection: float = Field(default=0.80, ge=0.0, le=1.0)
-    highlight_protection: float = Field(default=0.75, ge=0.0, le=1.0)
-    shadow_protection: float = Field(default=0.75, ge=0.0, le=1.0)
-    brightness_protection: float = Field(default=0.70, ge=0.0, le=1.0)
+    strength: float = Field(default=_DEHAZE_DEFAULTS["strength"], ge=0.0, le=1.0)
+    naturalness: float = Field(default=_DEHAZE_DEFAULTS["naturalness"], ge=0.0, le=1.0)
+    fog_retention: float = Field(default=_DEHAZE_DEFAULTS["fog_retention"], ge=0.0, le=1.0)
+    local_contrast: float = Field(default=_DEHAZE_DEFAULTS["local_contrast"], ge=0.0, le=1.0)
+    color_recovery: float = Field(default=_DEHAZE_DEFAULTS["color_recovery"], ge=0.0, le=1.0)
+    color_protection: float = Field(default=_DEHAZE_DEFAULTS["color_protection"], ge=0.0, le=1.0)
+    highlight_protection: float = Field(default=_DEHAZE_DEFAULTS["highlight_protection"], ge=0.0, le=1.0)
+    shadow_protection: float = Field(default=_DEHAZE_DEFAULTS["shadow_protection"], ge=0.0, le=1.0)
+    brightness_protection: float = Field(default=_DEHAZE_DEFAULTS["brightness_protection"], ge=0.0, le=1.0)
 
     def to_params(self) -> DehazeParams:
         return DehazeParams(**self.model_dump())
@@ -240,9 +246,11 @@ class EnhancePreviewRequest(BaseModel):
     session_id: str
     photo_id: str
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
+    auto_mode: bool = False
     basic_params: BasicParamsRequest = Field(default_factory=BasicParamsRequest)
     max_edge: int = Field(default=1800, ge=320, le=3000)
     preview_level: Literal[0, 1, 2] = 0
+    full_resolution: bool = False
     mode: Literal["original", "dehazed"] = "dehazed"
     color_manage_srgb: bool = False
     use_gpu: bool = False
@@ -262,6 +270,8 @@ class EnhanceRunRequest(BaseModel):
     output_dir: str = ""
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
+    auto_mode: bool = False
+    auto_modes_by_photo: dict[str, bool] = Field(default_factory=dict)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
     use_gpu: bool = False
     render_backend: Literal["auto", "native", "pytorch", "cpu"] | None = None
@@ -276,6 +286,8 @@ class RicohApplyRequest(BaseModel):
 class EnhanceXmpRequest(BaseModel):
     session_id: str
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
+    auto_mode: bool = False
+    auto_modes_by_photo: dict[str, bool] = Field(default_factory=dict)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
     preset_ids_by_photo: dict[str, str | None] = Field(default_factory=dict)
 
@@ -293,6 +305,7 @@ class PhotoSettingsRequest(BaseModel):
     session_id: str
     photo_id: str
     dehaze_params: EnhanceParamsRequest
+    auto_mode: bool = False
     basic_params: BasicParamsRequest
     ricoh_preset_id: str | None = Field(default=None, min_length=1, max_length=80)
 
@@ -308,11 +321,12 @@ class RicohPreviewRequest(BaseModel):
 
 class RicohRunRequest(BaseModel):
     session_id: str
-    preset_id: str = Field(min_length=1, max_length=80)
+    preset_id: str | None = Field(default=None, min_length=1, max_length=80)
     output_dir: str = ""
     ricoh_backend: Literal["python", "native"] = "python"
+    basic_backend: Literal["python", "native"] = "python"
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
-    preset_ids_by_photo: dict[str, str] = Field(default_factory=dict)
+    preset_ids_by_photo: dict[str, str | None] = Field(default_factory=dict)
 
 
 def _register_preview_groups(groups: list[dict]) -> tuple[str, list[dict]]:
@@ -486,6 +500,7 @@ def save_photo_settings_snapshot(req: PhotoSettingsRequest):
             req.dehaze_params.to_params().__dict__,
             req.basic_params.values(),
             req.ricoh_preset_id,
+            req.auto_mode,
         )
         return {
             "photo_id": req.photo_id,
@@ -554,7 +569,12 @@ def _basic_mode(basic_backend: str | None, render_mode: str) -> str:
     return "native" if render_mode in ("auto", "native") else "python"
 
 
-def _render_dehaze(image: np.ndarray, params: DehazeParams, mode: str) -> np.ndarray:
+def _render_dehaze(image: np.ndarray, params: DehazeParams, mode: str,
+                   auto_mode: bool = False) -> np.ndarray:
+    if auto_mode:
+        # The spatial map is shared by the native C++ and Python reference
+        # paths. Native selection uses the C++ pixel operator when available.
+        return apply_spatial_dehaze(image, params, backend=mode)
     if mode == "legacy_gpu":
         return apply_dehaze(image, params, backend="auto")
     if mode in ("auto", "native"):
@@ -635,6 +655,7 @@ def _cached_dehazed_display_preview(
     backend: str,
     color_manage_srgb: bool,
     preview_level: int = 0,
+    auto_mode: bool = False,
 ) -> np.ndarray:
     """Cache the post-dehaze display base so basic and Ricoh edits stay responsive."""
     stat = path.stat()
@@ -642,6 +663,7 @@ def _cached_dehazed_display_preview(
     key = (
         session_id, photo_id, stat.st_mtime_ns, stat.st_size,
         DEHAZE_ALGORITHM_VERSION, dehaze_values, max_edge, preview_level, backend,
+        bool(auto_mode),
         bool(color_manage_srgb),
     )
     with _DISPLAY_PREVIEW_LOCK:
@@ -650,7 +672,7 @@ def _cached_dehazed_display_preview(
             _DEHAZED_PREVIEW_CACHE.move_to_end(key)
             return cached
 
-    if backend in ("auto", "native"):
+    if backend in ("auto", "native") and not auto_mode:
         native_key = (
             session_id, photo_id, str(path), stat.st_mtime_ns, stat.st_size,
             max_edge,
@@ -675,6 +697,7 @@ def _cached_dehazed_display_preview(
                                    interpolation=cv2.INTER_AREA)
             dehazed = _render_dehaze(
                 image, params, "pytorch" if backend == "auto" else "cpu",
+                auto_mode=auto_mode,
             )
     else:
         image, metadata = _cached_processing_preview(
@@ -685,7 +708,7 @@ def _cached_dehazed_display_preview(
             image = cv2.resize(image, (max(1, image.shape[1] // scale),
                                        max(1, image.shape[0] // scale)),
                                interpolation=cv2.INTER_AREA)
-        dehazed = _render_dehaze(image, params, backend)
+        dehazed = _render_dehaze(image, params, backend, auto_mode=auto_mode)
     display = _display_rgb8(
         dehazed, linear=getattr(metadata, "color_space", "") == "Linear sRGB",
     )
@@ -1121,6 +1144,7 @@ def create_enhance_session(req: EnhanceSessionRequest):
                 "name": path.name,
                 "extension": path.suffix.lower(),
                 "dehaze_params": settings["dehaze_params"],
+                "dehaze_auto_mode": settings.get("dehaze_auto_mode", True),
                 "ricoh_preset_id": settings["ricoh_preset_id"],
                 "basic_params": settings["basic_params"],
             })
@@ -1149,6 +1173,7 @@ def create_enhance_session(req: EnhanceSessionRequest):
             "session_id": session_id,
             "count": len(files),
             "files": files,
+            "dehaze_defaults": _DEHAZE_DEFAULTS.copy(),
             "default_output_dir": str(default_output),
             "ricoh_default_output_dir": str(default_output / "理光预设输出"),
             "output_format": "Source bit-depth Linear/Demosaiced DNG",
@@ -1208,6 +1233,8 @@ def save_enhance_session_xmp(req: EnhanceXmpRequest):
             scoped,
             {key: value.values() for key, value in req.basic_params_by_photo.items()},
             req.preset_ids_by_photo,
+            req.auto_modes_by_photo,
+            req.auto_mode,
         )
     except KeyError:
         return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
@@ -1237,7 +1264,8 @@ def get_enhance_render_status():
     native = get_native_status()
     gpu = get_enhance_gpu_status()
     torch_backends = [name for name in gpu["backends"] if name in ("cuda", "mps")]
-    return {"native": native, "sort": get_native_sort_status(), "pytorch": {
+    return {"native": native, "spatial": get_native_spatial_status(),
+            "sort": get_native_sort_status(), "pytorch": {
         "available": bool(torch_backends), "backends": torch_backends,
     }}
 
@@ -1248,6 +1276,11 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         path = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
     if path is None or not Path(path).is_file():
         return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
+    if req.full_resolution and req.preview_level != 0:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "全分辨率预览要求 preview_level 为 0"},
+        )
     params = req.params.to_params()
     dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
     basic = req.basic_params.values()
@@ -1257,7 +1290,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     basic_mode = _basic_mode(req.basic_backend, render_mode)
     cache_key = (req.session_id, req.photo_id, stat.st_mtime_ns, stat.st_size,
                  DEHAZE_ALGORITHM_VERSION, dehaze_values, req.max_edge,
-                 req.preview_level, req.mode,
+                 req.preview_level, bool(req.full_resolution), req.mode, bool(req.auto_mode),
                  effective_preset_id, render_mode, basic_mode, req.ricoh_backend,
                  bool(req.color_manage_srgb),
                  tuple(basic[key] for key in sorted(basic)))
@@ -1266,12 +1299,52 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         valid_preset_ids = {preset["id"] for preset in list_ricoh_presets()}
         if effective_preset_id not in valid_preset_ids:
             return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
-    with _ENHANCE_LOCK:
-        cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
-    if cached is not None:
-        return Response(content=cached, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+    if not req.full_resolution:
+        with _ENHANCE_LOCK:
+            cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
+        if cached is not None:
+            payload, width, height = cached
+            return Response(
+                content=payload,
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "private, max-age=3600",
+                    "X-Image-Width": str(width),
+                    "X-Image-Height": str(height),
+                },
+            )
     try:
-        if req.mode == "original" and req.color_manage_srgb:
+        if req.full_resolution:
+            # Full-size previews intentionally skip every in-memory image/JPEG
+            # cache: camera RAWs can decode to very large arrays, and parameter
+            # edits should not retain those arrays across requests.
+            with _FULL_RESOLUTION_PREVIEW_LOCK:
+                image, metadata = read_image(path, preview=False)
+                width, height = int(image.shape[1]), int(image.shape[0])
+                linear = getattr(metadata, "color_space", "") == "Linear sRGB"
+                if req.mode == "original":
+                    display = _display_rgb8(image, linear=linear)
+                    if req.color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
+                        display = standard_preview_to_srgb(display, path)
+                    payload = _encode_preview(display)
+                else:
+                    enhanced = _render_dehaze(
+                        image, params, render_mode, auto_mode=req.auto_mode,
+                    )
+                    display = _display_rgb8(
+                        enhanced, linear=getattr(metadata, "color_space", "") == "Linear sRGB",
+                    )
+                    if req.color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
+                        display = standard_preview_to_srgb(display, path)
+                    if effective_preset_id is not None:
+                        effected = _render_ricoh(
+                            display, effective_preset_id, basic, req.ricoh_backend,
+                            use_measured_color=True,
+                        )
+                    else:
+                        effected = _render_basic(display, basic, basic_mode)
+                    payload = _encode_preview(effected)
+        elif req.mode == "original" and req.color_manage_srgb:
             display = _cached_display_preview(req.session_id, req.photo_id, Path(path), req.max_edge)
             payload = _encode_preview(display)
             width, height = display.shape[1], display.shape[0]
@@ -1281,6 +1354,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 backend=render_mode,
                 color_manage_srgb=req.color_manage_srgb,
                 preview_level=req.preview_level,
+                auto_mode=req.auto_mode,
             )
             if effective_preset_id is not None:
                 effected = _render_ricoh(
@@ -1295,15 +1369,16 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
             width, height = metadata.width, metadata.height
             payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
-        with _ENHANCE_LOCK:
-            if len(_ENHANCE_PREVIEW_CACHE) >= 128:
-                _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)
-            _ENHANCE_PREVIEW_CACHE[cache_key] = payload
+        if not req.full_resolution:
+            with _ENHANCE_LOCK:
+                if len(_ENHANCE_PREVIEW_CACHE) >= 128:
+                    _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)
+                _ENHANCE_PREVIEW_CACHE[cache_key] = (payload, width, height)
         return Response(
             content=payload,
             media_type="image/jpeg",
             headers={
-                "Cache-Control": "private, max-age=3600",
+                "Cache-Control": "private, no-store" if req.full_resolution else "private, max-age=3600",
                 "X-Image-Width": str(width),
                 "X-Image-Height": str(height),
             },
@@ -1433,6 +1508,19 @@ def _snapshot_enhance_params(
     return default_params, MappingProxyType(scoped_params)
 
 
+def _snapshot_enhance_modes(
+    req: EnhanceRunRequest,
+    photo_ids: set[str] | None = None,
+) -> tuple[bool, Mapping[str, bool]]:
+    """Freeze the independent per-photo automatic/manual mode selection."""
+    scoped_modes = {
+        photo_id: bool(auto_mode)
+        for photo_id, auto_mode in req.auto_modes_by_photo.items()
+        if photo_ids is None or photo_id in photo_ids
+    }
+    return bool(req.auto_mode), MappingProxyType(scoped_modes)
+
+
 def _select_enhance_params(
     photo_id: str,
     params_by_photo: Mapping[str, DehazeParams],
@@ -1440,6 +1528,14 @@ def _select_enhance_params(
 ) -> DehazeParams:
     """Return a per-photo snapshot, falling back to the batch default."""
     return params_by_photo.get(photo_id, default_params)
+
+
+def _select_enhance_mode(
+    photo_id: str,
+    auto_modes_by_photo: Mapping[str, bool],
+    default_auto_mode: bool,
+) -> bool:
+    return auto_modes_by_photo.get(photo_id, default_auto_mode)
 
 
 def _run_enhance_job(
@@ -1451,6 +1547,8 @@ def _run_enhance_job(
     backend: str = "cpu",
     basic_params_by_photo: Mapping[str, dict[str, float]] | None = None,
     basic_backend: str = "python",
+    default_auto_mode: bool = False,
+    auto_modes_by_photo: Mapping[str, bool] | None = None,
 ) -> None:
     with _ENHANCE_LOCK:
         job = _ENHANCE_JOBS[job_id]
@@ -1468,7 +1566,12 @@ def _run_enhance_job(
         try:
             image, metadata = read_image(path, preview=False)
             photo_params = _select_enhance_params(photo_id, params_by_photo, default_params)
-            enhanced = _render_dehaze(to_uint16(image), photo_params, backend)
+            photo_auto_mode = _select_enhance_mode(
+                photo_id, auto_modes_by_photo or {}, default_auto_mode,
+            )
+            enhanced = _render_dehaze(
+                to_uint16(image), photo_params, backend, auto_mode=photo_auto_mode,
+            )
             corrected, correction = apply_lens_correction(
                 enhanced,
                 metadata,
@@ -1553,7 +1656,9 @@ def _run_enhance_job(
                 )
             xmp_status = "failed"
             try:
-                write_dehaze_settings(path, photo_params.__dict__, basic)
+                write_dehaze_settings(
+                    path, photo_params.__dict__, basic, auto_mode=photo_auto_mode,
+                )
                 xmp_status = "written"
             except Exception:
                 # DNG export is the primary job result. A sidecar failure is
@@ -1601,6 +1706,10 @@ def run_enhance(req: EnhanceRunRequest):
         req,
         {photo_id for photo_id, _ in records},
     )
+    default_auto_mode, auto_modes_by_photo = _snapshot_enhance_modes(
+        req,
+        {photo_id for photo_id, _ in records},
+    )
     first_path = Path(records[0][1])
     output_dir = Path(req.output_dir.strip().strip('\"\'')) if req.output_dir.strip() else first_path.parent / OUTPUT_DIR_NAME
     try:
@@ -1621,7 +1730,8 @@ def run_enhance(req: EnhanceRunRequest):
         args=(job_id, req.session_id, output_dir, default_params, params_by_photo,
               _render_mode(req.render_backend, req.use_gpu),
               {key: value.values() for key, value in req.basic_params_by_photo.items()},
-              _basic_mode(req.basic_backend, _render_mode(req.render_backend, req.use_gpu))),
+              _basic_mode(req.basic_backend, _render_mode(req.render_backend, req.use_gpu)),
+              default_auto_mode, auto_modes_by_photo),
         name=f"enhance-{job_id[:8]}", daemon=True,
     )
     job["_thread"] = thread
@@ -1635,10 +1745,10 @@ def _ricoh_public_job(job: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy({key: value for key, value in job.items() if key not in {"_cancel", "_thread"}})
 
 
-def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Path,
+def _run_ricoh_job(job_id: str, session_id: str, preset_id: str | None, output_dir: Path,
                    basic_params_by_photo: Mapping[str, dict[str, float]] | None = None,
-                   preset_ids_by_photo: Mapping[str, str] | None = None,
-                   ricoh_backend: str = "python") -> None:
+                   preset_ids_by_photo: Mapping[str, str | None] | None = None,
+                   ricoh_backend: str = "python", basic_backend: str = "python") -> None:
     with _ENHANCE_LOCK:
         job = _RICOH_JOBS[job_id]
         records = list(_ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).items())
@@ -1664,22 +1774,29 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Pat
                 else source16
             )
             basic = (basic_params_by_photo or {}).get(photo_id)
-            effected_display16 = _render_ricoh(display16, photo_preset_id, basic,
-                                                ricoh_backend)
+            if photo_preset_id is None:
+                effected_display16 = _render_basic(
+                    display16, basic or BasicParamsRequest().values(), basic_backend,
+                )
+            else:
+                effected_display16 = _render_ricoh(display16, photo_preset_id, basic,
+                                                    ricoh_backend)
             effected_linear16 = _srgb16_to_linear16(effected_display16)
             output_path = write_linear_dng(
                 effected_linear16, path, output_dir, dict(metadata.exif), bits_per_sample=16,
                 name_suffix="_ricoh",
             )
-            # The exported DNG already contains rendered preset pixels. Keep
-            # Camera Raw adjustments on the source only, or Adobe would apply
-            # the same look a second time when opening the DNG.
-            xmp_status: dict[str, str] = {"source": "failed", "output": "rendered"}
-            try:
-                write_ricoh_preset(path, photo_preset_id, basic)
-                xmp_status["source"] = "written"
-            except Exception:
+            # The exported DNG already contains its rendered appearance. Keep
+            # Camera Raw preset adjustments on the source only, or Adobe would
+            # apply the same look a second time when opening the DNG.
+            xmp_status: dict[str, str] = {"source": "not_applicable", "output": "rendered"}
+            if photo_preset_id is not None:
                 xmp_status["source"] = "failed"
+                try:
+                    write_ricoh_preset(path, photo_preset_id, basic)
+                    xmp_status["source"] = "written"
+                except Exception:
+                    xmp_status["source"] = "failed"
             with _ENHANCE_LOCK:
                 item.update({
                     "status": "success",
@@ -1704,8 +1821,9 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str, output_dir: Pat
 @app.post("/api/ricoh/run")
 def run_ricoh(req: RicohRunRequest):
     valid_preset_ids = {preset["id"] for preset in list_ricoh_presets()}
-    if req.preset_id not in valid_preset_ids or any(
-        preset_id not in valid_preset_ids for preset_id in req.preset_ids_by_photo.values()
+    if (req.preset_id is not None and req.preset_id not in valid_preset_ids) or any(
+        preset_id is not None and preset_id not in valid_preset_ids
+        for preset_id in req.preset_ids_by_photo.values()
     ):
         return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     with _ENHANCE_LOCK:
@@ -1748,7 +1866,7 @@ def run_ricoh(req: RicohRunRequest):
         target=_run_ricoh_job,
         args=(job_id, req.session_id, req.preset_id, output_dir,
               {key: value.values() for key, value in req.basic_params_by_photo.items()},
-              dict(req.preset_ids_by_photo), req.ricoh_backend),
+              dict(req.preset_ids_by_photo), req.ricoh_backend, req.basic_backend),
         name=f"ricoh-{job_id[:8]}", daemon=True,
     )
     job["_thread"] = thread

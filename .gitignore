@@ -151,3 +151,6 @@ models/clip-vit-large-patch14/
 *.erf
 *.mef
 *.mos
+
+test_images/
+qa/

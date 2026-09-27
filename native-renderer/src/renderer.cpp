@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -99,6 +100,51 @@ struct im_renderer {
 };
 
 extern "C" {
+
+im_status im_native_dehaze_spatial_run(const uint16_t *rgb16, uint32_t width, uint32_t height,
+                                       const float *transmission, size_t transmission_count,
+                                       const float *airlight_rgb, const im_dehaze_params *params,
+                                       uint16_t *destination, size_t destination_samples) {
+    if (!rgb16 || !transmission || !airlight_rgb || !params || !destination ||
+        width == 0 || height == 0 || width > 65535 || height > 65535 ||
+        !valid_dehaze(*params)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    const uint64_t pixels64 = static_cast<uint64_t>(width) * height;
+    if (pixels64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        pixels64 > (1ull << 29) / 3) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    const size_t pixels = static_cast<size_t>(pixels64);
+    const size_t required_samples = pixels * 3;
+    if (transmission_count != pixels || destination_samples < required_samples) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t channel = 0; channel < 3; ++channel) {
+        if (!std::isfinite(airlight_rgb[channel])) return IM_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t pixel = 0; pixel < pixels; ++pixel) {
+        if (!std::isfinite(transmission[pixel])) return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (params->strength <= 1e-6f) {
+        std::memmove(destination, rgb16, required_samples * sizeof(uint16_t));
+        return IM_STATUS_OK;
+    }
+
+    try {
+        imprint::apply_dehaze_spatial_reference(rgb16, width, height, transmission,
+                                                airlight_rgb, *params, destination);
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &) {
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
 
 im_status im_renderer_create(im_backend_kind backend, im_renderer **out_renderer) {
     if (!out_renderer) return IM_STATUS_INVALID_ARGUMENT;
