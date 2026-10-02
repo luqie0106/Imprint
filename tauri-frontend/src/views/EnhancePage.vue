@@ -6,9 +6,9 @@ import { BASE_URL } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
 import {
   autoSaveError, clearAutoSaveErrors, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
-  sharedDehazeAutoByPhoto, sharedDehazeByPhoto, sharedPhotoSource, sharedPresetByPhoto,
+  sharedDehazeAlgorithmByPhoto, sharedDehazeAutoByPhoto, sharedDehazeByPhoto, sharedPhotoSource, sharedPresetByPhoto,
   sharedSelectedPhotoId, sharePhotoSource,
-  type DehazeParams, type PhotoSource,
+  type DehazeAlgorithm, type DehazeParams, type PhotoSource,
 } from "../stores/photoSource";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
@@ -16,7 +16,7 @@ import {
   Maximize2, Minus, Plus, Rows2, Sparkles,
 } from "lucide-vue-next";
 
-interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: Partial<DehazeParams> | null; dehaze_auto_mode?: boolean; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
+interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: Partial<DehazeParams> | null; dehaze_algorithm?: DehazeAlgorithm; dehaze_auto_mode?: boolean; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
 interface JobFile { photo_id: string; name: string; status: string; output?: string; error?: string }
 interface EnhanceJob {
   job_id: string; status: string; total: number; processed: number; success: number;
@@ -102,8 +102,11 @@ let fullResolutionTimer: number | undefined;
 let previewGeneration = 0;
 let previewController: AbortController | undefined;
 let pollTimer: number | undefined;
-let displayedPhotoId = "";
-let displayedSessionId = "";
+const displayedPhotoId = ref("");
+const displayedSessionId = ref("");
+let sliderAdjusting = false;
+let sliderChanged = false;
+let sliderFinishing = false;
 
 const params = computed<EnhanceParams>(() => paramsByPhoto.value[selectedId.value] ?? emptyParams.value);
 const dehazeAutoMode = computed({
@@ -121,6 +124,9 @@ const previewImageUrl = computed(() => {
   if (previewMode.value !== "original" && enhancedReady.value) return enhancedUrl.value;
   return originalUrl.value;
 });
+const hasCurrentPreview = computed(() => Boolean(originalUrl.value)
+  && displayedPhotoId.value === selectedId.value
+  && displayedSessionId.value === sessionId.value);
 
 const fitWidth = computed(() => {
   if (!imageWidth.value || !imageHeight.value || !viewportWidth.value || !viewportHeight.value) {
@@ -151,7 +157,6 @@ const revealMenuLabel = computed(() => {
   if (/Win/i.test(platform)) return "在文件资源管理器中显示";
   return "在文件管理器中显示";
 });
-
 function thumbnailUrl(file: SessionFile) {
   const baseUrl = BASE_URL.value;
   if (!baseUrl || !sessionId.value || !file.photo_id) return "";
@@ -394,6 +399,7 @@ async function saveXmp() {
         session_id: sessionId.value,
         params_by_photo: Object.fromEntries(files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? emptyParams.value)])),
         auto_modes_by_photo: { ...sharedDehazeAutoByPhoto.value },
+        algorithms_by_photo: Object.fromEntries(files.value.map(file => [file.photo_id, sharedDehazeAlgorithmByPhoto.value[file.photo_id] ?? "physical"])),
         basic_params_by_photo: basicByPhoto.value,
         preset_ids_by_photo: Object.fromEntries(files.value.map(file => [file.photo_id, sharedPresetByPhoto.value[file.photo_id] ?? null])),
       }),
@@ -468,7 +474,7 @@ async function fetchPreview(
   const response = await fetch(`${BASE_URL.value}/api/enhance/preview`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      session_id: context.sessionId, photo_id: context.photoId, params: context.params,
+      session_id: context.sessionId, photo_id: context.photoId, algorithm: "physical", params: context.params,
       auto_mode: context.autoMode,
       basic_params: context.basicParams,
       ricoh_preset_id: context.ricohPresetId,
@@ -523,8 +529,8 @@ async function refreshPreview(
     releaseUrl(enhancedUrl.value);
     enhancedUrl.value = enhanced.url;
     stagedAssets.length = 0;
-    displayedPhotoId = context.photoId;
-    displayedSessionId = context.sessionId;
+    displayedPhotoId.value = context.photoId;
+    displayedSessionId.value = context.sessionId;
     const width = enhanced.width || original?.width || 0;
     const height = enhanced.height || original?.height || 0;
     imageWidth.value = width || imageWidth.value;
@@ -540,8 +546,8 @@ async function refreshPreview(
     for (const asset of stagedAssets) releaseUrl(asset.url);
     if (generation === previewGeneration && !(error instanceof DOMException && error.name === "AbortError")) {
       const reason = error instanceof Error ? error.message : String(error);
-      const hasCurrentLowResolution = displayedPhotoId === context.photoId
-        && displayedSessionId === context.sessionId
+      const hasCurrentLowResolution = displayedPhotoId.value === context.photoId
+        && displayedSessionId.value === context.sessionId
         && imageSize.value.startsWith("低分辨率预览");
       previewError.value = fullResolution && hasCurrentLowResolution
         ? `全分辨率预览失败，继续显示低分辨率预览。${reason}`
@@ -553,7 +559,9 @@ async function refreshPreview(
   }
 }
 
-function schedulePreview(includeOriginal = false) {
+type PreviewSchedule = "progressive" | "dragging" | "settled";
+
+function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "progressive") {
   window.clearTimeout(previewTimer);
   window.clearTimeout(intermediatePreviewTimer);
   window.clearTimeout(fullResolutionTimer);
@@ -565,8 +573,8 @@ function schedulePreview(includeOriginal = false) {
   }
   const context = capturePreviewContext();
   const shouldFetchOriginal = includeOriginal
-    || displayedPhotoId !== context.photoId
-    || displayedSessionId !== context.sessionId
+    || displayedPhotoId.value !== context.photoId
+    || displayedSessionId.value !== context.sessionId
     || !originalUrl.value;
   previewError.value = "";
   previewLoading.value = true;
@@ -579,26 +587,46 @@ function schedulePreview(includeOriginal = false) {
     generation, context, shouldFetchOriginal, 2, false,
   );
   const ensureIntermediatePreview = () => intermediatePreviewTask ??= (async () => {
-    await ensureFastPreview();
+    if (schedule === "progressive") await ensureFastPreview();
     if (generation === previewGeneration)
       await refreshPreview(generation, context, true, 0, false);
   })();
-  previewTimer = window.setTimeout(() => {
-    void ensureFastPreview();
-  }, 140);
+  if (schedule !== "settled") {
+    previewTimer = window.setTimeout(() => { void ensureFastPreview(); }, 140);
+  }
+  if (schedule === "dragging") return;
   intermediatePreviewTimer = window.setTimeout(() => {
     void ensureIntermediatePreview();
-  }, 425);
+  }, schedule === "settled" ? 140 : 425);
   fullResolutionTimer = window.setTimeout(() => {
-    // Fit view already has enough pixels at L0. Decoding and processing a
-    // full-resolution RAW after every slider edit keeps the sidecar busy long
-    // after the browser has aborted its old request.
-    if (zoom.value <= 1.5) return;
     void (async () => {
       await ensureIntermediatePreview();
       if (generation === previewGeneration) await refreshPreview(generation, context, true, 0, true);
     })();
-  }, 800);
+  }, schedule === "settled" ? 900 : 800);
+}
+
+function scheduleParameterPreview() {
+  if (sliderAdjusting) sliderChanged = true;
+  schedulePreview(false, sliderAdjusting ? "dragging" : "progressive");
+}
+
+function beginSliderInteraction() {
+  sliderAdjusting = true;
+  sliderChanged = false;
+  sliderFinishing = false;
+}
+
+function endSliderInteraction() {
+  if (!sliderAdjusting || sliderFinishing) return;
+  sliderFinishing = true;
+  // Let the range input's final value reach v-model before capturing parameters.
+  void nextTick(() => {
+    sliderAdjusting = false;
+    sliderFinishing = false;
+    if (sliderChanged) schedulePreview(false, "settled");
+    sliderChanged = false;
+  });
 }
 
 function resetParams() {
@@ -652,6 +680,7 @@ async function startBatch() {
         params: cloneParams(params.value),
         params_by_photo: paramsByPhotoPayload,
         auto_modes_by_photo: { ...sharedDehazeAutoByPhoto.value },
+        algorithms_by_photo: Object.fromEntries(files.value.map(file => [file.photo_id, sharedDehazeAlgorithmByPhoto.value[file.photo_id] ?? "physical"])),
         basic_params_by_photo: basicByPhoto.value,
         render_backend: renderBackend.value, basic_backend: basicBackend.value,
       }),
@@ -683,9 +712,9 @@ watch(selectedId, () => {
   if (originalUrl.value) imageSize.value = "正在载入低分辨率预览，暂显上一张照片";
   schedulePreview(true);
 });
-watch(params, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
+watch(params, () => { scheduleParameterPreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
 watch(dehazeAutoMode, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); });
-watch(basicParams, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
+watch(basicParams, () => { scheduleParameterPreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
 watch(ricohPresetId, () => schedulePreview());
 watch(renderBackend, () => {
   if (sessionId.value && selectedId.value) schedulePreview();
@@ -694,11 +723,6 @@ watch([basicBackend, ricohBackend], () => {
   if (sessionId.value && selectedId.value) schedulePreview();
 });
 watch([fitWidth, fitHeight], clampPan);
-watch(zoom, (value, previous) => {
-  if (value > 1.5 && previous <= 1.5 && sessionId.value && selectedId.value) {
-    schedulePreview();
-  }
-});
 watch(sharedPhotoSource, (source) => {
   if (source?.owner === "ricoh") adoptSession(source);
 }, { immediate: true });
@@ -709,6 +733,8 @@ watch(sharedSelectedPhotoId, photoId => {
 onMounted(() => {
   window.addEventListener("keydown", onWindowKeyDown);
   window.addEventListener("blur", closeRevealMenu);
+  window.addEventListener("pointerup", endSliderInteraction);
+  window.addEventListener("pointercancel", endSliderInteraction);
   updateViewportSize();
   if (previewViewport.value) {
     resizeObserver = new ResizeObserver(updateViewportSize);
@@ -720,6 +746,8 @@ onBeforeUnmount(() => {
   closeRevealMenu();
   window.removeEventListener("keydown", onWindowKeyDown);
   window.removeEventListener("blur", closeRevealMenu);
+  window.removeEventListener("pointerup", endSliderInteraction);
+  window.removeEventListener("pointercancel", endSliderInteraction);
   releaseUrl(originalUrl.value); releaseUrl(enhancedUrl.value);
   previewGeneration += 1;
   previewController?.abort();
@@ -821,7 +849,7 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div v-if="!originalUrl" class="text-center text-slate-400"><Images class="mx-auto mb-3 h-10 w-10" /><p class="text-sm">选择照片开始预览</p></div>
-            <div v-if="previewLoading" class="absolute inset-0 flex items-center justify-center bg-white/45 backdrop-blur-[1px] dark:bg-black/35"><LoaderCircle class="h-7 w-7 animate-spin text-blue-600" /></div>
+            <div v-if="previewLoading && !hasCurrentPreview" class="absolute inset-0 flex items-center justify-center bg-white/45 backdrop-blur-[1px] dark:bg-black/35"><LoaderCircle class="h-7 w-7 animate-spin text-blue-600" /></div>
           </div>
           <div v-if="previewError" class="flex items-center gap-2 border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs text-rose-600 dark:border-rose-950 dark:bg-rose-950/30 dark:text-rose-300"><AlertCircle class="h-4 w-4" />{{ previewError }}</div>
         </section>
@@ -860,7 +888,7 @@ onBeforeUnmount(() => {
           <p class="mb-3 text-[11px] text-slate-500">作用于当前照片；调整后自动保存到 XMP，可在 Camera Raw 继续调整。</p>
           <label v-for="item in basicControls" :key="item.key" class="mb-3 block text-[11px]">
             <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-500">{{ basicParams[item.key] > 0 ? '+' : '' }}{{ basicParams[item.key] }}</span></span>
-            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" />
+            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" @pointerdown="beginSliderInteraction" />
           </label>
         </section>
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -872,14 +900,14 @@ onBeforeUnmount(() => {
               <input v-model="dehazeAutoMode" type="checkbox" class="h-4 w-4 accent-blue-600" />
             </label>
             <p v-if="dehazeAutoMode" class="mb-3 text-[11px] leading-5 text-slate-500 dark:text-zinc-400">自动分析照片并调整去朦胧效果。关闭后可手动微调高级参数。</p>
-            <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" /></label>
+            <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" @pointerdown="beginSliderInteraction" /></label>
             <template v-if="!dehazeAutoMode">
               <button type="button" @click="advancedOpen = !advancedOpen" :aria-expanded="advancedOpen" class="mt-4 flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-medium dark:border-zinc-800">高级参数<ChevronDown class="h-3.5 w-3.5 transition" :class="advancedOpen ? 'rotate-180' : ''" /></button>
               <div v-if="advancedOpen" class="mt-3 space-y-3">
                 <label v-for="item in advancedParameters" :key="item.key" class="block text-[11px]">
                   <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item.key] * 100) }}</span></span>
                   <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ item.description }}</span>
-                  <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" />
+                  <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" @pointerdown="beginSliderInteraction" />
                 </label>
                 <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-blue-400">
                   收起高级参数 <ChevronUp class="h-3.5 w-3.5" />

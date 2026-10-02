@@ -93,6 +93,37 @@ IMPRINT_API im_status im_native_dehaze_spatial_run(const uint16_t *rgb16,
                                                     uint16_t *destination,
                                                     size_t destination_samples);
 
+/* GPU spatial dehaze using a per-pixel transmission map. The renderer must be
+   Metal or D3D12; unsupported backends return an error. Input is unchanged. */
+IMPRINT_API im_status im_renderer_render_spatial_full(im_renderer *renderer,
+                                                      uint32_t width,
+                                                      uint32_t height,
+                                                      const uint16_t *rgb16,
+                                                      size_t value_count,
+                                                      const float *transmission,
+                                                      size_t transmission_count,
+                                                      const float *airlight_rgb,
+                                                      const im_dehaze_params *params,
+                                                      uint16_t *destination,
+                                                      size_t destination_samples);
+
+/* Confidence-limited physical dehaze on normalized linear float RGB. The
+   renderer must provide this optional operator (currently Metal only).
+   source_values and transmission_count must exactly match width*height*3 and
+   width*height; destination_values must be at least width*height*3. All input
+   samples and airlight values must be finite and within [0, 1]. */
+IMPRINT_API im_status im_renderer_render_physical_float(im_renderer *renderer,
+                                                        uint32_t width,
+                                                        uint32_t height,
+                                                        const float *source,
+                                                        size_t source_values,
+                                                        const float *transmission,
+                                                        size_t transmission_count,
+                                                        const float *airlight_rgb,
+                                                        const im_dehaze_params *params,
+                                                        float *destination,
+                                                        size_t destination_values);
+
 /* Curves are 3 x 256 RGB16 samples (R plane, then G, then B).
    A 3D LUT is optional; its RGB16 entries are ordered ((r * edge + g) * edge + b) * 3 + channel. */
 IMPRINT_API im_status im_renderer_create(im_backend_kind backend, im_renderer **out_renderer);

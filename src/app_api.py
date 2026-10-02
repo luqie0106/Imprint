@@ -8,8 +8,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import copy
+import ctypes
+import ctypes.util
 from collections import OrderedDict
 from dataclasses import asdict
+from functools import lru_cache
 import json
 import os
 import shutil
@@ -59,11 +62,10 @@ from model_manager import (
 )
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
 from dehaze import ALGORITHM_VERSION as DEHAZE_ALGORITHM_VERSION
-from dehaze import DehazeParams, apply_dehaze, get_gpu_status
-from dehaze_spatial import apply_spatial_dehaze
+from dehaze import DehazeParams
+from dehaze_physical import apply_physical_dehaze, get_last_physical_backend
 from native_renderer import (
-    get_native_status, get_native_spatial_status, native_dehaze,
-    native_dehaze_preview, native_basic, native_ricoh,
+    get_native_status, get_native_physical_status, native_basic, native_ricoh,
 )
 from native_sort import get_native_sort_status
 from dng_writer import write_enhanced_dng, write_linear_dng
@@ -83,17 +85,21 @@ from measured_response import standard_preview_to_srgb
 from lens_correction import (
     LensCorrectionError,
     LensCorrectionNotAppliedError,
+    LensCorrectionResult,
     LensMatchError,
     LensfunUnavailableError,
     apply_lens_correction,
 )
+from dng_gainmap import apply_dng_gain_map
+
+LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-v1"
 
 import io
 import cv2
 import onnx
 import onnxruntime as ort
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageCms, ImageOps
 import rawpy
 from ricoh_filter import (
     apply_ricoh_preset_to_session,
@@ -247,6 +253,7 @@ class EnhancePreviewRequest(BaseModel):
     photo_id: str
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
     auto_mode: bool = False
+    algorithm: Literal["physical"] = "physical"
     basic_params: BasicParamsRequest = Field(default_factory=BasicParamsRequest)
     max_edge: int = Field(default=1800, ge=320, le=3000)
     preview_level: Literal[0, 1, 2] = 0
@@ -272,6 +279,7 @@ class EnhanceRunRequest(BaseModel):
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
     auto_mode: bool = False
     auto_modes_by_photo: dict[str, bool] = Field(default_factory=dict)
+    algorithms_by_photo: dict[str, Literal["physical"]] = Field(default_factory=dict)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
     use_gpu: bool = False
     render_backend: Literal["auto", "native", "pytorch", "cpu"] | None = None
@@ -288,6 +296,7 @@ class EnhanceXmpRequest(BaseModel):
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
     auto_mode: bool = False
     auto_modes_by_photo: dict[str, bool] = Field(default_factory=dict)
+    algorithms_by_photo: dict[str, Literal["physical"]] = Field(default_factory=dict)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
     preset_ids_by_photo: dict[str, str | None] = Field(default_factory=dict)
 
@@ -306,6 +315,7 @@ class PhotoSettingsRequest(BaseModel):
     photo_id: str
     dehaze_params: EnhanceParamsRequest
     auto_mode: bool = False
+    dehaze_algorithm: Literal["physical"] = "physical"
     basic_params: BasicParamsRequest
     ricoh_preset_id: str | None = Field(default=None, min_length=1, max_length=80)
 
@@ -569,25 +579,154 @@ def _basic_mode(basic_backend: str | None, render_mode: str) -> str:
     return "native" if render_mode in ("auto", "native") else "python"
 
 
+@lru_cache(maxsize=1)
+def _load_lcms2() -> Any:
+    """Load Pillow's bundled LittleCMS for RGB16 ICC transforms."""
+    candidates: list[str] = []
+    pil_dir = Path(ImageCms.__file__).resolve().parent
+    for pattern in (
+        ".dylibs/liblcms2*.dylib", ".libs/liblcms2*.so*", "lcms2.dll",
+        "liblcms2.dll", "liblcms2*.dylib", "liblcms2*.so*",
+    ):
+        candidates.extend(str(candidate) for candidate in sorted(pil_dir.glob(pattern)))
+    discovered = ctypes.util.find_library("lcms2")
+    if discovered:
+        candidates.append(discovered)
+    errors = []
+    for candidate in dict.fromkeys(candidates):
+        try:
+            library = ctypes.CDLL(candidate)
+            library.cmsOpenProfileFromMem.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            library.cmsOpenProfileFromMem.restype = ctypes.c_void_p
+            library.cmsCreate_sRGBProfile.argtypes = []
+            library.cmsCreate_sRGBProfile.restype = ctypes.c_void_p
+            library.cmsCreateTransform.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p,
+                ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ]
+            library.cmsCreateTransform.restype = ctypes.c_void_p
+            library.cmsDoTransform.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+            ]
+            library.cmsDoTransform.restype = None
+            library.cmsDeleteTransform.argtypes = [ctypes.c_void_p]
+            library.cmsDeleteTransform.restype = None
+            library.cmsCloseProfile.argtypes = [ctypes.c_void_p]
+            library.cmsCloseProfile.restype = ctypes.c_int
+            return library
+        except (OSError, AttributeError) as exc:
+            errors.append(str(exc))
+    detail = errors[-1] if errors else "LittleCMS library not found"
+    raise RuntimeError(f"无法加载 LittleCMS 进行 16-bit ICC 色彩转换: {detail}")
+
+
+def _icc_rgb16_to_srgb(image: np.ndarray, profile_bytes: bytes) -> np.ndarray:
+    """Transform uint16 RGB through ICC without reducing it to 8-bit."""
+    if not profile_bytes:
+        return image
+    lcms = _load_lcms2()
+    profile_buffer = ctypes.create_string_buffer(profile_bytes)
+    source_profile = lcms.cmsOpenProfileFromMem(
+        ctypes.cast(profile_buffer, ctypes.c_void_p), len(profile_bytes),
+    )
+    if not source_profile:
+        raise ValueError("无法读取照片中的 ICC 色彩配置")
+    target_profile = lcms.cmsCreate_sRGBProfile()
+    if not target_profile:
+        lcms.cmsCloseProfile(source_profile)
+        raise RuntimeError("无法创建 sRGB 色彩配置")
+    # LittleCMS TYPE_RGB_16: PT_RGB=4, three channels and two bytes/sample.
+    rgb16_format = (4 << 16) | (3 << 3) | 2
+    transform = lcms.cmsCreateTransform(
+        source_profile, rgb16_format, target_profile, rgb16_format, 0, 0,
+    )
+    if not transform:
+        lcms.cmsCloseProfile(source_profile)
+        lcms.cmsCloseProfile(target_profile)
+        raise ValueError("无法将照片 ICC 色彩配置转换到 sRGB")
+    source = np.ascontiguousarray(image, dtype=np.uint16)
+    output = np.empty_like(source)
+    try:
+        pixel_count = int(source.shape[0]) * int(source.shape[1])
+        lcms.cmsDoTransform(
+            transform,
+            ctypes.c_void_p(source.ctypes.data),
+            ctypes.c_void_p(output.ctypes.data),
+            pixel_count,
+        )
+    finally:
+        lcms.cmsDeleteTransform(transform)
+        lcms.cmsCloseProfile(source_profile)
+        lcms.cmsCloseProfile(target_profile)
+    return output
+
+
+def _standard_rgb_to_srgb(image: np.ndarray, path: Path) -> np.ndarray:
+    """Apply the embedded RGB profile while retaining high-bit-depth samples."""
+    if image.dtype == np.uint8:
+        return standard_preview_to_srgb(image, path)
+    with Image.open(path) as source:
+        profile_bytes = source.info.get("icc_profile")
+    if not profile_bytes:
+        return image
+    if image.dtype == np.uint16:
+        return _icc_rgb16_to_srgb(image, profile_bytes)
+    if image.dtype == np.float32:
+        encoded16 = np.clip(np.rint(image * 65535.0), 0, 65535).astype(np.uint16)
+        return _icc_rgb16_to_srgb(encoded16, profile_bytes).astype(np.float32) / 65535.0
+    raise TypeError("ICC 色彩转换仅支持 8-bit、16-bit 或归一化 float32 RGB")
+
+
+def _prepare_dehaze_input(
+    image: np.ndarray, metadata: Any, path: str | Path, *, color_manage_srgb: bool,
+) -> np.ndarray:
+    """Convert decoded pixels to contiguous linear float32 RGB for the core."""
+    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("去朦胧输入必须是 RGB 图像")
+    source_kind = getattr(metadata, "source_kind", "")
+    is_raw = source_kind == "raw"
+    already_linear = is_raw or getattr(metadata, "color_space", "") == "Linear sRGB"
+    working = image
+    if not already_linear and color_manage_srgb:
+        working = _standard_rgb_to_srgb(image, Path(path))
+    if working.dtype == np.uint8:
+        normalized = working.astype(np.float32) / 255.0
+    elif working.dtype == np.uint16:
+        normalized = working.astype(np.float32) / 65535.0
+    elif working.dtype == np.float32:
+        normalized = working
+    else:
+        raise TypeError("去朦胧输入仅支持 uint8、uint16 或 float32 RGB")
+    if not np.isfinite(normalized).all() or np.any(normalized < 0) or np.any(normalized > 1):
+        raise ValueError("去朦胧输入像素必须有限且位于 [0, 1]")
+    if already_linear:
+        return np.ascontiguousarray(normalized, dtype=np.float32)
+    encoded = normalized
+    linear = np.where(
+        encoded <= 0.04045,
+        encoded / 12.92,
+        np.power((encoded + 0.055) / 1.055, 2.4),
+    )
+    return np.ascontiguousarray(linear, dtype=np.float32)
+
+
+def _linear_float_to_uint16(image: np.ndarray) -> np.ndarray:
+    if image.dtype != np.float32 or image.ndim != 3 or image.shape[2] != 3:
+        raise TypeError("线性去朦胧结果必须是 float32 RGB")
+    if not np.isfinite(image).all():
+        raise ValueError("线性去朦胧结果包含非有限值")
+    return np.clip(np.rint(image * 65535.0), 0, 65535).astype(np.uint16)
+
+
 def _render_dehaze(image: np.ndarray, params: DehazeParams, mode: str,
                    auto_mode: bool = False) -> np.ndarray:
-    if auto_mode:
-        # The spatial map is shared by the native C++ and Python reference
-        # paths. Native selection uses the C++ pixel operator when available.
-        return apply_spatial_dehaze(image, params, backend=mode)
-    if mode == "legacy_gpu":
-        return apply_dehaze(image, params, backend="auto")
-    if mode in ("auto", "native"):
-        try:
-            return native_dehaze(image, params)
-        except Exception:
-            pass
-    if mode in ("auto", "pytorch"):
-        status = get_gpu_status()
-        for candidate in ("cuda", "mps"):
-            if candidate in status["backends"]:
-                return apply_dehaze(image, params, backend=candidate)
-    return apply_dehaze(image, params, backend="cpu")
+    """Render linear float RGB through the single physical dehaze operator."""
+    # Historical GPU settings now prefer the optional float native operator.
+    # CPU fallback always retains the same inverse, including older bundles.
+    backend = "native" if mode == "native" else (
+        "auto" if mode in ("auto", "legacy_gpu", "pytorch") else "cpu"
+    )
+    return apply_physical_dehaze(image, params, backend=backend, spatial=auto_mode)
 
 
 def _render_basic(image: np.ndarray, basic: dict[str, float], mode: str) -> np.ndarray:
@@ -646,6 +785,23 @@ def _cached_processing_preview(
     return result
 
 
+def _correct_enhanced_raw(
+    image: np.ndarray, metadata: Any, path: Path, *, require_correction: bool = False,
+    preview: bool = False,
+) -> tuple[np.ndarray, Any, bool]:
+    """Use the same lens and DNG gain corrections for preview and export."""
+    is_raw = getattr(metadata, "source_kind", "") == "raw"
+    if preview and not is_raw:
+        return image, LensCorrectionResult(False, None, None, False, False, False), False
+    corrected, lens_result = apply_lens_correction(
+        to_uint16(image), metadata, require_correction=is_raw and require_correction,
+    )
+    gain_map_applied = False
+    if is_raw and path.suffix.lower() == ".dng" and not lens_result.vignetting_applied:
+        corrected, gain_map_applied = apply_dng_gain_map(corrected, path)
+    return corrected, lens_result, gain_map_applied
+
+
 def _cached_dehazed_display_preview(
     session_id: str,
     photo_id: str,
@@ -662,7 +818,8 @@ def _cached_dehazed_display_preview(
     dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
     key = (
         session_id, photo_id, stat.st_mtime_ns, stat.st_size,
-        DEHAZE_ALGORITHM_VERSION, dehaze_values, max_edge, preview_level, backend,
+        DEHAZE_ALGORITHM_VERSION, LENS_PREVIEW_VERSION, dehaze_values,
+        max_edge, preview_level, backend,
         bool(auto_mode),
         bool(color_manage_srgb),
     )
@@ -672,48 +829,27 @@ def _cached_dehazed_display_preview(
             _DEHAZED_PREVIEW_CACHE.move_to_end(key)
             return cached
 
-    if backend in ("auto", "native") and not auto_mode:
-        native_key = (
-            session_id, photo_id, str(path), stat.st_mtime_ns, stat.st_size,
-            max_edge,
-        )
-        try:
-            dehazed, metadata = native_dehaze_preview(
-                native_key,
-                lambda: read_image(path, preview=True, max_edge=max_edge),
-                params,
-                preview_level,
-            )
-        except Exception:
-            # The native renderer is optional. Keep the same preview level
-            # when it is unavailable, using the existing Python fallback.
-            image, metadata = _cached_processing_preview(
-                session_id, photo_id, path, max_edge,
-            )
-            if preview_level:
-                scale = 2 ** preview_level
-                image = cv2.resize(image, (max(1, image.shape[1] // scale),
-                                           max(1, image.shape[0] // scale)),
-                                   interpolation=cv2.INTER_AREA)
-            dehazed = _render_dehaze(
-                image, params, "pytorch" if backend == "auto" else "cpu",
-                auto_mode=auto_mode,
-            )
-    else:
-        image, metadata = _cached_processing_preview(
-            session_id, photo_id, path, max_edge,
-        )
-        if preview_level:
-            scale = 2 ** preview_level
-            image = cv2.resize(image, (max(1, image.shape[1] // scale),
-                                       max(1, image.shape[0] // scale)),
-                               interpolation=cv2.INTER_AREA)
-        dehazed = _render_dehaze(image, params, backend, auto_mode=auto_mode)
-    display = _display_rgb8(
-        dehazed, linear=getattr(metadata, "color_space", "") == "Linear sRGB",
+    image, metadata = _cached_processing_preview(
+        session_id, photo_id, path, max_edge,
     )
-    if color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
-        display = standard_preview_to_srgb(display, path)
+    linear = _prepare_dehaze_input(
+        image, metadata, path, color_manage_srgb=color_manage_srgb,
+    )
+    if preview_level:
+        scale = 2 ** preview_level
+        linear = cv2.resize(
+            linear,
+            (max(1, linear.shape[1] // scale), max(1, linear.shape[0] // scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+        np.clip(linear, 0.0, 1.0, out=linear)
+    dehazed = _render_dehaze(
+        np.ascontiguousarray(linear, dtype=np.float32), params, backend,
+        auto_mode=auto_mode,
+    )
+    dehazed16 = _linear_float_to_uint16(dehazed)
+    corrected, _, _ = _correct_enhanced_raw(dehazed16, metadata, path, preview=True)
+    display = _display_rgb8(corrected, linear=True)
     display.setflags(write=False)
 
     if display.nbytes <= _MAX_DEHAZED_PREVIEW_BYTES:
@@ -1145,6 +1281,7 @@ def create_enhance_session(req: EnhanceSessionRequest):
                 "extension": path.suffix.lower(),
                 "dehaze_params": settings["dehaze_params"],
                 "dehaze_auto_mode": settings.get("dehaze_auto_mode", True),
+                "dehaze_algorithm": "physical",
                 "ricoh_preset_id": settings["ricoh_preset_id"],
                 "basic_params": settings["basic_params"],
             })
@@ -1244,29 +1381,37 @@ def save_enhance_session_xmp(req: EnhanceXmpRequest):
 
 @app.get("/api/enhance/gpu-status")
 def get_enhance_gpu_status():
-    """Return accelerator availability for the dehaze preview/export path."""
+    """Return only acceleration supported by the physical float renderer."""
     try:
-        return get_gpu_status()
+        status = get_native_physical_status()
+        if status.get("gpu_available") and str(status.get("backend", "")).lower() == "metal":
+            return {
+                "available": True,
+                "backends": ["metal"],
+                "recommended": "metal",
+                "label": "Metal GPU 可用",
+            }
     except Exception:
         # Device probing is best-effort.  Keep the response stable and avoid
         # exposing driver paths or exception details if an optional runtime is
         # partially installed or unavailable.
-        return {
-            "available": False,
-            "backends": [],
-            "recommended": None,
-            "label": "未检测到可用 GPU",
-        }
+        pass
+    return {
+        "available": False,
+        "backends": [],
+        "recommended": None,
+        "label": "未检测到可用 GPU",
+    }
 
 
 @app.get("/api/enhance/render-status")
 def get_enhance_render_status():
     native = get_native_status()
-    gpu = get_enhance_gpu_status()
-    torch_backends = [name for name in gpu["backends"] if name in ("cuda", "mps")]
-    return {"native": native, "spatial": get_native_spatial_status(),
+    spatial = get_native_physical_status()
+    spatial["last_used"] = get_last_physical_backend()
+    return {"native": native, "spatial": spatial,
             "sort": get_native_sort_status(), "pytorch": {
-        "available": bool(torch_backends), "backends": torch_backends,
+        "available": False, "backends": [],
     }}
 
 
@@ -1289,8 +1434,10 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     render_mode = _render_mode(req.render_backend, req.use_gpu)
     basic_mode = _basic_mode(req.basic_backend, render_mode)
     cache_key = (req.session_id, req.photo_id, stat.st_mtime_ns, stat.st_size,
-                 DEHAZE_ALGORITHM_VERSION, dehaze_values, req.max_edge,
-                 req.preview_level, bool(req.full_resolution), req.mode, bool(req.auto_mode),
+                 DEHAZE_ALGORITHM_VERSION, LENS_PREVIEW_VERSION,
+                 dehaze_values, req.max_edge,
+                 req.preview_level, bool(req.full_resolution), req.mode,
+                 req.algorithm, bool(req.auto_mode),
                  effective_preset_id, render_mode, basic_mode, req.ricoh_backend,
                  bool(req.color_manage_srgb),
                  tuple(basic[key] for key in sorted(basic)))
@@ -1328,14 +1475,18 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                         display = standard_preview_to_srgb(display, path)
                     payload = _encode_preview(display)
                 else:
+                    linear_input = _prepare_dehaze_input(
+                        image, metadata, path,
+                        color_manage_srgb=req.color_manage_srgb,
+                    )
                     enhanced = _render_dehaze(
-                        image, params, render_mode, auto_mode=req.auto_mode,
+                        linear_input, params, render_mode, auto_mode=req.auto_mode,
                     )
-                    display = _display_rgb8(
-                        enhanced, linear=getattr(metadata, "color_space", "") == "Linear sRGB",
+                    enhanced16 = _linear_float_to_uint16(enhanced)
+                    enhanced16, _, _ = _correct_enhanced_raw(
+                        enhanced16, metadata, Path(path), preview=True,
                     )
-                    if req.color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
-                        display = standard_preview_to_srgb(display, path)
+                    display = _display_rgb8(enhanced16, linear=True)
                     if effective_preset_id is not None:
                         effected = _render_ricoh(
                             display, effective_preset_id, basic, req.ricoh_backend,
@@ -1569,24 +1720,21 @@ def _run_enhance_job(
             photo_auto_mode = _select_enhance_mode(
                 photo_id, auto_modes_by_photo or {}, default_auto_mode,
             )
-            enhanced = _render_dehaze(
-                to_uint16(image), photo_params, backend, auto_mode=photo_auto_mode,
+            linear_input = _prepare_dehaze_input(
+                image, metadata, path, color_manage_srgb=True,
             )
-            corrected, correction = apply_lens_correction(
-                enhanced,
-                metadata,
-                # RAW exports must never silently succeed without a real
-                # Lensfun geometry/TCA pass. Standard RGB inputs remain
-                # exportable as required by the existing product behavior.
-                require_correction=getattr(metadata, "source_kind", "") == "raw",
+            enhanced = _render_dehaze(
+                linear_input, photo_params, backend, auto_mode=photo_auto_mode,
+            )
+            enhanced16 = _linear_float_to_uint16(enhanced)
+            corrected, correction, gain_map_applied = _correct_enhanced_raw(
+                enhanced16, metadata, Path(path), require_correction=True,
             )
             basic = (basic_params_by_photo or {}).get(photo_id)
             if basic and any(basic.values()):
-                display = (_linear16_to_srgb16(corrected)
-                           if getattr(metadata, "color_space", "") == "Linear sRGB" else corrected)
+                display = _linear16_to_srgb16(corrected)
                 adjusted = _render_basic(display, basic, basic_backend)
-                corrected = (_srgb16_to_linear16(adjusted)
-                             if getattr(metadata, "color_space", "") == "Linear sRGB" else adjusted)
+                corrected = _srgb16_to_linear16(adjusted)
             del enhanced
             if cancel_event.is_set():
                 with _ENHANCE_LOCK:
@@ -1601,6 +1749,8 @@ def _run_enhance_job(
                 operations.append("tca")
             if correction.vignetting_applied:
                 operations.append("vignetting")
+            if gain_map_applied:
+                output_metadata["DNGGainMapApplied"] = True
             if correction.applied:
                 output_metadata.update(
                     {
@@ -1652,7 +1802,7 @@ def _run_enhance_job(
                 del image
                 output_path = write_linear_dng(
                     corrected, path, output_dir, output_metadata,
-                    bits_per_sample=metadata.bit_depth,
+                    bits_per_sample=16,
                 )
             xmp_status = "failed"
             try:

@@ -857,6 +857,7 @@ def read_photo_settings(photo: str | Path) -> dict[str, object]:
     sidecar = _sidecar_path(path)
     result: dict[str, object] = {"dehaze_params": None, "ricoh_preset_id": None,
                                  "dehaze_auto_mode": True,
+                                 "dehaze_algorithm": "physical",
                                  "basic_params": {key: 0.0 for key in _BASIC_FIELDS}}
     if sidecar is None:
         return result
@@ -1091,6 +1092,7 @@ def write_dehaze_settings(photo: str | Path, params: dict[str, float],
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
         _write_dehaze_auto_mode(description, auto_mode)
+        description.set("{" + _IMPRINT_NS + "}DehazeAlgorithm", "physical")
         if basic_params is not None:
             basic = validate_basic_params(basic_params)
             preset_id = _find_simple(description, _IMPRINT_NS, "RicohPresetId")
@@ -1159,6 +1161,7 @@ def write_photo_settings(
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
         _write_dehaze_auto_mode(description, auto_mode)
+        description.set("{" + _IMPRINT_NS + "}DehazeAlgorithm", "physical")
         _atomic_write_sidecar(photo_path, _serialize_xmp(root))
         return {
             "name": (sidecar or photo_path.with_suffix(".xmp")).name,

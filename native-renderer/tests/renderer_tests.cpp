@@ -57,6 +57,9 @@ int run_null_handle_checks() {
     REQUIRE(im_native_dehaze_spatial_run(nullptr, 2, 1, transmission, 2, atmosphere,
                                           &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
             "spatial operator rejects a null image");
+    REQUIRE(im_renderer_render_spatial_full(nullptr, 2, 1, pixels, 6, transmission, 2,
+                                            atmosphere, &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
+            "GPU spatial operator rejects a null renderer");
     REQUIRE(im_native_dehaze_spatial_run(pixels, 0, 1, transmission, 0, atmosphere,
                                           &spatial_params, output, 6) == IM_STATUS_INVALID_ARGUMENT,
             "spatial operator rejects empty dimensions");
@@ -120,6 +123,40 @@ int main(int argc, char **argv) {
     }
     REQUIRE(created == IM_STATUS_OK && renderer, "create renderer");
     REQUIRE(im_renderer_backend_name(renderer)[0] != '\0', "backend name is available");
+
+    constexpr uint32_t spatial_width = 64, spatial_height = 48;
+    std::vector<uint16_t> spatial_input(static_cast<size_t>(spatial_width) * spatial_height * 3);
+    std::vector<float> spatial_map(static_cast<size_t>(spatial_width) * spatial_height);
+    for (uint32_t y = 0; y < spatial_height; ++y) {
+        for (uint32_t x = 0; x < spatial_width; ++x) {
+            const size_t pixel = static_cast<size_t>(y) * spatial_width + x;
+            const bool building = y >= 18 && x >= 16 && x < 45;
+            const uint16_t base = building ? 11000 : 44000;
+            spatial_input[pixel * 3] = base;
+            spatial_input[pixel * 3 + 1] = base + 1800;
+            spatial_input[pixel * 3 + 2] = base + 3200;
+            spatial_map[pixel] = building ? 0.48f : 0.78f;
+        }
+    }
+    const float spatial_air[] = {0.68f, 0.71f, 0.74f};
+    const im_dehaze_params spatial_params{0.9f, 0.7f, 0.55f, 0.25f, 0.35f,
+                                           0.8f, 0.75f, 0.75f, 0.7f};
+    std::vector<uint16_t> spatial_reference(spatial_input.size());
+    std::vector<uint16_t> spatial_gpu(spatial_input.size());
+    REQUIRE(im_native_dehaze_spatial_run(spatial_input.data(), spatial_width, spatial_height,
+                                          spatial_map.data(), spatial_map.size(), spatial_air,
+                                          &spatial_params, spatial_reference.data(), spatial_reference.size()) == IM_STATUS_OK,
+            "CPU spatial reference renders skyline scene");
+    REQUIRE(im_renderer_render_spatial_full(renderer, spatial_width, spatial_height,
+                                            spatial_input.data(), spatial_input.size(),
+                                            spatial_map.data(), spatial_map.size(), spatial_air,
+                                            &spatial_params, spatial_gpu.data(), spatial_gpu.size()) == IM_STATUS_OK,
+            "GPU spatial renderer renders skyline scene");
+    for (size_t i = 0; i < spatial_gpu.size(); ++i) {
+        const int difference = static_cast<int>(spatial_gpu[i]) - static_cast<int>(spatial_reference[i]);
+        REQUIRE(difference >= -256 && difference <= 256,
+                "GPU spatial output stays close to CPU reference");
+    }
 
     const im_dehaze_params dehaze{};
     const im_basic_params basic{};

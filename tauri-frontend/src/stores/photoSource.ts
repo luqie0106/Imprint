@@ -10,9 +10,11 @@ export interface DehazeParams {
   local_contrast: number; color_recovery: number; color_protection: number;
   highlight_protection: number; shadow_protection: number; brightness_protection: number;
 }
+export type DehazeAlgorithm = "physical";
 export interface SessionPhoto {
   photo_id: string; name: string; extension: string;
   dehaze_params?: Partial<DehazeParams> | null;
+  dehaze_algorithm?: DehazeAlgorithm;
   dehaze_auto_mode?: boolean;
   ricoh_preset_id?: string | null;
   basic_params?: Partial<BasicParams> | null;
@@ -38,6 +40,7 @@ export const basicDefaults: BasicParams = {
 export const sharedPhotoSource = ref<PhotoSource | null>(null);
 export const sharedSelectedPhotoId = ref("");
 export const sharedDehazeByPhoto = ref<Record<string, DehazeParams>>({});
+export const sharedDehazeAlgorithmByPhoto = ref<Record<string, DehazeAlgorithm>>({});
 export const sharedDehazeAutoByPhoto = ref<Record<string, boolean>>({});
 export const sharedBasicByPhoto = ref<Record<string, BasicParams>>({});
 export const sharedPresetByPhoto = ref<Record<string, string | null>>({});
@@ -54,6 +57,7 @@ function snapshot(photoId: string) {
     session_id: sharedPhotoSource.value?.session_id ?? "",
     photo_id: photoId,
     dehaze_params: { ...sharedDehazeByPhoto.value[photoId] },
+    dehaze_algorithm: sharedDehazeAlgorithmByPhoto.value[photoId] ?? "physical",
     auto_mode: sharedDehazeAutoByPhoto.value[photoId] ?? false,
     basic_params: { ...sharedBasicByPhoto.value[photoId] },
     ricoh_preset_id: sharedPresetByPhoto.value[photoId] ?? null,
@@ -111,6 +115,9 @@ export async function sharePhotoSource(
   saveErrors.clear();
   sharedDehazeByPhoto.value = Object.fromEntries(session.files.map(file => [
     file.photo_id, { ...session.dehaze_defaults, ...file.dehaze_params },
+  ]));
+  sharedDehazeAlgorithmByPhoto.value = Object.fromEntries(session.files.map(file => [
+    file.photo_id, "physical" as const,
   ]));
   sharedDehazeAutoByPhoto.value = Object.fromEntries(session.files.map(file => [
     file.photo_id, typeof file.dehaze_auto_mode === "boolean" ? file.dehaze_auto_mode : false,

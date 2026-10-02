@@ -13,8 +13,8 @@ const sortAvailable = ref(false);
 const sortName = ref("连拍原生算子");
 const loading = ref(false);
 const options: { value: RenderBackend; label: string; detail: string }[] = [
-  { value: "auto", label: "自动", detail: "普通去雾优先 GPU；自动空间去雾优先 C++ 算子" },
-  { value: "native", label: "原生渲染", detail: "普通去雾用 Metal / D3D12；自动空间去雾用 C++ CPU" },
+  { value: "auto", label: "自动", detail: "自动空间去雾优先 Metal / D3D12，失败时回退到 C++ CPU" },
+  { value: "native", label: "原生渲染", detail: "自动空间去雾优先 Metal / D3D12，失败时回退到 C++ CPU" },
   { value: "pytorch", label: "PyTorch", detail: "仅在已安装并可用时用于去朦胧；基础调整使用 Python" },
   { value: "cpu", label: "Python CPU", detail: "使用现有 Python 计算" },
 ];
@@ -27,14 +27,18 @@ async function refreshStatus() {
     if (!response.ok) throw new Error("检测失败");
     const data = await response.json() as {
       native?: { available?: boolean; backend?: string | null };
-      spatial?: { available?: boolean; backend?: string | null };
+      spatial?: { available?: boolean; backend?: string | null; gpu_available?: boolean; cpu_available?: boolean; last_used?: string };
       pytorch?: { available?: boolean; backends?: string[] };
       sort?: { available?: boolean; backend?: string | null };
     };
     nativeAvailable.value = Boolean(data.native?.available);
     nativeName.value = nativeAvailable.value ? `原生渲染 · ${data.native?.backend || "GPU"}` : "原生渲染 · 不可用";
     spatialAvailable.value = Boolean(data.spatial?.available);
-    spatialName.value = spatialAvailable.value ? "自动空间去雾 · C++ CPU" : "自动空间去雾 · Python CPU 回退";
+    spatialName.value = data.spatial?.gpu_available
+      ? `自动空间去雾 · ${data.spatial.backend} GPU`
+      : data.spatial?.cpu_available ? "自动空间去雾 · C++ CPU 回退" : "自动空间去雾 · Python CPU 回退";
+    if (data.spatial?.last_used && data.spatial.last_used !== "尚未处理")
+      spatialName.value += `（最近使用：${data.spatial.last_used}）`;
     pytorchAvailable.value = Boolean(data.pytorch?.available);
     pytorchName.value = pytorchAvailable.value ? `PyTorch · ${data.pytorch?.backends?.join(" / ") || "GPU"}` : "PyTorch · 不可用";
     sortAvailable.value = Boolean(data.sort?.available);

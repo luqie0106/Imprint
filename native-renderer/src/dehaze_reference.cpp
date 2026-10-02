@@ -97,7 +97,9 @@ Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageSta
     atmosphere.g = std::min(1.0f, std::max(atmosphere_floor, atmosphere.g));
     atmosphere.b = std::min(1.0f, std::max(atmosphere_floor, atmosphere.b));
 
-    const float transmission_floor = 0.27f + 0.21f * p.fog_retention + 0.11f * p.naturalness;
+    const float transmission_floor = spatial_mode
+        ? 0.20f + 0.16f * p.fog_retention + 0.08f * p.naturalness
+        : 0.27f + 0.21f * p.fog_retention + 0.11f * p.naturalness;
     float transmission = spatial_transmission;
     if (spatial_mode) {
         transmission = std::min(1.0f, std::max(transmission_floor, spatial_transmission));
@@ -107,10 +109,16 @@ Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageSta
                             (0.92f + 0.08f * stats.haze_level);
         transmission = std::min(1.0f, std::max(transmission_floor, 1.0f - omega));
     }
+    const Vec3 delta{source.r - atmosphere.r, source.g - atmosphere.g, source.b - atmosphere.b};
+    const Vec3 effective_transmission{
+        transmission + (1.0f - transmission) * std::max(delta.r, 0.0f) / std::max(1.0f - atmosphere.r, 1e-4f),
+        transmission + (1.0f - transmission) * std::max(delta.g, 0.0f) / std::max(1.0f - atmosphere.g, 1e-4f),
+        transmission + (1.0f - transmission) * std::max(delta.b, 0.0f) / std::max(1.0f - atmosphere.b, 1e-4f),
+    };
     const Vec3 recovered{
-        clamp01((source.r - atmosphere.r) / transmission + atmosphere.r),
-        clamp01((source.g - atmosphere.g) / transmission + atmosphere.g),
-        clamp01((source.b - atmosphere.b) / transmission + atmosphere.b),
+        clamp01(atmosphere.r + delta.r / effective_transmission.r),
+        clamp01(atmosphere.g + delta.g / effective_transmission.g),
+        clamp01(atmosphere.b + delta.b / effective_transmission.b),
     };
 
     const float blend = std::min(0.82f, std::max(0.0f, p.strength * (0.78f - 0.28f * p.fog_retention) *
@@ -166,7 +174,7 @@ Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageSta
                                  (1.0f - shadow_position * p.shadow_protection);
         const float requested_recovery = std::min(0.95f, std::max(0.0f,
             recovery_amount * protection * (0.95f + 0.35f * (1.0f - confidence))));
-        const float neutral_guard = p.color_protection * (1.0f - confidence) *
+        const float neutral_guard = p.color_protection * p.strength * (1.0f - confidence) *
                                     (1.08f + 0.12f * p.naturalness) * protection;
         const float correction_strength = std::min(0.95f, std::max(requested_recovery, neutral_guard));
         natural = {
@@ -179,7 +187,7 @@ Vec3 pre_brightness_pixel(Vec3 source, const im_dehaze_params &p, const ImageSta
 
     if (p.local_contrast > 1e-6f) {
         const float y = luma(natural);
-        const float contrast_amount = 0.55f * p.local_contrast;
+        const float contrast_amount = 0.55f * p.local_contrast * p.strength;
         const float contrast_y = y + contrast_amount * (2.0f * y - 1.0f) * y * (1.0f - y);
         const float ratio = contrast_y / std::max(y, 1e-4f);
         natural = {natural.r * ratio, natural.g * ratio, natural.b * ratio};
@@ -356,6 +364,56 @@ void apply_dehaze_reference(const uint16_t *rgb16, size_t pixels,
         destination[i * 3 + 1] = static_cast<uint16_t>(std::nearbyint(clamp01(result.g) * kPeak));
         destination[i * 3 + 2] = static_cast<uint16_t>(std::nearbyint(clamp01(result.b) * kPeak));
     }
+}
+
+float dehaze_spatial_brightness_gain(const uint16_t *rgb16, uint32_t width, uint32_t height,
+                                    const float *transmission, const float *airlight_rgb,
+                                    const im_dehaze_params &params) {
+    if (!rgb16 || !transmission || !airlight_rgb || !width || !height ||
+        params.strength <= 1e-6f || params.brightness_protection <= 1e-6f) return 1.0f;
+    const size_t pixels = static_cast<size_t>(width) * height;
+    const size_t stride = std::max<size_t>(1, static_cast<size_t>(
+        std::sqrt(static_cast<double>(pixels) / 250000.0)));
+    const ImageStats stats{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    std::vector<float> source_lumas;
+    std::vector<float> result_lumas;
+    source_lumas.reserve((pixels + stride * stride - 1) / (stride * stride));
+    result_lumas.reserve(source_lumas.capacity());
+    for (size_t y = 0; y < height; y += stride) {
+        for (size_t x = 0; x < width; x += stride) {
+            const size_t pixel = y * width + x;
+            const Vec3 source = read_pixel(rgb16, pixel);
+            const float source_y = luma(source);
+            if (source_y <= 0.08f || source_y >= 0.88f) continue;
+            const Vec3 before = pre_brightness_pixel(source, params, stats,
+                                                     transmission[pixel], airlight_rgb, true);
+            const Vec3 result = post_brightness_pixel(source, before, params, 1.0f);
+            // The reference first pass is RGB16, so match its quantization.
+            const Vec3 quantized{
+                std::nearbyint(clamp01(result.r) * kPeak) / kPeak,
+                std::nearbyint(clamp01(result.g) * kPeak) / kPeak,
+                std::nearbyint(clamp01(result.b) * kPeak) / kPeak,
+            };
+            const float result_y = luma(quantized);
+            if (std::isfinite(source_y) && std::isfinite(result_y)) {
+                source_lumas.push_back(source_y);
+                result_lumas.push_back(result_y);
+            }
+        }
+    }
+    if (source_lumas.size() < 8) return 1.0f;
+    const float source_median = median(source_lumas);
+    const float result_median = median(result_lumas);
+    if (source_median <= 1e-5f || result_median <= 1e-5f ||
+        !std::isfinite(source_median) || !std::isfinite(result_median)) return 1.0f;
+    const float drop_ev = std::log2(source_median / result_median);
+    if (!std::isfinite(drop_ev)) return 1.0f;
+    const float allowed_ev = 0.08f + 0.22f * params.strength;
+    const float compensation_ev = std::min(
+        0.40f, std::max(0.0f, drop_ev - allowed_ev) * params.brightness_protection);
+    if (compensation_ev <= 1e-6f || !std::isfinite(compensation_ev)) return 1.0f;
+    const float gain = std::exp2(compensation_ev);
+    return std::isfinite(gain) ? gain : 1.0f;
 }
 
 void apply_dehaze_spatial_reference(const uint16_t *rgb16, uint32_t width, uint32_t height,

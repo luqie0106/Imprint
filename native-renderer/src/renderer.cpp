@@ -146,6 +146,129 @@ im_status im_native_dehaze_spatial_run(const uint16_t *rgb16, uint32_t width, ui
     }
 }
 
+im_status im_renderer_render_spatial_full(im_renderer *renderer, uint32_t width, uint32_t height,
+                                          const uint16_t *rgb16, size_t value_count,
+                                          const float *transmission, size_t transmission_count,
+                                          const float *airlight_rgb, const im_dehaze_params *params,
+                                          uint16_t *destination, size_t destination_samples) {
+    if (!renderer || !rgb16 || !transmission || !airlight_rgb || !params || !destination ||
+        !width || !height || width > 65535 || height > 65535 || !valid_dehaze(*params))
+        return IM_STATUS_INVALID_ARGUMENT;
+    const uint64_t pixels64 = static_cast<uint64_t>(width) * height;
+    if (pixels64 > (1ull << 29) / 3 || transmission_count != pixels64 ||
+        value_count != pixels64 * 3 || destination_samples < pixels64 * 3)
+        return IM_STATUS_INVALID_ARGUMENT;
+    for (size_t channel = 0; channel < 3; ++channel)
+        if (!std::isfinite(airlight_rgb[channel])) return IM_STATUS_INVALID_ARGUMENT;
+    for (size_t pixel = 0; pixel < transmission_count; ++pixel)
+        if (!std::isfinite(transmission[pixel])) return IM_STATUS_INVALID_ARGUMENT;
+    if (params->strength <= 1e-6f) {
+        std::memmove(destination, rgb16, value_count * sizeof(uint16_t));
+        return IM_STATUS_OK;
+    }
+    try {
+        imprint::ImageLevel source;
+        source.width = width;
+        source.height = height;
+        source.pixels.assign(rgb16, rgb16 + value_count);
+        imprint::ImageStats stats{0.0f, 0.0f, airlight_rgb[0], airlight_rgb[1],
+                                  airlight_rgb[2], 0.0f, 1.0f};
+        stats.brightness_gain = imprint::dehaze_spatial_brightness_gain(
+            source.pixels.data(), width, height, transmission, airlight_rgb, *params);
+        std::string error;
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->render_spatial_full(source, transmission, stats, *params,
+                                                    destination, destination_samples, error)) {
+            renderer->error = std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while rendering spatial dehaze";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_render_physical_float(im_renderer *renderer,
+                                            uint32_t width, uint32_t height,
+                                            const float *source, size_t source_values,
+                                            const float *transmission, size_t transmission_count,
+                                            const float *airlight_rgb,
+                                            const im_dehaze_params *params,
+                                            float *destination, size_t destination_values) {
+    if (!renderer) return IM_STATUS_INVALID_ARGUMENT;
+    const auto fail = [renderer](im_status status, const char *message) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = message;
+        return status;
+    };
+    if (!source || !transmission || !airlight_rgb || !params || !destination ||
+        !width || !height || width > 65535 || height > 65535 || !valid_dehaze(*params)) {
+        return fail(IM_STATUS_INVALID_ARGUMENT, "Physical float dehaze arguments or parameters are invalid");
+    }
+
+    const uint64_t pixels64 = static_cast<uint64_t>(width) * height;
+    if (pixels64 > (1ull << 29) / 3 ||
+        pixels64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max() / 3) ||
+        source_values != pixels64 * 3 || transmission_count != pixels64 ||
+        destination_values < pixels64 * 3) {
+        return fail(IM_STATUS_INVALID_ARGUMENT, "Physical float dehaze sample counts are invalid");
+    }
+    const size_t pixels = static_cast<size_t>(pixels64);
+    const size_t values = pixels * 3;
+    for (size_t channel = 0; channel < 3; ++channel) {
+        if (!std::isfinite(airlight_rgb[channel]) || airlight_rgb[channel] < 0.0f ||
+            airlight_rgb[channel] > 1.0f) {
+            return fail(IM_STATUS_INVALID_ARGUMENT, "Physical float airlight must be finite and within [0, 1]");
+        }
+    }
+    for (size_t value = 0; value < values; ++value) {
+        if (!std::isfinite(source[value]) || source[value] < 0.0f || source[value] > 1.0f) {
+            return fail(IM_STATUS_INVALID_ARGUMENT, "Physical float source must be finite and within [0, 1]");
+        }
+    }
+    for (size_t pixel = 0; pixel < pixels; ++pixel) {
+        if (!std::isfinite(transmission[pixel]) || transmission[pixel] < 0.0f ||
+            transmission[pixel] > 1.0f) {
+            return fail(IM_STATUS_INVALID_ARGUMENT,
+                        "Physical float transmission must be finite and within [0, 1]");
+        }
+    }
+
+    if (params->strength <= 1e-6f) {
+        std::memmove(destination, source, values * sizeof(float));
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    }
+
+    try {
+        std::string error;
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->render_physical_float(width, height, source, transmission,
+                                                       airlight_rgb, *params, destination,
+                                                       destination_values, error)) {
+            renderer->error = error.empty() ? "Physical float dehaze is unavailable on this GPU backend"
+                                            : std::move(error);
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        return fail(IM_STATUS_RUNTIME_ERROR, "Insufficient memory while rendering physical float dehaze");
+    } catch (const std::exception &exception) {
+        return fail(IM_STATUS_RUNTIME_ERROR, exception.what());
+    } catch (...) {
+        return fail(IM_STATUS_RUNTIME_ERROR, "Unknown error while rendering physical float dehaze");
+    }
+}
+
 im_status im_renderer_create(im_backend_kind backend, im_renderer **out_renderer) {
     if (!out_renderer) return IM_STATUS_INVALID_ARGUMENT;
     *out_renderer = nullptr;

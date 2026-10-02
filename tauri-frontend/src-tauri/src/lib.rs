@@ -177,10 +177,74 @@ fn find_sidecar_or_script() -> (Option<PathBuf>, bool) {
     (find_app_api_script(), false)
 }
 
+/// Initialize cache directories beside the executable for the Windows portable layout.
+/// NSIS installations place the sidecar under resources/, so they intentionally keep
+/// Tauri/WebView2 and Python's default per-user cache locations.
+#[cfg(target_os = "windows")]
+fn initialize_portable_cache() -> Option<PathBuf> {
+    let exe_path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("⚠️ 无法定位当前可执行文件，保留默认缓存目录: {}", err);
+            return None;
+        }
+    };
+    let portable_root = match exe_path.parent() {
+        Some(path) => path,
+        None => {
+            eprintln!(
+                "⚠️ 无法定位 portable 根目录，保留默认缓存目录: {}",
+                exe_path.display()
+            );
+            return None;
+        }
+    };
+
+    if !portable_root.join("dist-python").is_dir() {
+        println!(
+            "ℹ️ 未检测到 exe 同级 dist-python/，按安装版或开发版运行，保留默认缓存目录。路径: {}",
+            portable_root.display()
+        );
+        return None;
+    }
+
+    let cache_root = portable_root.join("cache");
+    let directories = [
+        cache_root.clone(),
+        cache_root.join("webview"),
+        cache_root.join("temp"),
+        cache_root.join("huggingface"),
+        cache_root.join("huggingface/hub"),
+        cache_root.join("huggingface/transformers"),
+        cache_root.join("torch"),
+        cache_root.join("xdg"),
+    ];
+    for directory in &directories {
+        if let Err(err) = std::fs::create_dir_all(directory) {
+            eprintln!(
+                "⚠️ 无法创建 portable 缓存目录 {}: {}。保留默认 WebView2 profile 和 Python 临时目录。",
+                directory.display(),
+                err
+            );
+            return None;
+        }
+    }
+
+    let webview_dir = cache_root.join("webview");
+    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview_dir);
+    println!(
+        "✅ Windows portable 缓存目录已启用: {} (WebView2 profile: {})",
+        cache_root.display(),
+        webview_dir.display()
+    );
+    Some(cache_root)
+}
+
 /// 启动 Python FastAPI 后端 sidecar 并捕获分配的端口
 fn spawn_python_sidecar(
     api_port_arc: Arc<Mutex<Option<u16>>>,
     child_arc: Arc<Mutex<Option<Child>>>,
+    portable_cache: Option<PathBuf>,
 ) {
     let (script_or_exe, is_sidecar) = find_sidecar_or_script();
     let path = match script_or_exe {
@@ -226,6 +290,21 @@ fn spawn_python_sidecar(
     cmd.current_dir(&project_root);
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("PYTHONUTF8", "1");
+    if let Some(cache_root) = portable_cache {
+        let temp_dir = cache_root.join("temp");
+        cmd.env("IMPRINT_CACHE_DIR", &cache_root);
+        cmd.env("TEMP", &temp_dir);
+        cmd.env("TMP", &temp_dir);
+        cmd.env("TMPDIR", &temp_dir);
+        cmd.env("HF_HOME", cache_root.join("huggingface"));
+        cmd.env("HF_HUB_CACHE", cache_root.join("huggingface/hub"));
+        cmd.env(
+            "TRANSFORMERS_CACHE",
+            cache_root.join("huggingface/transformers"),
+        );
+        cmd.env("TORCH_HOME", cache_root.join("torch"));
+        cmd.env("XDG_CACHE_HOME", cache_root.join("xdg"));
+    }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::inherit());
 
@@ -278,8 +357,17 @@ pub fn run() {
     let api_port_arc = Arc::clone(&app_state.api_port);
     let python_child_arc = Arc::clone(&app_state.python_child);
 
+    #[cfg(target_os = "windows")]
+    let portable_cache = initialize_portable_cache();
+    #[cfg(not(target_os = "windows"))]
+    let portable_cache: Option<PathBuf> = None;
+
     // 启动 sidecar 进程
-    spawn_python_sidecar(Arc::clone(&api_port_arc), Arc::clone(&python_child_arc));
+    spawn_python_sidecar(
+        Arc::clone(&api_port_arc),
+        Arc::clone(&python_child_arc),
+        portable_cache,
+    );
 
     let python_child_for_cleanup = Arc::clone(&python_child_arc);
 

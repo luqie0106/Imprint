@@ -65,9 +65,14 @@ __device__ float3 dehaze(float3 original, const im_dehaze_params &p, const Image
                         (0.90f + 0.10f * (1.0f - p.naturalness)) * (0.92f + 0.08f * stats.haze_level);
     const float floor = 0.27f + 0.21f * p.fog_retention + 0.11f * p.naturalness;
     const float transmission = fminf(1.0f, fmaxf(floor, 1.0f - omega));
-    float3 recovered = make_float3(clamp01((original.x - air.x) / transmission + air.x),
-                                   clamp01((original.y - air.y) / transmission + air.y),
-                                   clamp01((original.z - air.z) / transmission + air.z));
+    const float3 delta = make_float3(original.x - air.x, original.y - air.y, original.z - air.z);
+    const float3 effective_transmission = make_float3(
+        transmission + (1.0f - transmission) * fmaxf(delta.x, 0.0f) / fmaxf(1.0f - air.x, 1e-4f),
+        transmission + (1.0f - transmission) * fmaxf(delta.y, 0.0f) / fmaxf(1.0f - air.y, 1e-4f),
+        transmission + (1.0f - transmission) * fmaxf(delta.z, 0.0f) / fmaxf(1.0f - air.z, 1e-4f));
+    float3 recovered = make_float3(clamp01(air.x + delta.x / effective_transmission.x),
+                                   clamp01(air.y + delta.y / effective_transmission.y),
+                                   clamp01(air.z + delta.z / effective_transmission.z));
     const float amount = fminf(0.82f, fmaxf(0.0f, p.strength * (0.78f - 0.28f * p.fog_retention) *
                                                (0.90f + 0.10f * (1.0f - p.naturalness))));
     float3 natural = make_float3(original.x * (1.0f - amount) + recovered.x * amount,
@@ -115,7 +120,7 @@ __device__ float3 dehaze(float3 original, const im_dehaze_params &p, const Image
                                  (1.0f - shadow_pos * p.shadow_protection);
         const float requested = fminf(0.95f, fmaxf(0.0f, recovery_amount * protection *
                                                           (0.95f + 0.35f * (1.0f - confidence))));
-        const float neutral_guard = p.color_protection * (1.0f - confidence) *
+        const float neutral_guard = p.color_protection * p.strength * (1.0f - confidence) *
                                     (1.08f + 0.12f * p.naturalness) * protection;
         const float correction = fminf(0.95f, fmaxf(requested, neutral_guard));
         natural = make_float3(natural_y + natural_chroma.x * (1.0f - correction) + target.x * correction,
@@ -126,7 +131,7 @@ __device__ float3 dehaze(float3 original, const im_dehaze_params &p, const Image
 
     if (p.local_contrast > 1e-6f) {
         const float current_y = luminance(natural);
-        const float amount_contrast = 0.55f * p.local_contrast;
+        const float amount_contrast = 0.55f * p.local_contrast * p.strength;
         const float curve_y = current_y + amount_contrast * (2.0f * current_y - 1.0f) * current_y * (1.0f - current_y);
         const float scale = curve_y / fmaxf(current_y, 1e-4f);
         natural = make_float3(natural.x * scale, natural.y * scale, natural.z * scale);

@@ -58,8 +58,12 @@ MLP_L14_WEIGHTS_PATH = MODELS_DIR / "aesthetic_mlp_l14.pth"
 CONFIG_FILE_PATH = PROJECT_ROOT / "config.json"
 
 # HuggingFace 系统缓存路径
-HF_HUB_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub" / "models--openai--clip-vit-base-patch32"
-HF_HUB_CACHE_L14_DIR = Path.home() / ".cache" / "huggingface" / "hub" / "models--openai--clip-vit-large-patch14"
+HF_HUB_CACHE_ROOT = Path(
+    os.environ.get("HF_HUB_CACHE")
+    or (Path.home() / ".cache" / "huggingface" / "hub")
+)
+HF_HUB_CACHE_DIR = HF_HUB_CACHE_ROOT / "models--openai--clip-vit-base-patch32"
+HF_HUB_CACHE_L14_DIR = HF_HUB_CACHE_ROOT / "models--openai--clip-vit-large-patch14"
 
 # HuggingFace 仓库信息
 CLIP_REPO_ID = "openai/clip-vit-base-patch32"

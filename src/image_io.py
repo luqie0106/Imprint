@@ -505,9 +505,8 @@ def _raw_bit_depth(raw: Any) -> int:
 
 def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
     with rawpy.imread(str(path)) as raw:
-        # Previews only use the decoded pixels, their dimensions, and color
-        # space. The source bit depth and camera metadata are needed for the
-        # full-resolution export path, where preserving them is important.
+        # Preview lens correction needs the same camera/lens EXIF as export.
+        # Only source bit depth can be skipped on the quick path.
         source_bit_depth = 16 if preview else _raw_bit_depth(raw)
         kwargs: dict[str, Any] = {
             "use_camera_wb": True,
@@ -523,31 +522,30 @@ def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
         }
         rgb = raw.postprocess(**kwargs)
         exif: dict[str, Any] = {}
-        if not preview:
-            camera = getattr(raw, "camera_whitebalance", None)
-            # Nikon and other TIFF-based RAW files commonly keep LensModel and
-            # LensSpecification in the RAW container but omit them from the
-            # embedded JPEG. Read the container first, then use the thumbnail
-            # and LibRaw only to fill fields that are genuinely absent.
-            exif = _safe_exif(path)
-            try:
-                thumb = raw.extract_thumb()
-                if thumb.format == rawpy.ThumbFormat.JPEG:
-                    with Image.open(BytesIO(thumb.data)) as thumb_image:
-                        for key, value in _exif_from_pil(thumb_image).items():
-                            _set_missing(exif, key, value)
-            except Exception:
-                pass
-            _raw_metadata(raw, exif)
-            if (
-                _metadata_candidate(exif.get("LensModel")) is None
-                or "LensSpecification" not in exif
-            ):
-                for key, value in _exiftool_lens_metadata(path).items():
-                    _set_missing(exif, key, value)
-            _fill_lens_specification(exif)
-            if camera is not None:
-                exif["CameraWhiteBalance"] = tuple(camera)
+        camera = getattr(raw, "camera_whitebalance", None)
+        # Nikon and other TIFF-based RAW files commonly keep LensModel and
+        # LensSpecification in the RAW container but omit them from the
+        # embedded JPEG. Read the container first, then use the thumbnail
+        # and LibRaw only to fill fields that are genuinely absent.
+        exif = _safe_exif(path)
+        try:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                with Image.open(BytesIO(thumb.data)) as thumb_image:
+                    for key, value in _exif_from_pil(thumb_image).items():
+                        _set_missing(exif, key, value)
+        except Exception:
+            pass
+        _raw_metadata(raw, exif)
+        if (
+            _metadata_candidate(exif.get("LensModel")) is None
+            or "LensSpecification" not in exif
+        ):
+            for key, value in _exiftool_lens_metadata(path).items():
+                _set_missing(exif, key, value)
+        _fill_lens_specification(exif)
+        if camera is not None:
+            exif["CameraWhiteBalance"] = tuple(camera)
     metadata = ImageMetadata(
         width=int(rgb.shape[1]),
         height=int(rgb.shape[0]),

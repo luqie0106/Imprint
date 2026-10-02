@@ -140,7 +140,11 @@ def _torch_dehaze(image_rgb: np.ndarray, params: "DehazeParams", device: str, to
         source = torch.from_numpy(np.ascontiguousarray(source_np)).to(device=device, dtype=torch.float32)
         weights = torch.tensor(_WEIGHTS, dtype=torch.float32, device=device)
         atmosphere_t = torch.tensor(atmosphere, dtype=torch.float32, device=device).reshape(1, 1, 3)
-        recovered = (source - atmosphere_t) / transmission + atmosphere_t
+        delta = source - atmosphere_t
+        effective_transmission = transmission + (1.0 - transmission) * torch.clamp(delta, min=0.0) / torch.clamp(
+            1.0 - atmosphere_t, min=1e-4
+        )
+        recovered = delta / effective_transmission + atmosphere_t
         recovered = torch.clamp(recovered, 0.0, 1.0)
         luminance = torch.sum(source * weights, dim=2)
         global_blend = params.strength * (0.78 - 0.28 * params.fog_retention) * (0.90 + 0.10 * (1.0 - params.naturalness))
@@ -174,14 +178,14 @@ def _torch_dehaze(image_rgb: np.ndarray, params: "DehazeParams", device: str, to
             shadow_position = shadow_position * shadow_position * (3.0 - 2.0 * shadow_position)
             protection = (1.0 - highlight_position * params.highlight_protection) * (1.0 - shadow_position * params.shadow_protection)
             requested_recovery = torch.clamp(recovery_amount * protection * (0.95 + 0.35 * (1.0 - confidence)), 0.0, 0.95)
-            neutral_guard = params.color_protection * (1.0 - confidence) * (1.08 + 0.12 * params.naturalness) * protection
+            neutral_guard = params.color_protection * params.strength * (1.0 - confidence) * (1.08 + 0.12 * params.naturalness) * protection
             correction_strength = torch.clamp(torch.maximum(requested_recovery, neutral_guard), 0.0, 0.95)
             natural = natural_luma.unsqueeze(2) + (natural_chroma * (1.0 - correction_strength.unsqueeze(2)) + target_chroma * correction_strength.unsqueeze(2))
             natural = _smooth_chroma_gamut_t(natural, torch)
 
         if params.local_contrast > 1e-6:
             luma = torch.sum(natural * weights, dim=2)
-            contrast_luma = luma + 0.55 * params.local_contrast * (2.0 * luma - 1.0) * luma * (1.0 - luma)
+            contrast_luma = luma + 0.55 * params.local_contrast * params.strength * (2.0 * luma - 1.0) * luma * (1.0 - luma)
             natural = natural * (contrast_luma / torch.clamp(luma, min=1e-4)).unsqueeze(2)
 
         highlight_position = torch.clamp((luminance - 0.58) / 0.40, 0.0, 1.0)
@@ -240,16 +244,21 @@ def _opencl_dehaze(image_rgb: np.ndarray, params: "DehazeParams") -> np.ndarray:
         cv2.ocl.setUseOpenCL(True)
         source_u = cv2.UMat(source)
         atmosphere_scalar = tuple(float(value) for value in atmosphere)
-        recovered_u = cv2.add(
-            cv2.divide(cv2.subtract(source_u, atmosphere_scalar), transmission),
-            atmosphere_scalar,
-        )
-        # A scalar passed to cv2.min/max affects only the first channel of a
-        # multi-channel UMat.  Split/merge keeps the clamp on the OpenCL device
-        # without allocating two extra full-resolution RGB constant images.
-        recovered_u = cv2.merge(
-            [cv2.min(cv2.max(channel, 0.0), 1.0) for channel in cv2.split(recovered_u)]
-        )
+        recovered_channels = []
+        for channel, air_value in zip(cv2.split(source_u), atmosphere_scalar):
+            delta = cv2.subtract(channel, air_value)
+            effective_transmission = cv2.add(
+                transmission,
+                cv2.multiply(
+                    cv2.max(delta, 0.0),
+                    (1.0 - transmission) / max(1.0 - air_value, 1e-4),
+                ),
+            )
+            recovered = cv2.add(cv2.divide(delta, effective_transmission), air_value)
+            recovered_channels.append(cv2.min(cv2.max(recovered, 0.0), 1.0))
+        # Split/merge keeps the per-channel soft shoulder and clamp on the
+        # OpenCL device without allocating full-resolution RGB constants.
+        recovered_u = cv2.merge(recovered_channels)
         blend = float(np.clip(params.strength * (0.78 - 0.28 * params.fog_retention) * (0.90 + 0.10 * (1.0 - params.naturalness)), 0.0, 0.82))
         natural_u = cv2.add(cv2.multiply(source_u, 1.0 - blend), cv2.multiply(recovered_u, blend))
         natural = natural_u.get()
@@ -291,13 +300,13 @@ def _opencl_dehaze(image_rgb: np.ndarray, params: "DehazeParams") -> np.ndarray:
         shadow_position = shadow_position * shadow_position * (3.0 - 2.0 * shadow_position)
         protection = (1.0 - highlight_position * params.highlight_protection) * (1.0 - shadow_position * params.shadow_protection)
         requested_recovery = np.clip(recovery_amount * protection * (0.95 + 0.35 * (1.0 - confidence)), 0.0, 0.95)
-        neutral_guard = params.color_protection * (1.0 - confidence) * (1.08 + 0.12 * params.naturalness) * protection
+        neutral_guard = params.color_protection * params.strength * (1.0 - confidence) * (1.08 + 0.12 * params.naturalness) * protection
         correction_strength = np.clip(np.maximum(requested_recovery, neutral_guard), 0.0, 0.95)
         natural = natural_luma[..., None] + (natural_chroma * (1.0 - correction_strength[..., None]) + target_chroma * correction_strength[..., None])
         natural = _smooth_chroma_gamut(natural)
     if params.local_contrast > 1e-6:
         luma = natural @ weights
-        contrast_luma = luma + 0.55 * params.local_contrast * (2.0 * luma - 1.0) * luma * (1.0 - luma)
+        contrast_luma = luma + 0.55 * params.local_contrast * params.strength * (2.0 * luma - 1.0) * luma * (1.0 - luma)
         natural *= (contrast_luma / np.maximum(luma, 1e-4))[..., None]
     highlight_position = np.clip((luminance - 0.58) / 0.40, 0.0, 1.0)
     highlight_position = highlight_position * highlight_position * (3.0 - 2.0 * highlight_position)

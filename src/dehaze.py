@@ -11,7 +11,7 @@ import threading
 import numpy as np
 
 
-ALGORITHM_VERSION = "spatial-v3-scene-airlight-highlight"
+ALGORITHM_VERSION = "linear-v11-confidence-inverse"
 
 
 @dataclass(frozen=True)
@@ -213,7 +213,7 @@ def _apply_dehaze_cpu(
     if transmission_map is None:
         transmission, min_transmission = _global_transmission(source, p)
     else:
-        min_transmission = 0.27 + 0.21 * p.fog_retention + 0.11 * p.naturalness
+        min_transmission = 0.20 + 0.16 * p.fog_retention + 0.08 * p.naturalness
         transmission = 1.0
     if transmission_map is not None:
         if transmission_map.shape != image_rgb.shape[:2]:
@@ -232,7 +232,13 @@ def _apply_dehaze_cpu(
     # dehazing into a broad exposure cut and suppresses small bright lights.
     atmosphere = np.clip(atmosphere, 0.01 if atmosphere_override is not None else 0.35, 1.0)
     divisor = transmission if np.isscalar(transmission) else transmission[..., None]
-    recovered = (source - atmosphere.reshape(1, 1, 3)) / divisor + atmosphere.reshape(1, 1, 3)
+    # A monotonic shoulder preserves the white endpoint instead of clipping
+    # amplified highlights into a flat disc around the sun. Below airlight,
+    # this remains the atmospheric inverse; its derivative is continuous at A.
+    air = atmosphere.reshape(1, 1, 3)
+    delta = source - air
+    effective_divisor = divisor + (1.0 - divisor) * np.maximum(delta, 0.0) / np.maximum(1.0 - air, 1e-4)
+    recovered = air + delta / effective_divisor
     recovered = np.clip(recovered, 0.0, 1.0)
 
     luminance = source @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -310,6 +316,7 @@ def _apply_dehaze_cpu(
         # This guard only removes unsupported chroma; it never adds a hue.
         neutral_guard = (
             p.color_protection
+            * p.strength
             * (1.0 - confidence)
             * (1.08 + 0.12 * p.naturalness)
             * protection
@@ -329,7 +336,7 @@ def _apply_dehaze_cpu(
         # A fixed-endpoint, global S-curve provides a smooth highlight
         # shoulder.  It uses no neighbourhood statistics and remains
         # monotonic, so equal RGB values map identically at every coordinate.
-        contrast_amount = 0.55 * p.local_contrast
+        contrast_amount = 0.55 * p.local_contrast * p.strength
         contrast_luma = luma + contrast_amount * (2.0 * luma - 1.0) * luma * (1.0 - luma)
         natural *= (contrast_luma / np.maximum(luma, 1e-4))[..., None]
 

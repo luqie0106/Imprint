@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstring>
+#include <limits>
 #include <sstream>
 
 namespace imprint {
@@ -25,7 +26,9 @@ public:
         }
         NSError *nativeError = nil;
         NSString *source = [NSString stringWithUTF8String:kMetalShaderSource];
-        library_ = [device_ newLibraryWithSource:source options:nil error:&nativeError];
+        MTLCompileOptions *compileOptions = [MTLCompileOptions new];
+        compileOptions.fastMathEnabled = NO;
+        library_ = [device_ newLibraryWithSource:source options:compileOptions error:&nativeError];
         if (!library_) {
             error = describe_error("Could not compile the Metal shader at runtime", nativeError);
             return;
@@ -36,10 +39,42 @@ public:
             return;
         }
         pipeline_ = [device_ newComputePipelineStateWithFunction:function error:&nativeError];
-        if (!pipeline_) error = describe_error("Could not create the Metal compute pipeline", nativeError);
+        if (!pipeline_) {
+            error = describe_error("Could not create the Metal compute pipeline", nativeError);
+            return;
+        }
+        id<MTLFunction> spatial_first = [library_ newFunctionWithName:@"render_spatial_first_pass"];
+        id<MTLFunction> spatial_finish = [library_ newFunctionWithName:@"render_spatial_finish_pass"];
+        if (!spatial_first || !spatial_finish) {
+            error = "Compiled Metal library does not contain the spatial dehaze kernels";
+            return;
+        }
+        spatial_first_pipeline_ = [device_ newComputePipelineStateWithFunction:spatial_first error:&nativeError];
+        if (!spatial_first_pipeline_) {
+            error = describe_error("Could not create the Metal spatial first-pass pipeline", nativeError);
+            return;
+        }
+        spatial_finish_pipeline_ = [device_ newComputePipelineStateWithFunction:spatial_finish error:&nativeError];
+        if (!spatial_finish_pipeline_) {
+            error = describe_error("Could not create the Metal spatial finish-pass pipeline", nativeError);
+            return;
+        }
+        id<MTLFunction> physical = [library_ newFunctionWithName:@"render_physical_float"];
+        if (!physical) {
+            error = "Compiled Metal library does not contain the physical float dehaze kernel";
+            return;
+        }
+        physical_pipeline_ = [device_ newComputePipelineStateWithFunction:physical error:&nativeError];
+        if (!physical_pipeline_) {
+            error = describe_error("Could not create the Metal physical float pipeline", nativeError);
+            return;
+        }
     }
 
-    bool ready() const { return pipeline_ != nil; }
+    bool ready() const {
+        return pipeline_ != nil && spatial_first_pipeline_ != nil && spatial_finish_pipeline_ != nil &&
+               physical_pipeline_ != nil;
+    }
     const char *name() const override { return "Metal"; }
 
     bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) override {
@@ -114,6 +149,145 @@ public:
                         destination, destination_values, error);
     }
 
+    bool render_spatial_full(const ImageLevel &source, const float *transmission,
+                             const ImageStats &stats, const im_dehaze_params &dehaze,
+                             uint16_t *destination, size_t destination_values,
+                             std::string &error) override {
+        const size_t pixel_count = static_cast<size_t>(source.width) * source.height;
+        const size_t expected_values = pixel_count * 3;
+        if (!source.width || !source.height || !transmission || !destination ||
+            source.pixels.size() != expected_values || destination_values < expected_values) {
+            error = "Metal spatial render buffers or output dimensions are invalid";
+            return false;
+        }
+
+        const size_t source_bytes = expected_values * sizeof(uint16_t);
+        const size_t transmission_bytes = pixel_count * sizeof(float);
+        id<MTLBuffer> source_buffer = [device_ newBufferWithBytes:source.pixels.data()
+                                                           length:source_bytes
+                                                          options:MTLResourceStorageModeShared];
+        id<MTLBuffer> transmission_buffer = [device_ newBufferWithBytes:transmission
+                                                                  length:transmission_bytes
+                                                                 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> first_pass_buffer = [device_ newBufferWithLength:source_bytes
+                                                                options:MTLResourceStorageModeShared];
+        id<MTLBuffer> output_buffer = [device_ newBufferWithLength:source_bytes
+                                                            options:MTLResourceStorageModeShared];
+        if (!source_buffer || !transmission_buffer || !first_pass_buffer || !output_buffer) {
+            error = "Could not allocate or upload Metal spatial render buffers";
+            return false;
+        }
+
+        id<MTLCommandBuffer> command = [queue_ commandBuffer];
+        if (!command) {
+            error = "Could not create a Metal spatial render command";
+            return false;
+        }
+        const uint32_t count = static_cast<uint32_t>(pixel_count);
+        const NSUInteger threads = 256;
+        id<MTLComputeCommandEncoder> first_encoder = [command computeCommandEncoder];
+        if (!first_encoder) {
+            error = "Could not create a Metal spatial first-pass encoder";
+            return false;
+        }
+        [first_encoder setComputePipelineState:spatial_first_pipeline_];
+        [first_encoder setBuffer:source_buffer offset:0 atIndex:0];
+        [first_encoder setBuffer:first_pass_buffer offset:0 atIndex:1];
+        [first_encoder setBytes:&dehaze length:sizeof(dehaze) atIndex:2];
+        [first_encoder setBytes:&stats length:sizeof(stats) atIndex:3];
+        [first_encoder setBuffer:transmission_buffer offset:0 atIndex:4];
+        [first_encoder setBytes:&count length:sizeof(count) atIndex:5];
+        [first_encoder dispatchThreadgroups:MTLSizeMake((pixel_count + threads - 1) / threads, 1, 1)
+                       threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [first_encoder endEncoding];
+
+        id<MTLComputeCommandEncoder> finish_encoder = [command computeCommandEncoder];
+        if (!finish_encoder) {
+            error = "Could not create a Metal spatial finish-pass encoder";
+            return false;
+        }
+        [finish_encoder setComputePipelineState:spatial_finish_pipeline_];
+        [finish_encoder setBuffer:source_buffer offset:0 atIndex:0];
+        [finish_encoder setBuffer:first_pass_buffer offset:0 atIndex:1];
+        [finish_encoder setBuffer:output_buffer offset:0 atIndex:2];
+        [finish_encoder setBytes:&dehaze length:sizeof(dehaze) atIndex:3];
+        [finish_encoder setBytes:&stats length:sizeof(stats) atIndex:4];
+        [finish_encoder setBytes:&count length:sizeof(count) atIndex:5];
+        [finish_encoder dispatchThreadgroups:MTLSizeMake((pixel_count + threads - 1) / threads, 1, 1)
+                        threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [finish_encoder endEncoding];
+
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            error = describe_error("Metal spatial render failed", command.error);
+            return false;
+        }
+        std::memcpy(destination, output_buffer.contents, source_bytes);
+        return true;
+    }
+
+    bool render_physical_float(uint32_t width, uint32_t height,
+                               const float *source, const float *transmission,
+                               const float *airlight_rgb, const im_dehaze_params &params,
+                               float *destination, size_t destination_values,
+                               std::string &error) override {
+        const size_t pixel_count = static_cast<size_t>(width) * height;
+        const size_t expected_values = pixel_count * 3;
+        if (!width || !height || !source || !transmission || !airlight_rgb || !destination ||
+            expected_values > std::numeric_limits<size_t>::max() / sizeof(float) ||
+            destination_values < expected_values) {
+            error = "Metal physical float render buffers or output dimensions are invalid";
+            return false;
+        }
+
+        const size_t source_bytes = expected_values * sizeof(float);
+        const size_t transmission_bytes = pixel_count * sizeof(float);
+        id<MTLBuffer> source_buffer = [device_ newBufferWithBytes:source
+                                                           length:source_bytes
+                                                          options:MTLResourceStorageModeShared];
+        id<MTLBuffer> transmission_buffer = [device_ newBufferWithBytes:transmission
+                                                                  length:transmission_bytes
+                                                                 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> airlight_buffer = [device_ newBufferWithBytes:airlight_rgb
+                                                              length:3 * sizeof(float)
+                                                             options:MTLResourceStorageModeShared];
+        id<MTLBuffer> output_buffer = [device_ newBufferWithLength:source_bytes
+                                                            options:MTLResourceStorageModeShared];
+        if (!source_buffer || !transmission_buffer || !airlight_buffer || !output_buffer) {
+            error = "Could not allocate or upload Metal physical float render buffers";
+            return false;
+        }
+
+        id<MTLCommandBuffer> command = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (!command || !encoder) {
+            error = "Could not create a Metal physical float command";
+            return false;
+        }
+        const uint32_t count = static_cast<uint32_t>(pixel_count);
+        [encoder setComputePipelineState:physical_pipeline_];
+        [encoder setBuffer:source_buffer offset:0 atIndex:0];
+        [encoder setBuffer:transmission_buffer offset:0 atIndex:1];
+        [encoder setBuffer:airlight_buffer offset:0 atIndex:2];
+        [encoder setBytes:&params length:sizeof(params) atIndex:3];
+        [encoder setBuffer:output_buffer offset:0 atIndex:4];
+        [encoder setBytes:&count length:sizeof(count) atIndex:5];
+        const NSUInteger threads = physical_pipeline_.threadExecutionWidth
+                                       ? physical_pipeline_.threadExecutionWidth : 256;
+        [encoder dispatchThreadgroups:MTLSizeMake((pixel_count + threads - 1) / threads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            error = describe_error("Metal physical float render failed", command.error);
+            return false;
+        }
+        std::memcpy(destination, output_buffer.contents, source_bytes);
+        return true;
+    }
+
 private:
     static std::string describe_error(const char *prefix, NSError *error) {
         std::ostringstream stream;
@@ -175,6 +349,9 @@ private:
     id<MTLCommandQueue> queue_ = nil;
     id<MTLLibrary> library_ = nil;
     id<MTLComputePipelineState> pipeline_ = nil;
+    id<MTLComputePipelineState> spatial_first_pipeline_ = nil;
+    id<MTLComputePipelineState> spatial_finish_pipeline_ = nil;
+    id<MTLComputePipelineState> physical_pipeline_ = nil;
     std::array<id<MTLBuffer>, 3> source_buffers_{};
     id<MTLBuffer> curve_buffer_ = nil;
     id<MTLBuffer> lut_buffer_ = nil;

@@ -14,6 +14,8 @@ cbuffer RenderConstants : register(b0) {
 ByteAddressBuffer SourceData : register(t0);
 ByteAddressBuffer CurveData : register(t1);
 ByteAddressBuffer LutData : register(t2);
+ByteAddressBuffer TransmissionData : register(t3);
+ByteAddressBuffer SpatialFirstPassData : register(t4);
 RWByteAddressBuffer DestinationData : register(u0);
 
 static const float kInvU16 = 1.0 / 65535.0;
@@ -32,6 +34,14 @@ uint load_curve_u16(uint index) {
 
 uint load_lut_u16(uint index) {
     return unpack_u16(LutData.Load((index >> 1) << 2), index);
+}
+
+uint load_spatial_first_pass_u16(uint index) {
+    return SpatialFirstPassData.Load(index * 4);
+}
+
+float load_transmission(uint pixel) {
+    return asfloat(TransmissionData.Load(pixel * 4));
 }
 
 float clamp01(float value) {
@@ -86,18 +96,30 @@ float3 smooth_chroma_caps(float3 color, float3 caps) {
     return float3(y, y, y) + chroma * scale;
 }
 
-float3 apply_dehaze(float3 original) {
+float3 apply_dehaze(float3 original, bool spatial_mode, float spatial_transmission) {
     if (dehaze0.x <= 1e-6) return original;
     float y = luma(original);
     float3 air = float3(stats0.z, stats0.w, stats1.x);
     float air_mean = (air.x + air.y + air.z) / 3.0;
     float air_mix = 0.45 * dehaze1.y * (0.65 + 0.35 * dehaze0.y);
-    air = clamp(air * (1.0 - air_mix) + float3(air_mean, air_mean, air_mean) * air_mix, 0.35, 1.0);
-    float omega = dehaze0.x * (0.66 - 0.14 * dehaze0.z) *
-                  (0.90 + 0.10 * (1.0 - dehaze0.y)) * (0.92 + 0.08 * stats1.y);
-    float transmission_floor = 0.27 + 0.21 * dehaze0.z + 0.11 * dehaze0.y;
-    float transmission = clamp(1.0 - omega, transmission_floor, 1.0);
-    float3 recovered = clamp((original - air) / transmission + air, 0.0, 1.0);
+    float atmosphere_floor = spatial_mode ? 0.01 : 0.35;
+    air = clamp(air * (1.0 - air_mix) + float3(air_mean, air_mean, air_mean) * air_mix,
+                atmosphere_floor, 1.0);
+    float transmission_floor = spatial_mode
+                                  ? 0.20 + 0.16 * dehaze0.z + 0.08 * dehaze0.y
+                                  : 0.27 + 0.21 * dehaze0.z + 0.11 * dehaze0.y;
+    float transmission = spatial_transmission;
+    if (spatial_mode) {
+        transmission = clamp(spatial_transmission, transmission_floor, 1.0);
+    } else {
+        float omega = dehaze0.x * (0.66 - 0.14 * dehaze0.z) *
+                      (0.90 + 0.10 * (1.0 - dehaze0.y)) * (0.92 + 0.08 * stats1.y);
+        transmission = clamp(1.0 - omega, transmission_floor, 1.0);
+    }
+    float3 delta = original - air;
+    float3 effective_transmission = transmission + (1.0 - transmission) * max(delta, 0.0) /
+                                    max(1.0 - air, 1e-4);
+    float3 recovered = clamp(air + delta / effective_transmission, 0.0, 1.0);
     float amount = clamp(dehaze0.x * (0.78 - 0.28 * dehaze0.z) *
                          (0.90 + 0.10 * (1.0 - dehaze0.y)), 0.0, 0.82);
     float3 natural = original * (1.0 - amount) + recovered * amount;
@@ -126,7 +148,7 @@ float3 apply_dehaze(float3 original) {
                            (1.0 - shadow_position * dehaze1.w);
         float requested_recovery = clamp(recovery_amount * protection * (0.95 + 0.35 * (1.0 - confidence)),
                                          0.0, 0.95);
-        float neutral_guard = dehaze1.y * (1.0 - confidence) *
+        float neutral_guard = dehaze1.y * dehaze0.x * (1.0 - confidence) *
                               (1.08 + 0.12 * dehaze0.y) * protection;
         float correction_strength = clamp(max(requested_recovery, neutral_guard), 0.0, 0.95);
         natural = float3(natural_y, natural_y, natural_y) + natural_chroma * (1.0 - correction_strength) +
@@ -136,19 +158,23 @@ float3 apply_dehaze(float3 original) {
 
     if (dehaze0.w > 1e-6) {
         float current_y = luma(natural);
-        float contrast_amount = 0.55 * dehaze0.w;
+        float contrast_amount = 0.55 * dehaze0.w * dehaze0.x;
         float contrast_y = current_y + contrast_amount * (2.0 * current_y - 1.0) * current_y * (1.0 - current_y);
         natural *= contrast_y / max(current_y, 1e-4);
     }
 
     float highlight_position = smooth_range(0.58, 0.98, y);
+    if (spatial_mode) {
+        float source_peak = max(original.r, max(original.g, original.b));
+        highlight_position = max(highlight_position, smooth_range(0.35, 0.90, source_peak));
+    }
     float highlight_blend = clamp01(highlight_position * dehaze1.z);
     natural = natural * (1.0 - highlight_blend) + original * highlight_blend;
     float shadow_position = smooth_range(0.0, 0.26, 0.26 - y);
     float shadow_blend = clamp01(shadow_position * dehaze1.w);
     natural = natural * (1.0 - shadow_blend) + original * shadow_blend;
 
-    if (dehaze2.x > 1e-6 && stats1.z > 1.0) {
+    if (!spatial_mode && dehaze2.x > 1e-6 && stats1.z > 1.0) {
         float pre_y = luma(natural);
         float curve_y = pre_y * stats1.z / (1.0 + (stats1.z - 1.0) * pre_y);
         float scale = pre_y > 1e-6 ? curve_y / pre_y : 1.0;
@@ -167,6 +193,28 @@ float3 apply_dehaze(float3 original) {
     if (dehaze1.x > 1e-6) natural = smooth_chroma_caps(natural, caps);
     else natural = min(natural, caps);
     return clamp(natural, 0.0, 1.0);
+}
+
+float3 apply_brightness_and_caps(float3 source, float3 image, float gain) {
+    if (gain > 1.0 && dehaze2.x > 1e-6) {
+        float image_y = luma(image);
+        float curve_y = image_y * gain / (1.0 + (gain - 1.0) * image_y);
+        float scale = image_y > 1e-6 ? curve_y / image_y : 1.0;
+        image = clamp(image * scale, 0.0, 1.0);
+        image = smooth_chroma_gamut(image);
+    }
+
+    float saturation_limit = max(0.0, 0.97 - 1.5 / 65535.0);
+    float source_y = luma(source);
+    float final_y = luma(image);
+    float luma_cap = source_y < 0.97 ? saturation_limit : 1.0;
+    float luma_scale = min(1.0, luma_cap / max(final_y, 1e-4));
+    image *= luma_scale;
+    float3 caps = float3(source.r < 0.97 ? saturation_limit : 1.0,
+                         source.g < 0.97 ? saturation_limit : 1.0,
+                         source.b < 0.97 ? saturation_limit : 1.0);
+    image = smooth_chroma_caps(image, caps);
+    return clamp(image, 0.0, 1.0);
 }
 
 float3 apply_basic(float3 rgb) {
@@ -259,17 +307,42 @@ void render_kernel(uint3 thread_id : SV_DispatchThreadID) {
     if (pixel >= dispatch.y) return;
     uint input_base = pixel * 3;
     uint output_base = input_base * 4;
-    if (dispatch.z != 0) {
+    if (dispatch.z == 1) {
         DestinationData.Store(output_base, load_source_u16(input_base));
         DestinationData.Store(output_base + 4, load_source_u16(input_base + 1));
         DestinationData.Store(output_base + 8, load_source_u16(input_base + 2));
         return;
     }
 
-    float3 color = float3(load_source_u16(input_base),
-                          load_source_u16(input_base + 1),
-                          load_source_u16(input_base + 2)) * kInvU16;
-    color = apply_dehaze(color);
+    float3 source = float3(load_source_u16(input_base),
+                           load_source_u16(input_base + 1),
+                           load_source_u16(input_base + 2)) * kInvU16;
+    if (dispatch.z == 2) {
+        float3 color = apply_dehaze(source, true, load_transmission(pixel));
+        DestinationData.Store(output_base, round_to_even_u16(color.r));
+        DestinationData.Store(output_base + 4, round_to_even_u16(color.g));
+        DestinationData.Store(output_base + 8, round_to_even_u16(color.b));
+        return;
+    }
+    if (dispatch.z == 3) {
+        uint first_r = load_spatial_first_pass_u16(input_base);
+        uint first_g = load_spatial_first_pass_u16(input_base + 1);
+        uint first_b = load_spatial_first_pass_u16(input_base + 2);
+        if (stats1.z <= 1.000001 || dehaze2.x <= 1e-6) {
+            DestinationData.Store(output_base, first_r);
+            DestinationData.Store(output_base + 4, first_g);
+            DestinationData.Store(output_base + 8, first_b);
+            return;
+        }
+        float3 first_pass = float3(first_r, first_g, first_b) * kInvU16;
+        float3 color = apply_brightness_and_caps(source, first_pass, stats1.z);
+        DestinationData.Store(output_base, round_to_even_u16(color.r));
+        DestinationData.Store(output_base + 4, round_to_even_u16(color.g));
+        DestinationData.Store(output_base + 8, round_to_even_u16(color.b));
+        return;
+    }
+
+    float3 color = apply_dehaze(source, false, 0.0);
     color = apply_basic(color);
     color = apply_filter_controls(color);
     float3 curved = float3(sample_curve(0, color.r),

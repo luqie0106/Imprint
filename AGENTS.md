@@ -83,6 +83,8 @@ When modifying or running ImprintMac:
 
 ## 开发与验证
 
+- 实图回归样本位于项目根目录 `test_images/`（被 Git 忽略）：`LCR_1132.NEF` 用于检查建筑/天空边缘，`LCR_9472.NEF` 用于检查海上风机和无太阳的天空，`DJI_0523.DNG` 与 `DJI_0539.DNG` 用于检查太阳、天空和镜头暗角。排查这些问题时先从此目录读取原图，不要重复向用户索要路径；不要将 RAW 加入提交或测试产物。
+
 本机开发优先使用项目已配置的 `py311` Conda 环境：
 
 ```bash
@@ -188,3 +190,13 @@ message: 自包含的实现任务说明
 - 默认使用中文，先说结果，再说关键验证和限制。
 - 不把“代码已写”“测试通过”“DNG 标签有效”和“已在 Lightroom/Camera Raw 实际导入”混为一谈；每项只报告真实完成的验证。
 - 若有未完成事项或兼容性限制，应明确列出，不要用模糊措辞掩盖。
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in this repository's GitHub Issues; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Use the single-context layout with a root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.

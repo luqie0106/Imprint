@@ -81,6 +81,7 @@ _preview_creation_locks: WeakValueDictionary[tuple[object, ...], threading.Lock]
 _load_lock = threading.Lock()
 _cached_library: ctypes.CDLL | None = None
 _cached_library_path: str | None = None
+_last_native_physical_backend: str | None = None
 
 
 def _library_names() -> tuple[str, ...]:
@@ -180,6 +181,170 @@ def _configure_library(library: ctypes.CDLL) -> None:
             uint16_pointer, ctypes.c_size_t,
         ]
         spatial.restype = ctypes.c_int
+    gpu_spatial = getattr(library, "im_renderer_render_spatial_full", None)
+    if gpu_spatial is not None:
+        gpu_spatial.argtypes = [
+            renderer, ctypes.c_uint32, ctypes.c_uint32, uint16_pointer, ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.POINTER(_DehazeParams),
+            uint16_pointer, ctypes.c_size_t,
+        ]
+        gpu_spatial.restype = ctypes.c_int
+    physical_float = getattr(library, "im_renderer_render_physical_float", None)
+    if physical_float is not None:
+        float_pointer = ctypes.POINTER(ctypes.c_float)
+        physical_float.argtypes = [
+            renderer, ctypes.c_uint32, ctypes.c_uint32,
+            float_pointer, ctypes.c_size_t,
+            float_pointer, ctypes.c_size_t,
+            float_pointer, ctypes.POINTER(_DehazeParams),
+            float_pointer, ctypes.c_size_t,
+        ]
+        physical_float.restype = ctypes.c_int
+
+
+def native_physical_dehaze(
+    image: np.ndarray, params: object, transmission: np.ndarray, atmosphere: np.ndarray,
+) -> np.ndarray:
+    """Run the optional linear-float physical dehaze operator on Metal."""
+    global _last_native_physical_backend
+    _last_native_physical_backend = None
+    if not isinstance(image, np.ndarray):
+        raise TypeError("Physical dehaze source must be a numpy array")
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("Physical dehaze source must have shape (height, width, 3) RGB")
+    if image.dtype != np.dtype(np.float32):
+        raise TypeError("Physical dehaze source must use normalized float32 RGB")
+    height, width, _ = image.shape
+    if not height or not width or width > 65535 or height > 65535:
+        raise ValueError("Physical dehaze dimensions must be within 1..65535")
+    value_count = int(image.size)
+    if value_count > _MAX_IMAGE_VALUES:
+        raise ValueError("Physical dehaze source exceeds the C ABI size limit")
+    if not np.isfinite(image).all() or np.any(image < 0.0) or np.any(image > 1.0):
+        raise ValueError("Physical dehaze source must be finite and within [0, 1]")
+
+    values = _values(params, _DEHAZE_FIELDS, ((0.0, 1.0),) * len(_DEHAZE_FIELDS), "dehaze")
+    if not isinstance(transmission, np.ndarray) or transmission.shape != (height, width):
+        raise ValueError("Physical dehaze transmission must match image dimensions")
+    if not np.issubdtype(transmission.dtype, np.floating):
+        raise TypeError("Physical dehaze transmission must use a floating-point dtype")
+    if not isinstance(atmosphere, np.ndarray) or atmosphere.shape != (3,):
+        raise ValueError("Physical dehaze airlight must contain three channels")
+    if not np.issubdtype(atmosphere.dtype, np.floating):
+        raise TypeError("Physical dehaze airlight must use a floating-point dtype")
+    if (not np.isfinite(transmission).all() or np.any(transmission < 0.0) or
+            np.any(transmission > 1.0)):
+        raise ValueError("Physical dehaze transmission must be finite and within [0, 1]")
+    if (not np.isfinite(atmosphere).all() or np.any(atmosphere < 0.0) or
+            np.any(atmosphere > 1.0)):
+        raise ValueError("Physical dehaze airlight must be finite and within [0, 1]")
+
+    # Own the buffers passed through the const C ABI, even if the caller's
+    # arrays are already contiguous. The input photo must remain untouched.
+    source32 = np.array(image, dtype=np.float32, order="C", copy=True)
+    transmission32 = np.array(transmission, dtype=np.float32, order="C", copy=True)
+    atmosphere32 = np.array(atmosphere, dtype=np.float32, order="C", copy=True)
+    output = np.empty_like(source32)
+    library, _ = _get_library()
+    render = getattr(library, "im_renderer_render_physical_float", None)
+    if render is None:
+        raise NativeRendererError("Native physical float dehaze ABI is unavailable")
+    renderer, backend = _create_renderer(library)
+    try:
+        if backend.lower() != "metal":
+            raise NativeRendererError(
+                f"Native physical float dehaze is unavailable on this backend ({backend})"
+            )
+        native_params = _DehazeParams(*values)
+        status = render(
+            renderer, width, height,
+            source32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source32.size,
+            transmission32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), transmission32.size,
+            atmosphere32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            ctypes.byref(native_params),
+            output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+        )
+        if status != 0:
+            raise NativeRendererError(
+                f"Native physical float dehaze failed (status {status}): "
+                f"{_native_error(library, renderer)}"
+            )
+        _last_native_physical_backend = backend
+    finally:
+        library.im_renderer_destroy(renderer)
+    return output
+
+
+def get_last_native_physical_backend() -> str | None:
+    """Return the backend that completed the latest physical float render."""
+    return _last_native_physical_backend
+
+
+def get_native_physical_status() -> dict[str, object]:
+    """Report only native physical-float support, independently of fallbacks."""
+    gpu_available = False
+    try:
+        library, _ = _get_library()
+        if getattr(library, "im_renderer_render_physical_float", None) is not None:
+            renderer = None
+            try:
+                renderer, backend = _create_renderer(library)
+                gpu_available = backend.lower() == "metal"
+                physical_backend = backend if gpu_available else None
+            finally:
+                if renderer is not None:
+                    library.im_renderer_destroy(renderer)
+            return {"available": gpu_available, "backend": physical_backend,
+                    "gpu_available": gpu_available, "cpu_available": False}
+    except Exception:
+        # Status queries are advisory. Keep old libraries and failed renderer
+        # creation equivalent to an unavailable optional native capability.
+        pass
+    return {"available": False, "backend": None,
+            "gpu_available": False, "cpu_available": False}
+
+
+def native_gpu_spatial_dehaze(
+    image: np.ndarray, params: object, transmission: np.ndarray, atmosphere: np.ndarray,
+) -> np.ndarray:
+    """Render spatial dehaze on the platform GPU, or raise for CPU fallback."""
+    rgb16, width, height, was_uint8 = _prepare_image(image)
+    values = _values(params, _DEHAZE_FIELDS, ((0.0, 1.0),) * len(_DEHAZE_FIELDS), "dehaze")
+    if not isinstance(transmission, np.ndarray) or transmission.shape != (height, width):
+        raise ValueError("Spatial transmission must match image dimensions")
+    if not isinstance(atmosphere, np.ndarray) or atmosphere.shape != (3,):
+        raise ValueError("Spatial airlight must contain three channels")
+    if not np.isfinite(transmission).all() or not np.isfinite(atmosphere).all():
+        raise ValueError("Spatial transmission and airlight must be finite")
+    transmission32 = np.ascontiguousarray(transmission, dtype=np.float32)
+    atmosphere32 = np.ascontiguousarray(atmosphere, dtype=np.float32)
+    library, _ = _get_library()
+    render = getattr(library, "im_renderer_render_spatial_full", None)
+    if render is None:
+        raise NativeRendererError("GPU spatial dehaze operator is unavailable")
+    renderer, backend = _create_renderer(library)
+    try:
+        if backend.lower() not in ("metal", "d3d12"):
+            raise NativeRendererError(f"Spatial GPU renderer is unavailable ({backend})")
+        output16 = np.empty_like(rgb16)
+        status = render(
+            renderer, width, height,
+            rgb16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), rgb16.size,
+            transmission32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), transmission32.size,
+            atmosphere32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            ctypes.byref(_DehazeParams(*values)),
+            output16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), output16.size,
+        )
+        if status != 0:
+            raise NativeRendererError(
+                f"GPU spatial dehaze failed (status {status}): {_native_error(library, renderer)}"
+            )
+    finally:
+        library.im_renderer_destroy(renderer)
+    if was_uint8:
+        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+    return output16
 
 
 def native_spatial_dehaze(
@@ -219,13 +384,27 @@ def native_spatial_dehaze(
 
 
 def get_native_spatial_status() -> dict[str, object]:
-    """Report the optional C++ spatial operator independently of GPU support."""
+    """Report actual spatial CPU and GPU availability separately."""
+    gpu_backend: str | None = None
     try:
         library, _ = _get_library()
         available = getattr(library, "im_native_dehaze_spatial_run", None) is not None
+        if getattr(library, "im_renderer_render_spatial_full", None) is not None:
+            try:
+                renderer, backend = _create_renderer(library)
+                try:
+                    if backend.lower() in ("metal", "d3d12"):
+                        gpu_backend = backend
+                finally:
+                    library.im_renderer_destroy(renderer)
+            except NativeRendererError:
+                pass
     except NativeRendererError:
         available = False
-    return {"available": available, "backend": "C++ CPU" if available else None}
+    return {"available": available or gpu_backend is not None,
+            "backend": gpu_backend or ("C++ CPU" if available else None),
+            "gpu_available": gpu_backend is not None,
+            "cpu_available": available}
 
 
 def _get_library() -> tuple[ctypes.CDLL, str]:

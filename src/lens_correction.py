@@ -332,6 +332,32 @@ def _find_lens(database: Any, camera: Any, make: str, model: str) -> Any | None:
     return lens
 
 
+def _fixed_lens_profile_for_camera(
+    camera: Any,
+    camera_make: str,
+    camera_model: str,
+    focal_length: float,
+) -> tuple[str, str] | None:
+    """Return the Lensfun profile name for the L2D-20c's built-in lens only.
+
+    DJI/Hasselblad files may omit LensModel or report its 35 mm equivalent
+    (24 mm). The camera's exact body identity and physical 12.3 mm focal length
+    are sufficient to identify this fixed lens safely.
+    """
+
+    camera_profile_make = _object_text(camera, "maker", "make", "camera_make")
+    camera_profile_model = _object_text(camera, "model", "name", "camera_model")
+    if (
+        _normal_name(camera_make) == "hasselblad"
+        and _normal_name(camera_model) == "l2d20c"
+        and _normal_name(camera_profile_make) == "hasselblad"
+        and _normal_name(camera_profile_model) == "l2d20c"
+        and abs(float(focal_length) - 12.3) <= 0.15
+    ):
+        return "Hasselblad", "L2D-20c & compatibles"
+    return None
+
+
 def _flag(lensfunpy: Any, name: str) -> int:
     enum = getattr(lensfunpy, "ModifyFlags", None)
     value = getattr(enum, name, None) if enum is not None else None
@@ -520,6 +546,29 @@ def _apply_geometry(
     )
 
 
+def _apply_vignetting(corrected: np.ndarray, modifier: Any, *, enabled: bool) -> bool:
+    """Apply Lensfun's color correction through a full-size float32 buffer."""
+
+    if not enabled:
+        return False
+    color_method = getattr(modifier, "apply_color_modification", None)
+    if not callable(color_method):
+        return False
+
+    # lensfunpy 1.18 accepts full-frame float32 RGB arrays for color
+    # modification, but not uint16 or cropped strips. Keep the source and the
+    # geometry working image in uint16 and round-trip only this temporary.
+    color_buffer = corrected.astype(np.float32)
+    color_buffer *= np.float32(1.0 / 65535.0)
+    applied = bool(color_method(color_buffer))
+    if applied:
+        np.clip(color_buffer, 0.0, 1.0, out=color_buffer)
+        color_buffer *= np.float32(65535.0)
+        np.rint(color_buffer, out=color_buffer)
+        corrected[...] = color_buffer
+    return applied
+
+
 def _failure(
     error: LensCorrectionError,
     image: np.ndarray,
@@ -577,15 +626,22 @@ def apply_lens_correction(
     try:
         database = _load_database(lensfunpy)
         camera = _find_camera(database, make, model)
+        fixed_lens_profile = _fixed_lens_profile_for_camera(
+            camera, make, model, float(focal_length)
+        )
+        if fixed_lens_profile is not None:
+            lens_make, lens_model = fixed_lens_profile
         lens = _find_lens(database, camera, lens_make, lens_model)
         crop_factor = _number(getattr(camera, "crop_factor", 1.0)) or 1.0
         if crop_factor <= 0.0:
             crop_factor = 1.0
-        # lensfunpy 1.18's color-modification binding does not accept uint16
-        # images (the export path intentionally stays uint16 to avoid a full
-        # resolution float32 allocation).  Request only the coordinate stages
-        # that can be safely and directly baked into the uint16 output.
-        flags_by_name = {name: _flag(lensfunpy, name) for name in ("TCA", "DISTORTION", "SCALE")}
+        # lensfunpy 1.18's color-modification binding needs a full-frame
+        # float32 RGB buffer. Initialize with that format and request its
+        # vignetting stage alongside the coordinate stages.
+        flags_by_name = {
+            name: _flag(lensfunpy, name)
+            for name in ("TCA", "DISTORTION", "SCALE", "VIGNETTING")
+        }
         requested_flags = 0
         for value in flags_by_name.values():
             requested_flags |= value
@@ -596,7 +652,7 @@ def apply_lens_correction(
             float(focal_length),
             float(aperture),
             float(distance),
-            image_rgb16.dtype.type,
+            np.float32,
             requested_flags,
             0.0,
         )
@@ -608,12 +664,12 @@ def apply_lens_correction(
             scale = 0.0
 
         corrected = image_rgb16.copy()
-        # Vignetting is deliberately not requested here: lensfunpy's
-        # apply_color_modification currently accepts float/uint8 buffers but
-        # raises for uint16, and converting a full-resolution export to float
-        # would be an unnecessary large allocation.  The result field remains
-        # explicit so callers can report that only geometry/TCA was baked.
-        vignetting_applied = False
+        vignetting_enabled = bool(enabled & flags_by_name["VIGNETTING"]) and bool(
+            getattr(lens, "calib_vignetting", ())
+        )
+        vignetting_applied = _apply_vignetting(
+            corrected, modifier, enabled=vignetting_enabled
+        )
 
         # lensfunpy 1.18 returns None from initialize, so requested flags alone
         # cannot prove a calibration exists.  Require the matched profile to

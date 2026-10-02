@@ -93,7 +93,10 @@ static float3 apply_dehaze(float3 original, constant DehazeParams &p, constant I
                   (0.90 + 0.10 * (1.0 - p.naturalness)) * (0.92 + 0.08 * stats.haze_level);
     float transmission_floor = 0.27 + 0.21 * p.fog_retention + 0.11 * p.naturalness;
     float transmission = clamp(1.0 - omega, transmission_floor, 1.0);
-    float3 recovered = clamp((original - air) / transmission + air, 0.0, 1.0);
+    float3 delta = original - air;
+    float3 effective_transmission = transmission + (1.0 - transmission) * max(delta, float3(0.0)) /
+                                    max(float3(1.0) - air, float3(1e-4));
+    float3 recovered = clamp(air + delta / effective_transmission, 0.0, 1.0);
     float amount = clamp(p.strength * (0.78 - 0.28 * p.fog_retention) *
                          (0.90 + 0.10 * (1.0 - p.naturalness)), 0.0, 0.82);
     float3 natural = mix(original, recovered, amount);
@@ -120,7 +123,7 @@ static float3 apply_dehaze(float3 original, constant DehazeParams &p, constant I
                            (1.0 - shadow_position * p.shadow_protection);
         float requested_recovery = clamp(recovery_amount * protection * (0.95 + 0.35 * (1.0 - confidence)),
                                          0.0, 0.95);
-        float neutral_guard = p.color_protection * (1.0 - confidence) *
+        float neutral_guard = p.color_protection * p.strength * (1.0 - confidence) *
                               (1.08 + 0.12 * p.naturalness) * protection;
         float correction_strength = clamp(max(requested_recovery, neutral_guard), 0.0, 0.95);
         natural = float3(natural_y) + natural_chroma * (1.0 - correction_strength) +
@@ -130,7 +133,7 @@ static float3 apply_dehaze(float3 original, constant DehazeParams &p, constant I
 
     if (p.local_contrast > 1e-6) {
         float current_y = luma(natural);
-        float contrast_amount = 0.55 * p.local_contrast;
+        float contrast_amount = 0.55 * p.local_contrast * p.strength;
         float contrast_y = current_y + contrast_amount * (2.0 * current_y - 1.0) * current_y * (1.0 - current_y);
         natural *= contrast_y / max(current_y, 1e-4);
     }
@@ -162,6 +165,114 @@ static float3 apply_dehaze(float3 original, constant DehazeParams &p, constant I
     if (p.color_recovery > 1e-6) natural = smooth_chroma_caps(natural, caps);
     else natural = min(natural, caps);
     return clamp(natural, 0.0, 1.0);
+}
+
+// Spatial mode mirrors the CPU reference's first pass. It deliberately uses
+// only the transmission value for this pixel; sampling neighboring values here
+// would introduce edge halos around depth boundaries.
+static float3 apply_spatial_dehaze_pre(float3 original, constant DehazeParams &p,
+                                      constant ImageStats &stats, float spatial_transmission) {
+    if (p.strength <= 1e-6) return original;
+    float y = luma(original);
+    float3 air = float3(stats.air_r, stats.air_g, stats.air_b);
+    float air_mean = (air.r + air.g + air.b) / 3.0;
+    air = mix(air, float3(air_mean), 0.45 * p.color_protection * (0.65 + 0.35 * p.naturalness));
+    air = clamp(air, float3(0.01), float3(1.0));
+    float transmission_floor = 0.20 + 0.16 * p.fog_retention + 0.08 * p.naturalness;
+    float transmission = clamp(spatial_transmission, transmission_floor, 1.0);
+    float3 delta = original - air;
+    float3 effective_transmission = transmission + (1.0 - transmission) * max(delta, float3(0.0)) /
+                                    max(float3(1.0) - air, float3(1e-4));
+    float3 recovered = clamp(air + delta / effective_transmission, 0.0, 1.0);
+    float amount = clamp(p.strength * (0.78 - 0.28 * p.fog_retention) *
+                         (0.90 + 0.10 * (1.0 - p.naturalness)), 0.0, 0.82);
+    float3 natural = mix(original, recovered, amount);
+    float3 luma_only = clamp(original * (luma(natural) / max(y, 1e-4)), 0.0, 1.0);
+    natural = mix(natural, luma_only, p.color_protection * (0.72 + 0.28 * p.naturalness));
+    if (p.color_recovery > 1e-6) {
+        float3 source_chroma = original - float3(y);
+        float source_chroma_norm = length(source_chroma);
+        float confidence = clamp((source_chroma_norm - 0.006) / 0.084, 0.0, 1.0);
+        confidence = confidence * confidence * (3.0 - 2.0 * confidence);
+        float3 source_direction = source_chroma / max(source_chroma_norm, 1e-6);
+        float natural_y = luma(natural);
+        float3 natural_chroma = natural - float3(natural_y);
+        float natural_chroma_norm = length(natural_chroma);
+        float aligned_chroma = max(0.0, dot(natural_chroma, source_direction));
+        float recovery_amount = p.color_recovery * p.strength;
+        float source_target_norm = source_chroma_norm * (1.0 + 1.80 * p.color_recovery * confidence);
+        float natural_target_norm = natural_chroma_norm *
+                                    (1.0 + 0.30 * recovery_amount * confidence) * confidence;
+        float target_chroma_norm = max(max(aligned_chroma * confidence, natural_target_norm),
+                                       source_target_norm);
+        float3 target_chroma = source_direction * target_chroma_norm;
+        float highlight_position = smoothstep(0.58, 0.98, y);
+        float shadow_position = smoothstep(0.0, 0.26, 0.26 - y);
+        float protection = (1.0 - highlight_position * p.highlight_protection) *
+                           (1.0 - shadow_position * p.shadow_protection);
+        float requested_recovery = clamp(recovery_amount * protection *
+                                         (0.95 + 0.35 * (1.0 - confidence)), 0.0, 0.95);
+        float neutral_guard = p.color_protection * p.strength * (1.0 - confidence) *
+                              (1.08 + 0.12 * p.naturalness) * protection;
+        float correction_strength = clamp(max(requested_recovery, neutral_guard), 0.0, 0.95);
+        natural = float3(natural_y) + natural_chroma * (1.0 - correction_strength) +
+                  target_chroma * correction_strength;
+        natural = smooth_chroma_gamut(natural);
+    }
+
+    if (p.local_contrast > 1e-6) {
+        float current_y = luma(natural);
+        float contrast_amount = 0.55 * p.local_contrast * p.strength;
+        float contrast_y = current_y + contrast_amount * (2.0 * current_y - 1.0) *
+                           current_y * (1.0 - current_y);
+        natural *= contrast_y / max(current_y, 1e-4);
+    }
+
+    float source_peak = max(original.r, max(original.g, original.b));
+    float highlight_position = max(smoothstep(0.58, 0.98, y),
+                                   smoothstep(0.35, 0.90, source_peak));
+    float highlight_blend = clamp(highlight_position * p.highlight_protection, 0.0, 1.0);
+    natural = mix(natural, original, highlight_blend);
+    float shadow_position = smoothstep(0.0, 0.26, 0.26 - y);
+    float shadow_blend = clamp(shadow_position * p.shadow_protection, 0.0, 1.0);
+    return mix(natural, original, shadow_blend);
+}
+
+static float3 apply_spatial_caps(float3 source, float3 image, constant DehazeParams &p) {
+    float saturation_limit = max(0.0, 0.97 - 1.5 / 65535.0);
+    float source_y = luma(source);
+    float final_y = luma(image);
+    float luma_cap = source_y < 0.97 ? saturation_limit : 1.0;
+    image *= min(1.0, luma_cap / max(final_y, 1e-4));
+    float3 caps = float3(source.r < 0.97 ? saturation_limit : 1.0,
+                         source.g < 0.97 ? saturation_limit : 1.0,
+                         source.b < 0.97 ? saturation_limit : 1.0);
+    if (p.color_recovery > 1e-6) image = smooth_chroma_caps(image, caps);
+    else image = min(image, caps);
+    return clamp(image, 0.0, 1.0);
+}
+
+static float3 apply_spatial_brightness(float3 source, float3 image,
+                                       constant DehazeParams &p, constant ImageStats &stats) {
+    if (stats.brightness_gain <= 1.0 + 1e-6 || p.brightness_protection <= 1e-6) return image;
+    float y = luma(image);
+    float curve_y = y * stats.brightness_gain /
+                    (1.0 + (stats.brightness_gain - 1.0) * y);
+    float scale = y > 1e-6 ? curve_y / y : 1.0;
+    image = clamp(image * scale, 0.0, 1.0);
+    image = smooth_chroma_gamut(image);
+
+    // The spatial reference always applies smooth per-channel caps in this
+    // second pass, independent of the color-recovery setting.
+    float saturation_limit = max(0.0, 0.97 - 1.5 / 65535.0);
+    float source_y = luma(source);
+    float luma_cap = source_y < 0.97 ? saturation_limit : 1.0;
+    float luma_scale = min(1.0, luma_cap / max(luma(image), 1e-4));
+    image *= luma_scale;
+    float3 caps = float3(source.r < 0.97 ? saturation_limit : 1.0,
+                         source.g < 0.97 ? saturation_limit : 1.0,
+                         source.b < 0.97 ? saturation_limit : 1.0);
+    return clamp(smooth_chroma_caps(image, caps), 0.0, 1.0);
 }
 
 static float3 apply_basic(float3 rgb, constant BasicParams &p) {
@@ -253,4 +364,140 @@ kernel void render_kernel(device const ushort *source [[buffer(0)]],
     destination[pixel * 3] = ushort(rint(color.r * 65535.0));
     destination[pixel * 3 + 1] = ushort(rint(color.g * 65535.0));
     destination[pixel * 3 + 2] = ushort(rint(color.b * 65535.0));
+}
+
+kernel void render_spatial_first_pass(device const ushort *source [[buffer(0)]],
+                                     device ushort *destination [[buffer(1)]],
+                                     constant DehazeParams &dehaze [[buffer(2)]],
+                                     constant ImageStats &stats [[buffer(3)]],
+                                     device const float *transmission [[buffer(4)]],
+                                     constant uint &pixel_count [[buffer(5)]],
+                                     uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= pixel_count) return;
+    float3 original = float3(source[pixel * 3], source[pixel * 3 + 1],
+                             source[pixel * 3 + 2]) / 65535.0;
+    if (dehaze.strength <= 1e-6) {
+        destination[pixel * 3] = source[pixel * 3];
+        destination[pixel * 3 + 1] = source[pixel * 3 + 1];
+        destination[pixel * 3 + 2] = source[pixel * 3 + 2];
+        return;
+    }
+    float3 color = apply_spatial_dehaze_pre(original, dehaze, stats, transmission[pixel]);
+    color = apply_spatial_caps(original, color, dehaze);
+    destination[pixel * 3] = ushort(rint(color.r * 65535.0));
+    destination[pixel * 3 + 1] = ushort(rint(color.g * 65535.0));
+    destination[pixel * 3 + 2] = ushort(rint(color.b * 65535.0));
+}
+
+kernel void render_spatial_finish_pass(device const ushort *source [[buffer(0)]],
+                                      device const ushort *first_pass [[buffer(1)]],
+                                      device ushort *destination [[buffer(2)]],
+                                      constant DehazeParams &dehaze [[buffer(3)]],
+                                      constant ImageStats &stats [[buffer(4)]],
+                                      constant uint &pixel_count [[buffer(5)]],
+                                      uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= pixel_count) return;
+    if (dehaze.strength <= 1e-6) {
+        destination[pixel * 3] = source[pixel * 3];
+        destination[pixel * 3 + 1] = source[pixel * 3 + 1];
+        destination[pixel * 3 + 2] = source[pixel * 3 + 2];
+        return;
+    }
+    if (stats.brightness_gain <= 1.0 + 1e-6 || dehaze.brightness_protection <= 1e-6) {
+        destination[pixel * 3] = first_pass[pixel * 3];
+        destination[pixel * 3 + 1] = first_pass[pixel * 3 + 1];
+        destination[pixel * 3 + 2] = first_pass[pixel * 3 + 2];
+        return;
+    }
+    float3 original = float3(source[pixel * 3], source[pixel * 3 + 1],
+                             source[pixel * 3 + 2]) / 65535.0;
+    float3 color = float3(first_pass[pixel * 3], first_pass[pixel * 3 + 1],
+                          first_pass[pixel * 3 + 2]) / 65535.0;
+    color = apply_spatial_brightness(original, color, dehaze, stats);
+    destination[pixel * 3] = ushort(rint(color.r * 65535.0));
+    destination[pixel * 3 + 1] = ushort(rint(color.g * 65535.0));
+    destination[pixel * 3 + 2] = ushort(rint(color.b * 65535.0));
+}
+
+static float physical_smoothstep(float low, float high, float value) {
+    float position = clamp((value - low) / (high - low), 0.0, 1.0);
+    return position * position * (3.0 - 2.0 * position);
+}
+
+static float physical_luma(float3 rgb) {
+#pragma clang fp contract(off)
+#pragma clang fp reassociate(off)
+    float red = rgb.r * 0.2126f;
+    float green = rgb.g * 0.7152f;
+    float blue = rgb.b * 0.0722f;
+    float red_green = red + green;
+    return red_green + blue;
+}
+
+static float3 physical_gamut(float3 rgb) {
+    float y = physical_luma(rgb);
+    float3 chroma = rgb - float3(y);
+    float3 positive_room = (1.0 - float3(y)) / max(chroma, float3(1e-7));
+    float3 negative_room = float3(y) / max(-chroma, float3(1e-7));
+    float3 room = float3(chroma.r > 0.0 ? positive_room.r : negative_room.r,
+                         chroma.g > 0.0 ? positive_room.g : negative_room.g,
+                         chroma.b > 0.0 ? positive_room.b : negative_room.b);
+    float scale = clamp(min(room.r, min(room.g, room.b)), 0.0, 1.0);
+    return clamp(float3(y) + chroma * scale, 0.0, 1.0);
+}
+
+kernel void render_physical_float(device const float *source [[buffer(0)]],
+                                  device const float *transmission [[buffer(1)]],
+                                  device const float *airlight [[buffer(2)]],
+                                  constant DehazeParams &p [[buffer(3)]],
+                                  device float *destination [[buffer(4)]],
+                                  constant uint &pixel_count [[buffer(5)]],
+                                  uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= pixel_count) return;
+    float3 original = float3(source[pixel * 3], source[pixel * 3 + 1],
+                             source[pixel * 3 + 2]);
+    float3 air = float3(airlight[0], airlight[1], airlight[2]);
+    float y = physical_luma(original);
+    float gain = 1.0 + 0.8 * p.strength * (1.0 - 0.35 * p.naturalness);
+    float shadow = 1.0 - physical_smoothstep(0.02, 0.15, y);
+    float retention = min(0.98, 0.65 + 0.25 * p.brightness_protection +
+                         0.13 * p.shadow_protection * shadow);
+    float3 needed_by_channel = max(air - original, float3(0.0)) /
+                               max(air - retention * original, float3(1e-6));
+    float needed = max(needed_by_channel.r,
+                       max(needed_by_channel.g, needed_by_channel.b));
+    float t = max(max(transmission[pixel], 1.0 / gain), needed);
+    float highlight = physical_smoothstep(0.55, 0.95,
+                                          max(original.r, max(original.g, original.b))) *
+                      p.highlight_protection;
+    t = t + (1.0 - t) * highlight;
+    t = clamp(t, 1e-4, 1.0);
+
+    float3 delta = original - air;
+    float3 shoulder = float3(t) + (1.0 - t) * max(delta, float3(0.0)) /
+                      max(float3(1.0) - air, float3(1e-4));
+    float3 recovered = air + delta / shoulder;
+    float recovered_y = physical_luma(recovered);
+    float3 source_hue = original * (recovered_y / max(y, 1e-6));
+    float3 source_chroma = original - float3(y);
+    float chroma_confidence = physical_smoothstep(0.005, 0.08, length(source_chroma));
+    float physical_colour = (1.0 - p.color_protection) *
+                            (0.28 + 0.72 * (1.0 - p.naturalness)) * chroma_confidence;
+    float3 result = recovered * physical_colour + source_hue * (1.0 - physical_colour);
+
+    float result_y = physical_luma(result);
+    float3 chroma = result - float3(result_y);
+    chroma *= 1.0 + 0.25 * p.color_recovery * p.strength * chroma_confidence;
+    float contrast_delta = 0.15 * p.local_contrast * p.strength * result_y *
+                           (1.0 - result_y) * (2.0 * result_y - 1.0);
+    contrast_delta = clamp(contrast_delta, -0.02 * result_y,
+                           0.02 * (1.0 - result_y));
+    float tone_y = clamp(result_y + contrast_delta, 0.0, 1.0);
+    result = physical_gamut(float3(tone_y) + chroma);
+    result_y = physical_luma(result);
+    result *= min(1.0, y / max(result_y, 1e-6));
+    result = clamp(result, 0.0, 1.0);
+    destination[pixel * 3] = result.r;
+    destination[pixel * 3 + 1] = result.g;
+    destination[pixel * 3 + 2] = result.b;
 }

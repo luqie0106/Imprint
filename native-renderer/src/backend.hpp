@@ -50,6 +50,32 @@ public:
                              uint16_t *destination,
                              size_t destination_values,
                              std::string &error) = 0;
+    virtual bool render_spatial_full(const ImageLevel &source,
+                                     const float *transmission,
+                                     const ImageStats &stats,
+                                     const im_dehaze_params &dehaze,
+                                     uint16_t *destination,
+                                     size_t destination_values,
+                                     std::string &error) {
+        (void)source; (void)transmission; (void)stats; (void)dehaze;
+        (void)destination; (void)destination_values;
+        error = "Spatial dehaze is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool render_physical_float(uint32_t width,
+                                       uint32_t height,
+                                       const float *source,
+                                       const float *transmission,
+                                       const float *airlight_rgb,
+                                       const im_dehaze_params &params,
+                                       float *destination,
+                                       size_t destination_values,
+                                       std::string &error) {
+        (void)width; (void)height; (void)source; (void)transmission;
+        (void)airlight_rgb; (void)params; (void)destination; (void)destination_values;
+        error = "Physical float dehaze is unavailable on this GPU backend";
+        return false;
+    }
 };
 
 std::unique_ptr<Backend> create_backend(im_backend_kind kind, std::string &error);
