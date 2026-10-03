@@ -8,7 +8,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from dehaze import DehazeParams
-from dehaze_physical import _physical_pixels, apply_physical_dehaze
+from dehaze_physical import (
+    _backlit_optical_scale,
+    _estimate_scene,
+    _physical_pixels,
+    apply_physical_dehaze,
+)
 
 LUMA = np.array([.2126, .7152, .0722], dtype=np.float32)
 
@@ -39,6 +44,22 @@ def backlit_city_scene(*, sun=True):
         facade[:, -5:] = [.085, .095, .105]
         source[roof:, left:right] = facade
     return source.astype(np.float32, copy=False)
+
+
+def synthetic_solar_backlight(*, lower=(.025, .025, .025), sun=True,
+                              overexposed_sky=False):
+    """Create a flat sky over dark ground with an optional compact solar core."""
+    height, width = 640, 480
+    yy, xx = np.mgrid[:height, :width]
+    source = np.empty((height, width, 3), dtype=np.float32)
+    source[:] = [.52, .60, .69]
+    source[320:] = lower
+    if overexposed_sky:
+        source[:288] = 1
+    elif sun:
+        radius2 = (xx - 72) ** 2 + (yy - 58) ** 2
+        source[radius2 <= 31 ** 2] = 1
+    return source
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.uint16])
@@ -145,3 +166,116 @@ def test_physical_operator_gray_ramp_is_monotonic_through_solar_handoffs(
     # highlight-protection handoff; the source-luma ceiling preserves white.
     assert float(np.max(result @ LUMA - source @ LUMA)) <= 3e-7
     np.testing.assert_array_equal(result[0, -1], source[0, -1])
+
+
+def test_backlit_optical_scale_requires_joint_solar_and_dark_ground_evidence():
+    source = synthetic_solar_backlight()
+    params = DehazeParams(strength=.9)
+    scale = _backlit_optical_scale(source, .2, params)
+    assert 0 < scale < .5
+
+    cases = [
+        ("brightness protection disabled", source, .2,
+         DehazeParams(strength=.9, brightness_protection=0)),
+        ("strength disabled", source, .2, DehazeParams(strength=0)),
+        ("no solar core", synthetic_solar_backlight(sun=False), .2, params),
+        ("low light", source * np.float32(.08), .2, params),
+        ("broadly clipped sky", synthetic_solar_backlight(overexposed_sky=True), .2, params),
+        ("bright ground", synthetic_solar_backlight(lower=(.45, .50, .55)), .2, params),
+        ("reliable airlight", source, .95, params),
+    ]
+    for label, image, confidence, candidate_params in cases:
+        assert _backlit_optical_scale(image, confidence, candidate_params) == pytest.approx(
+            1.0, abs=1e-7
+        ), label
+
+
+def test_backlit_optical_scale_changes_continuously_across_scene_ratio_gate():
+    params = DehazeParams(strength=.9)
+    sky_luma = float(np.array([.52, .60, .69], dtype=np.float32) @ LUMA)
+    ratios = np.linspace(7.8, 14.2, 129)
+    scales = []
+    for ratio in ratios:
+        source = synthetic_solar_backlight(lower=(sky_luma / ratio,) * 3)
+        scales.append(_backlit_optical_scale(source, .2, params))
+
+    scales = np.asarray(scales)
+    assert np.all(np.isfinite(scales))
+    assert np.max(np.diff(scales)) <= 1e-7
+    assert np.max(np.abs(np.diff(scales))) < .01
+    assert scales[0] == pytest.approx(1.0)
+    assert scales[-1] < .5
+
+
+def test_fixed_transmission_weak_inverse_retains_surface_luminance_and_solar_core():
+    import dehaze_physical as physical
+
+    source = synthetic_solar_backlight()
+    source[360:600, :144] = [.25, .28, .31]
+    source[360:600, 160:304] = [.40, .43, .46]
+    original = source.copy()
+    params = DehazeParams(
+        strength=.85, local_contrast=0, color_recovery=0,
+        brightness_protection=.7,
+    ).normalized()
+    atmosphere = np.array([.62, .68, .74], dtype=np.float32)
+    base_t = .5
+    scale = _backlit_optical_scale(source, .2, params)
+    weak_t = float(np.exp(np.log(base_t) * scale))
+
+    stronger = _physical_pixels(
+        source, np.full(source.shape[:2], base_t, dtype=np.float32), atmosphere, params,
+    )
+    weaker = _physical_pixels(
+        source, np.full(source.shape[:2], weak_t, dtype=np.float32), atmosphere, params,
+    )
+    dark_region = (slice(390, 560), slice(20, 120))
+    bright_region = (slice(390, 560), slice(180, 280))
+    stronger_y = stronger @ LUMA
+    weaker_y = weaker @ LUMA
+    assert float(np.mean(weaker_y[dark_region])) > float(np.mean(stronger_y[dark_region]))
+    assert float(np.mean(weaker_y[bright_region])) > float(np.mean(stronger_y[bright_region]))
+    assert float(np.mean(weaker_y[bright_region])) > float(np.mean(weaker_y[dark_region]))
+    assert float(np.mean(stronger_y[bright_region])) > float(np.mean(stronger_y[dark_region]))
+    for result in (stronger, weaker):
+        assert np.isfinite(result).all()
+        assert float(result.min()) >= 0 and float(result.max()) <= 1
+    sun = np.max(source, axis=2) >= .9999
+    np.testing.assert_array_equal(weaker[sun], source[sun])
+    np.testing.assert_array_equal(source, original)
+
+
+def test_estimate_scene_scales_only_automatic_spatial_transmission(monkeypatch):
+    import dehaze_physical as physical
+
+    source = synthetic_solar_backlight()
+    params = DehazeParams(strength=.9)
+    requested = .5
+    confidence = .2
+    atmosphere = np.array([.58, .64, .70], dtype=np.float32)
+    monkeypatch.setattr(physical, "_estimate_airlight",
+                        lambda _rgb, _params: (atmosphere, confidence))
+    monkeypatch.setattr(
+        physical, "_transmission_map",
+        lambda image, _params: np.full(image.shape[:2], requested, dtype=np.float32),
+    )
+    monkeypatch.setattr(physical, "_global_transmission",
+                        lambda _rgb, _params: (requested, 0.0))
+
+    automatic_t, _, automatic_stats = _estimate_scene(source, params, spatial=True)
+    manual_t, _, manual_stats = _estimate_scene(source, params, spatial=False)
+    base_t = 1.0 - (1.0 - requested) * confidence
+    expected_automatic_t = np.float32(
+        np.exp(np.log(base_t) * automatic_stats["backlit_optical_scale"])
+    )
+    np.testing.assert_array_equal(automatic_t, np.full(source.shape[:2], expected_automatic_t))
+    np.testing.assert_array_equal(manual_t, np.full(source.shape[:2], np.float32(base_t)))
+    assert automatic_stats["backlit_optical_scale"] < 1.0
+    assert manual_stats["backlit_optical_scale"] == 1.0
+    assert float(np.mean(automatic_t)) > float(np.mean(manual_t))
+
+    unprotected_t, _, unprotected_stats = _estimate_scene(
+        source, DehazeParams(strength=.9, brightness_protection=0), spatial=True,
+    )
+    np.testing.assert_array_equal(unprotected_t, manual_t)
+    assert unprotected_stats["backlit_optical_scale"] == 1.0

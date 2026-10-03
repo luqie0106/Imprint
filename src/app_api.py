@@ -511,12 +511,17 @@ def save_photo_settings_snapshot(req: PhotoSettingsRequest):
             req.basic_params.values(),
             req.ricoh_preset_id,
             req.auto_mode,
+            compatibility_curves=_build_dehaze_xmp_curves(
+                req.session_id, req.photo_id, Path(path), req.dehaze_params.to_params(),
+                req.auto_mode,
+            ),
         )
         return {
             "photo_id": req.photo_id,
             "status": "saved",
             "sidecar_status": result["status"],
             "name": result["name"],
+            "dehaze_compatibility": "approximate" if req.dehaze_params.strength > 0 else "disabled",
         }
     except KeyError:
         return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
@@ -736,6 +741,26 @@ def _render_basic(image: np.ndarray, basic: dict[str, float], mode: str) -> np.n
         except Exception:
             pass
     return apply_basic_preview_effect(image, basic)
+
+
+def _build_dehaze_xmp_curves(session_id: str, photo_id: str, path: Path,
+                             params: DehazeParams, auto_mode: bool):
+    """Fit the real physical operator's display RGB change before creative edits.
+
+    A bounded preview supplies the sample. These global curves cannot represent
+    spatial transmission or Adobe's different camera profile and processing order.
+    A decoding/fitting failure aborts the XMP write, preserving the old packet.
+    """
+    if params.strength <= 0:
+        return None
+    from dehaze_xmp import fit_dehaze_curves
+    image, metadata = _cached_processing_preview(session_id, photo_id, path, 1024)
+    source = _prepare_dehaze_input(image, metadata, path, color_manage_srgb=True)
+    target = _render_dehaze(source, params, "cpu", auto_mode=auto_mode)
+    def display(rgb):
+        return np.where(rgb <= .0031308, rgb * 12.92,
+                        1.055 * np.power(np.maximum(rgb, 0), 1 / 2.4) - .055).astype(np.float32)
+    return fit_dehaze_curves(np.clip(display(source), 0, 1), np.clip(display(target), 0, 1))
 
 
 def _render_ricoh(image: np.ndarray, preset_id: str, basic: dict[str, float] | None,
@@ -1372,6 +1397,9 @@ def save_enhance_session_xmp(req: EnhanceXmpRequest):
             req.preset_ids_by_photo,
             req.auto_modes_by_photo,
             req.auto_mode,
+            curve_builder=lambda photo_id, path, params, mode: _build_dehaze_xmp_curves(
+                req.session_id, photo_id, path, DehazeParams(**params), mode,
+            ),
         )
     except KeyError:
         return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
@@ -1808,6 +1836,9 @@ def _run_enhance_job(
             try:
                 write_dehaze_settings(
                     path, photo_params.__dict__, basic, auto_mode=photo_auto_mode,
+                    compatibility_curves=_build_dehaze_xmp_curves(
+                        session_id, photo_id, Path(path), photo_params, photo_auto_mode,
+                    ),
                 )
                 xmp_status = "written"
             except Exception:

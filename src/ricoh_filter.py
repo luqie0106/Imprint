@@ -8,10 +8,11 @@ import tempfile
 import threading
 import copy
 import math
+import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from image_io import OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES
 
@@ -922,6 +923,100 @@ def _write_dehaze_auto_mode(description: ET.Element, auto_mode: bool | None) -> 
                     "true" if auto_mode else "false")
 
 
+_COMPAT_FIELDS = ("ToneCurvePV2012Red", "ToneCurvePV2012Green", "ToneCurvePV2012Blue",
+                  "ToneCurveName2012", "ProcessVersion", "HasSettings", "Version",
+                  "ToneCurvePV2012")
+
+
+def _curve_snapshot(description: ET.Element) -> dict:
+    def xml_value(child: ET.Element) -> str:
+        element = copy.deepcopy(child)
+        element.tail = None  # Formatting outside the property is not its value.
+        return ET.tostring(element, encoding="unicode")
+    return {name: {
+        "attribute": description.get("{" + _CRS_NS + "}" + name),
+        "elements": [xml_value(child) for child in description
+                     if child.tag == "{" + _CRS_NS + "}" + name],
+    } for name in _COMPAT_FIELDS}
+
+
+def _restore_dehaze_curves(description: ET.Element) -> None:
+    """Undo only fields still matching our last write; preserve Adobe edits."""
+    state_key = "{" + _IMPRINT_NS + "}DehazeCurveState"
+    raw = description.get(state_key)
+    if raw is None:
+        return
+    state = json.loads(raw)
+    current = _curve_snapshot(description)
+    for name in _COMPAT_FIELDS:
+        if name not in state["generated"] or current[name] != state["generated"][name]:
+            continue
+        key = "{" + _CRS_NS + "}" + name
+        description.attrib.pop(key, None)
+        for child in tuple(description):
+            if child.tag == key:
+                description.remove(child)
+        original = state["baseline"][name]
+        if original["attribute"] is not None:
+            description.set(key, original["attribute"])
+        for xml in original["elements"]:
+            description.append(ET.fromstring(xml))
+    description.attrib.pop(state_key, None)
+
+
+def _merge_dehaze_curves(description: ET.Element, curves) -> None:
+    """Compose display RGB fits with baseline channel curves, never crs:Dehaze.
+
+    The master curve stays intact. Adobe's profile and operation order differ
+    from our display pipeline, so this remains a global appearance approximation.
+    """
+    import numpy as np
+    _restore_dehaze_curves(description)
+    status_key = "{" + _IMPRINT_NS + "}DehazeCompatibility"
+    if curves is None:
+        description.set(status_key, "disabled")
+        return
+    if len(curves) != 3:
+        raise ValueError("invalid dehaze curves")
+    baseline = _curve_snapshot(description)
+    for name, points in zip(_COMPAT_FIELDS[:3], curves):
+        fitted = np.asarray(points, dtype=np.float64)
+        if (fitted.ndim != 2 or fitted.shape[1] != 2 or len(fitted) < 2
+                or not np.isfinite(fitted).all() or np.any(fitted < 0)
+                or np.any(fitted > 255) or np.any(np.diff(fitted[:, 0]) <= 0)
+                or np.any(np.diff(fitted[:, 1]) < 0)):
+            raise ValueError("invalid dehaze curves")
+        original = np.asarray(_read_tone_curve(description, name))
+        output = np.interp(fitted[:, 1], original[:, 0], original[:, 1])
+        key = "{" + _CRS_NS + "}" + name
+        description.attrib.pop(key, None)
+        for child in tuple(description):
+            if child.tag == key:
+                description.remove(child)
+        sequence = ET.SubElement(ET.SubElement(description, key), "{" + _RDF_NS + "}Seq")
+        for x, y in zip(fitted[:, 0], output):
+            ET.SubElement(sequence, "{" + _RDF_NS + "}li").text = f"{int(x)}, {round(float(y))}"
+    for name, value in (("ToneCurveName2012", "Custom"), ("HasSettings", "True")):
+        key = "{" + _CRS_NS + "}" + name
+        for child in tuple(description):
+            if child.tag == key:
+                description.remove(child)
+        description.set(key, value)
+    master_key = "{" + _CRS_NS + "}ToneCurvePV2012"
+    if description.find(master_key) is None and master_key not in description.attrib:
+        sequence = ET.SubElement(ET.SubElement(description, master_key), "{" + _RDF_NS + "}Seq")
+        for point in ("0, 0", "255, 255"):
+            ET.SubElement(sequence, "{" + _RDF_NS + "}li").text = point
+    if _find_simple(description, _CRS_NS, "ProcessVersion") is None:
+        description.set("{" + _CRS_NS + "}ProcessVersion", "15.4")
+    if _find_simple(description, _CRS_NS, "Version") is None:
+        description.set("{" + _CRS_NS + "}Version", "17.2")
+    description.set("{" + _IMPRINT_NS + "}DehazeCurveState", json.dumps(
+        {"baseline": baseline, "generated": _curve_snapshot(description), "fit": curves},
+        separators=(",", ":")))
+    description.set(status_key, "rgb-curves-approximation-v1")
+
+
 def _atomic_write_sidecar(photo: Path, payload: bytes, *, create_only: bool = False) -> None:
     """Commit an XMP packet atomically; first writes never replace a sidecar."""
     photo = Path(os.path.abspath(photo))
@@ -1015,6 +1110,9 @@ def _merge_preset_payload(existing_payload: bytes | None, preset_id: str,
     root = _parse_xmp(existing_payload) if existing_payload is not None else ET.Element("{adobe:ns:meta/}xmpmeta")
     destination = _description(root, create=True)
     assert destination is not None
+    previous_state = destination.get("{" + _IMPRINT_NS + "}DehazeCurveState")
+    previous_fit = json.loads(previous_state).get("fit") if previous_state else None
+    _restore_dehaze_curves(destination)
     _remove_preset_processing_fields(destination)
     # Replace only Camera Raw processing properties supplied by this preset.
     # Everything else, including custom Imprint values and vendor metadata,
@@ -1047,6 +1145,8 @@ def _merge_preset_payload(existing_payload: bytes | None, preset_id: str,
             base = float(_find_simple(source, _CRS_NS, crs_name) or 0)
             absolute = max(low, min(high, base + float(adjustment)))
             destination.set("{" + _CRS_NS + "}" + crs_name, format(absolute, ".8g"))
+    if previous_fit is not None:
+        _merge_dehaze_curves(destination, previous_fit)
     return _serialize_xmp(root)
 
 
@@ -1068,7 +1168,7 @@ def write_ricoh_preset(photo: str | Path, preset_id: str,
 
 def write_dehaze_settings(photo: str | Path, params: dict[str, float],
                           basic_params: dict[str, float] | None = None,
-                          auto_mode: bool | None = None) -> str:
+                          auto_mode: bool | None = None, *, compatibility_curves=None) -> str:
     """Merge the nine validated dehaze parameters into a photo's XMP packet."""
     if set(params) != set(_DEHAZE_FIELDS):
         raise ValueError("invalid dehaze settings")
@@ -1088,6 +1188,7 @@ def write_dehaze_settings(photo: str | Path, params: dict[str, float],
             root = _parse_xmp(existing_payload)
             description = _description(root, create=True)
         assert description is not None
+        _merge_dehaze_curves(description, compatibility_curves)
         for field_name, value in values.items():
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
@@ -1112,6 +1213,7 @@ def write_photo_settings(
     basic_params: dict[str, float],
     ricoh_preset_id: str | None,
     auto_mode: bool | None = None,
+    *, compatibility_curves=None,
 ) -> dict[str, str]:
     """Atomically merge one complete Imprint photo-settings snapshot into XMP."""
     if set(dehaze_params) != set(_DEHAZE_FIELDS):
@@ -1144,6 +1246,7 @@ def write_photo_settings(
             )
             description = _description(root, create=True)
             assert description is not None
+            _restore_dehaze_curves(description)
             existing_preset_id = _find_simple(description, _IMPRINT_NS, "RicohPresetId")
             if existing_preset_id in _PRESETS_BY_ID:
                 _remove_preset_processing_fields(description)
@@ -1157,6 +1260,7 @@ def write_photo_settings(
 
         description = _description(root, create=True)
         assert description is not None
+        _merge_dehaze_curves(description, compatibility_curves)
         for field_name, value in dehaze_values.items():
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
@@ -1284,6 +1388,7 @@ def write_dehaze_session_settings(
     preset_ids_by_photo: dict[str, str | None] | None = None,
     auto_modes_by_photo: dict[str, bool] | None = None,
     auto_mode: bool | None = None,
+    *, curve_builder: Callable | None = None,
 ) -> dict[str, object]:
     """Write per-photo dehaze values through active session records."""
     if any(value is not None and value not in _PRESETS_BY_ID
@@ -1304,18 +1409,22 @@ def write_dehaze_session_settings(
         seen.add(key)
         try:
             existing = _sidecar_path(photo)
+            mode = (auto_modes_by_photo or {}).get(photo_id, auto_mode)
+            if mode is None:
+                mode = bool(read_photo_settings(photo)["dehaze_auto_mode"])
+            curves = curve_builder(photo_id, photo, params, mode) if curve_builder else None
             basic = (basic_params_by_photo or {}).get(photo_id)
             if preset_ids_by_photo is not None and photo_id in preset_ids_by_photo:
                 if basic is None:
                     basic = read_photo_settings(photo)["basic_params"]
                 name = write_photo_settings(
                     photo, params, basic, preset_ids_by_photo[photo_id],
-                    (auto_modes_by_photo or {}).get(photo_id, auto_mode),
+                    mode, compatibility_curves=curves,
                 )["name"]
             else:
                 name = write_dehaze_settings(
                     photo, params, basic,
-                    auto_mode=(auto_modes_by_photo or {}).get(photo_id, auto_mode),
+                    auto_mode=mode, compatibility_curves=curves,
                 )
             files.append({"photo_id": photo_id, "name": name, "status": "updated" if existing else "written"})
         except (OSError, RuntimeError, ValueError, ET.ParseError) as exc:

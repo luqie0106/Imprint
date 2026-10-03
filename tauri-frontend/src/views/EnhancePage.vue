@@ -885,7 +885,7 @@ onBeforeUnmount(() => {
       <aside class="enhance-right-column space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-semibold">基础参数</h2><button type="button" @click="basicByPhoto[selectedId] = { ...basicDefaults }" :disabled="!selectedId" class="text-xs text-slate-500 hover:text-blue-600 disabled:opacity-40">重置</button></div>
-          <p class="mb-3 text-[11px] text-slate-500">作用于当前照片；调整后自动保存到 XMP，可在 Camera Raw 继续调整。</p>
+          <p class="mb-3 text-[11px] text-slate-500">调整后自动保存到 XMP。去朦胧会转换为 Camera Raw 可编辑的近似曲线，局部效果可能有差异。</p>
           <label v-for="item in basicControls" :key="item.key" class="mb-3 block text-[11px]">
             <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-500">{{ basicParams[item.key] > 0 ? '+' : '' }}{{ basicParams[item.key] }}</span></span>
             <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" @pointerdown="beginSliderInteraction" />

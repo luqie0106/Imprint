@@ -95,10 +95,41 @@ def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool
     else:
         requested, _ = _global_transmission(rgb, p)
         t = np.full(source.shape[:2], 1.0 - (1.0 - requested) * confidence, dtype=np.float32)
+    optical_scale = _backlit_optical_scale(rgb, confidence, p) if spatial else 1.0
+    if optical_scale < 1.0:
+        # Weaken the requested inverse before the shared regularizer/operator.
+        # One scene-wide factor cannot selectively lift a wall beside texture.
+        t = np.exp(np.log(np.clip(t, 1e-4, 1.0)) * optical_scale)
     stats = {"airlight": air.tolist(), "airlight_confidence": confidence,
              "transmission_min": float(np.min(t)), "transmission_median": float(np.median(t)),
+             "backlit_optical_scale": optical_scale,
              "max_inverse_gain": 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)}
     return np.ascontiguousarray(t, dtype=np.float32), air, stats
+
+
+def _backlit_optical_scale(rgb: np.ndarray, airlight_confidence: float,
+                           p: DehazeParams) -> float:
+    """Conservative scene authority for uncertain, extreme solar backlight.
+
+    Limited clipped upper coverage, a bright upper field and very dark lower
+    field must agree. A reliable airlight retains the existing inverse. These
+    are global statistics, never a texture/skyline mask or regional lift.
+    """
+    if p.strength <= 1e-6 or p.brightness_protection <= 0 or not rgb.size:
+        return 1.0
+    uncertain = 1.0 - float(_smoothstep(.65, .85, np.asarray(airlight_confidence)))
+    if uncertain <= 0:
+        return 1.0
+    y = _luminance(rgb)
+    upper_rows = max(1, round(rgb.shape[0] * .45))
+    upper_y = float(np.median(y[:upper_rows]))
+    lower_y = max(float(np.median(y[rgb.shape[0] // 2:])), .001)
+    clipped = float(np.mean(np.max(rgb[:upper_rows], axis=2) > .95))
+    sun = float(_smoothstep(.005, .015, np.asarray(clipped)))
+    sun *= 1.0 - float(_smoothstep(.15, .35, np.asarray(clipped)))
+    backlight = (sun * float(_smoothstep(8, 14, np.asarray(upper_y / lower_y)))
+                 * float(_smoothstep(.05, .10, np.asarray(upper_y))))
+    return 1.0 - .85 * p.brightness_protection * uncertain * backlight
 
 
 def _luminance(rgb: np.ndarray) -> np.ndarray:

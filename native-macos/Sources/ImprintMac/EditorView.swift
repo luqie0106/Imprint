@@ -567,6 +567,9 @@ struct EditorView: View, Equatable {
                                 .disabled(library.sessionID.isEmpty)
                         }
                     }
+                    Text("XMP 使用可编辑曲线近似去朦胧效果，局部效果可能有差异。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     if !xmpStatus.isEmpty {
                         Text(xmpStatus).font(.caption).foregroundStyle(.secondary)
                     }
