@@ -11,7 +11,7 @@ import threading
 import numpy as np
 
 
-ALGORITHM_VERSION = "linear-v11-confidence-inverse"
+ALGORITHM_VERSION = "linear-v17-backlit-recovery-rollback"
 
 
 @dataclass(frozen=True)

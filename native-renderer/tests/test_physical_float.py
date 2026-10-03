@@ -12,7 +12,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import native_renderer  # noqa: E402
-from dehaze import DehazeParams  # noqa: E402
+from dehaze import DehazeParams, _global_transmission  # noqa: E402
+import dehaze_physical as physical  # noqa: E402
 from dehaze_physical import _physical_pixels  # noqa: E402
 from native_renderer import NativeRendererError, native_physical_dehaze  # noqa: E402
 
@@ -49,6 +50,79 @@ def _params():
         highlight_protection=0.81, shadow_protection=0.72,
         brightness_protection=0.76,
     )
+
+
+def _night_skyline_scene():
+    height, width = 180, 256
+    yy, xx = np.mgrid[:height, :width]
+    source = np.empty((height, width, 3), dtype=np.float32)
+    source[:] = (0.032, 0.037, 0.043)
+    source[104:] = (0.022, 0.025, 0.029)
+    building = (yy >= 104) & (yy < 166) & (xx >= 50) & (xx < 190)
+    source[building] = (0.010, 0.012, 0.014)
+    # A few compact warm windows sit below the skyline, away from the upper
+    # scene samples used to identify a broad sun or daylight.
+    source[120:126, 69:74] = (0.42, 0.29, 0.15)
+    source[138:143, 113:119] = (0.34, 0.25, 0.14)
+    source[151:156, 164:169] = (0.38, 0.27, 0.13)
+    return source
+
+
+def test_spatial_estimator_does_not_apply_a_second_local_confidence_gate(monkeypatch):
+    source = _night_skyline_scene()
+    params = DehazeParams(strength=0.9, local_contrast=0, color_recovery=0)
+    monkeypatch.setattr(
+        physical, "_transmission_map",
+        lambda image, _params: np.full(image.shape[:2], 0.5, dtype=np.float32),
+    )
+
+    transmission, _airlight, stats = physical._estimate_scene(source, params, spatial=True)
+    np.testing.assert_allclose(
+        transmission, transmission.flat[0], atol=1e-7, rtol=0,
+    )
+    expected = 1.0 - (1.0 - 0.5) * stats["airlight_confidence"]
+    np.testing.assert_allclose(transmission, expected, atol=1e-7, rtol=0)
+
+    result = physical.apply_physical_dehaze(source, params, backend="cpu", spatial=True)
+    # These source pixels have exactly the same RGB, but one sits beside the
+    # building and the other is open sky. A local gate followed by smoothing
+    # used to make the near-building sky brighter.
+    np.testing.assert_array_equal(source[100, 49], source[100, 220])
+    np.testing.assert_allclose(result[100, 49], result[100, 220], atol=2e-7, rtol=0)
+
+
+@pytest.mark.parametrize("strength", (0.35, 0.7, 1.0))
+def test_night_skyline_full_pipeline_keeps_sky_even_and_lights_intact(strength):
+    source = _night_skyline_scene()
+    guide = source @ physical._LUMA
+    scene_median = float(np.median(guide))
+    top_sky = float(np.median(guide[: source.shape[0] // 5]))
+    upper_peak = float(np.percentile(
+        np.max(source[: source.shape[0] // 2], axis=2), 99,
+    ))
+    assert scene_median < 0.06
+    assert top_sky < 0.09
+    assert upper_peak < 0.75  # below the broad-sun classification threshold
+
+    params = DehazeParams(strength=strength, local_contrast=0, color_recovery=0)
+    global_t, _ = _global_transmission(source, params)
+    spatial_t = physical._transmission_map(source, params)
+    np.testing.assert_allclose(spatial_t, global_t, atol=1e-7, rtol=0)
+
+    result = physical.apply_physical_dehaze(source, params, backend="cpu", spatial=True)
+    # The same dark-sky RGB directly beside the skyline and in open sky must
+    # receive the same output; this catches a bright rim from leaked depth.
+    np.testing.assert_array_equal(source[100, 49], source[100, 220])
+    np.testing.assert_allclose(result[100, 49], result[100, 220], atol=2e-7, rtol=0)
+    # Dehazing may retain a real window light, but must not wash it into the
+    # neighboring dark facade or create a local sky brightness bump.
+    lamp_y = float(result[122, 71] @ physical._LUMA)
+    source_lamp_y = float(source[122, 71] @ physical._LUMA)
+    facade_y = float(result[122, 80] @ physical._LUMA)
+    assert lamp_y >= 0.95 * source_lamp_y
+    assert lamp_y > 6.0 * facade_y
+    np.testing.assert_array_equal(source[122, 75], source[122, 105])
+    np.testing.assert_allclose(result[122, 75], result[122, 105], atol=2e-7, rtol=0)
 
 
 @pytest.mark.parametrize("case", ("random", "gray-ramp", "cast-nearwhite"))
@@ -94,6 +168,72 @@ def test_metal_physical_float_nearwhite_clipped_channels_match_reference(params)
     source = nearwhite[(xx + 2 * yy) % len(nearwhite)].copy()
     transmission = (0.85 + 0.15 * (xx + yy) / (32 + 17)).astype(np.float32)
     airlight = np.array((0.2342, 0.21455, 0.1864), dtype=np.float32)
+    original = source.copy()
+    expected = _physical_pixels(source, transmission, airlight, params)
+    try:
+        actual = native_physical_dehaze(source, params, transmission, airlight)
+    except NativeRendererError as exc:
+        if requested and requested.lower() == "metal":
+            pytest.fail(f"Requested Metal physical float operator failed: {exc}")
+        pytest.skip(f"Metal physical float renderer is unavailable: {exc}")
+
+    assert actual.shape == source.shape
+    assert actual.dtype == np.float32
+    assert np.isfinite(actual).all()
+    assert np.max(np.abs(actual - expected)) <= 3e-6
+    actual_u16 = np.rint(actual * 65535.0).astype(np.int64)
+    expected_u16 = np.rint(expected * 65535.0).astype(np.int64)
+    assert np.max(np.abs(actual_u16 - expected_u16)) <= 2
+    np.testing.assert_array_equal(source, original)
+    assert native_renderer.get_last_native_physical_backend() == "Metal"
+
+
+@pytest.mark.parametrize(
+    "strength,naturalness",
+    ((0.86, 0.34), (0.12, 0.88), (1e-5, 0.45)),
+    ids=("strong-gain-floor", "soft-gain-floor", "near-identity-strength"),
+)
+def test_metal_physical_float_negative_toe_and_solar_color_match_reference(
+    strength, naturalness
+):
+    requested = os.environ.get("IMPRINT_NATIVE_RENDERER_BACKEND")
+    if requested and requested.lower() != "metal":
+        pytest.skip(f"Physical float parity is implemented for Metal, not {requested}")
+    params = DehazeParams(
+        strength=strength, naturalness=naturalness, local_contrast=0.29,
+        color_recovery=0.57, color_protection=0.31, highlight_protection=0.87,
+        shadow_protection=0.13, brightness_protection=0.27,
+    )
+    airlight = np.array((0.63, 0.69, 0.76), dtype=np.float32)
+    source = np.array((
+        (0.0005, 0.0005, 0.0005),  # true black-level shadow
+        (0.004, 0.008, 0.013),       # deep negative side, toe shoulder
+        (0.080, 0.120, 0.180),
+        (0.150, 0.170, 0.190),       # hazy negative-side midtone
+        (0.220, 0.240, 0.260),
+        (0.330, 0.360, 0.400),
+        (0.625, 0.685, 0.755),       # close below A
+        (0.630, 0.690, 0.760),       # exactly at A
+        (0.635, 0.695, 0.765),       # close above A
+        (0.800, 0.760, 0.730),       # mixed positive and negative channels
+        (0.996, 0.986, 0.963),       # colored solar highlight
+    ), dtype=np.float32)[None, :, :]
+    gain = 1.0 + 0.8 * params.strength * (1.0 - 0.35 * params.naturalness)
+    floor = 1.0 / gain
+    width = 0.015 * (1.0 - floor)
+    transmission = np.array((
+        0.22,
+        0.22,
+        max(0.0, floor - 0.5 * width),
+        0.22,
+        0.22,
+        floor,
+        min(1.0, floor + 0.5 * width),
+        min(1.0, floor + 3.0 * width),
+        0.75,
+        0.42,
+        0.93,
+    ), dtype=np.float32)[None, :]
     original = source.copy()
     expected = _physical_pixels(source, transmission, airlight, params)
     try:

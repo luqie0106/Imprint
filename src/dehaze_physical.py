@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from dehaze import DehazeParams, _global_transmission
-from dehaze_spatial import _transmission_map, _box, _smoothstep
+from dehaze_spatial import _transmission_map, _box, _smoothstep, _guided_coefficients
 
 _LUMA = np.array((0.2126, 0.7152, 0.0722), dtype=np.float32)
 _last_backend = "尚未处理"
@@ -86,18 +86,12 @@ def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool
     air, confidence = _estimate_airlight(rgb, p)
     if spatial:
         requested = _transmission_map(source, p)
-        y = rgb @ _LUMA
-        mean = _box(y, 7)
-        variance = np.maximum(_box(y * y, 7) - mean * mean, 0)
-        low_texture = 1.0 - _smoothstep(.08, .35, np.sqrt(variance) / (mean + .025))
-        lifted_dark = _smoothstep(.08, .60, np.min(rgb, axis=2) / max(float(np.min(air)), .025))
-        # Uniform white/snow or sky is ambiguous. These are modest weights,
-        # never an instruction to infer large depth from brightness alone.
-        local_confidence = .40 + .60 * low_texture * lifted_dark
-        if local_confidence.shape != source.shape[:2]:
-            local_confidence = cv2.resize(local_confidence, (source.shape[1], source.shape[0]),
-                                          interpolation=cv2.INTER_LINEAR)
-        t = 1.0 - (1.0 - requested) * confidence * local_confidence
+        # The spatial estimator already guards uncertain sky and silhouettes.
+        # Gating it again by local texture/darkness raises t around buildings
+        # and lamps; later smoothing spreads that residual veil into the sky
+        # as a luminous border. Keep the image-wide airlight confidence here;
+        # black-level protection belongs to the bounded pixel operator.
+        t = 1.0 - (1.0 - requested) * confidence
     else:
         requested, _ = _global_transmission(rgb, p)
         t = np.full(source.shape[:2], 1.0 - (1.0 - requested) * confidence, dtype=np.float32)
@@ -124,28 +118,80 @@ def _gamut(rgb: np.ndarray) -> np.ndarray:
     return np.clip(y[..., None] + chroma * scale[..., None], 0, 1)
 
 
+def _regularize_transmission(source: np.ndarray, transmission: np.ndarray) -> np.ndarray:
+    """Smooth the complete confidence-weighted optical thickness before inverse.
+
+    The scene estimator is unchanged. Filter log(t) after its confidence/sky
+    decisions, rather than smoothing a cue that later masks can divide again.
+    Coefficients share one image-wide analysis grid; no per-tile statistics or
+    regional exposure compensation can make a seam at a processing boundary.
+    """
+    depth = -np.log(np.clip(transmission, 1e-4, 1.0))
+    sample = _analysis_sample(source)
+    size = (sample.shape[1], sample.shape[0])
+    reduced = cv2.resize(depth, size, interpolation=cv2.INTER_AREA)
+    slope, intercept = _guided_coefficients(_luminance(sample), reduced, radius=8)
+    if reduced.shape != depth.shape:
+        size = (source.shape[1], source.shape[0])
+        slope = cv2.resize(slope, size, interpolation=cv2.INTER_LINEAR)
+        intercept = cv2.resize(intercept, size, interpolation=cv2.INTER_LINEAR)
+    refined = slope * _luminance(source) + intercept
+    # A constant field (manual mode included) remains constant. Projection only
+    # keeps small guided-filter overshoots inside the original global range.
+    refined = np.clip(refined, float(np.min(depth)), float(np.max(depth)))
+    return np.ascontiguousarray(np.exp(-refined), dtype=np.float32)
+
+
+def _inverse_transmission(source: np.ndarray, transmission: np.ndarray,
+                          p: DehazeParams) -> np.ndarray:
+    gain = 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)
+    floor = 1.0 / gain
+    # C1 majorant of max(t, floor). A strength-scaled knee keeps zero an exact
+    # identity, without a new fixed-width transition at tiny slider values.
+    width = .015 * (1.0 - floor)
+    t = np.maximum(transmission, floor)
+    if width > 0:
+        t = t + np.maximum(width - np.abs(transmission - floor), 0) ** 2 / (4.0 * width)
+    highlight = _smoothstep(.55, .95, np.max(source, axis=2)) * p.highlight_protection
+    return np.clip(t + (1.0 - t) * highlight, 1e-4, 1.0)
+
+
 def _physical_pixels(source: np.ndarray, transmission: np.ndarray,
                      atmosphere: np.ndarray, p: DehazeParams) -> np.ndarray:
     """Float reference for the native operator; no image-level post compensation.
 
-    Constrain t before inverse so negative RGB/shadow noise are not repaired
-    after clipping. The maximum inverse gain is <=1.8. The highlight shoulder
-    and source-luma ceiling preserve the approved solar glare behaviour.
+    Gain stays <=1.8. A monotonic C1 toe bounds negative-side atmospheric
+    subtraction without treating fog-lifted midtones as black-level shadows.
+    Positive-side highlight shoulder and solar luma ceiling are retained.
     """
     y = _luminance(source)
     air = atmosphere.reshape(1, 1, 3)
-    gain = 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)
-    shadow = 1.0 - _smoothstep(.02, .15, y)
-    retention = np.minimum(.98, .65 + .25 * p.brightness_protection + .13 * p.shadow_protection * shadow)
-    # J >= retention*I implies t >= (A-I)/(A-retention*I).
-    needed = np.maximum(air - source, 0) / np.maximum(air - retention[..., None] * source, 1e-6)
-    t = np.maximum(np.maximum(transmission, 1.0 / gain), np.max(needed, axis=2))
-    highlight = _smoothstep(.55, .95, np.max(source, axis=2)) * p.highlight_protection
-    t = t + (1.0 - t) * highlight
-    t = np.clip(t, 1e-4, 1)[..., None]
+    t = _inverse_transmission(source, transmission, p)[..., None]
     delta = source - air
     shoulder = t + (1.0 - t) * np.maximum(delta, 0) / np.maximum(1.0 - air, 1e-4)
-    recovered = air + delta / shoulder
+    positive = air + delta / shoulder
+    deficit = np.maximum(-delta, 0)
+    # Approach zero subtraction with zero derivative at I=A, where the solar
+    # ceiling hands off to the original. This avoids a contrast kink there.
+    smooth_deficit = deficit * deficit / (deficit + .025 * air + 1e-8)
+    loss = (1.0 / t - 1.0) * smooth_deficit
+    retention = .10 + .08 * p.brightness_protection + .035 * p.shadow_protection
+    # A fixed retained fraction makes fog-lifted structures hit the shadow
+    # limit before their surrounding veil, flattening their contrast. Instead
+    # the subtraction budget approaches O(I^2/A) at black and O(I) above the
+    # noise toe. This protects real shadows without capping hazy midtones at
+    # the same retained brightness. Use the same source/air ratio in linear
+    # RGB at every pixel; no regional masks or exposure compensation.
+    budget = ((1.0 - retention) * source * source
+              / (source + .12 * air + 1e-8) * p.strength)
+    fraction = loss / np.maximum(budget, 1e-8)
+    # Exact subtraction in the first half of the budget, then an exponential
+    # shoulder with matching value/slope. Output stays >= source-budget;
+    # finite differences for fixed t remain nonnegative and gain-bounded.
+    bounded = np.where(fraction <= .5, fraction,
+                       1.0 - .5 * np.exp(-2.0 * np.maximum(fraction - .5, 0)))
+    negative = source - budget * bounded
+    recovered = np.where(delta < 0, negative, positive)
     recovered_y = _luminance(recovered)
     source_hue = source * (recovered_y / np.maximum(y, 1e-6))[..., None]
     chroma_confidence = _smoothstep(.005, .08, np.linalg.norm(source - y[..., None], axis=2))
@@ -174,7 +220,16 @@ def physical_diagnostics(image: np.ndarray, params: DehazeParams, *, spatial: bo
     source = _linear_source(image)
     if not source.size:
         return {}
-    return _estimate_scene(source, params.normalized(), spatial)[2]
+    p = params.normalized()
+    transmission, _, stats = _estimate_scene(source, p, spatial)
+    transmission = _regularize_transmission(source, transmission)
+    effective = _inverse_transmission(source, transmission, p)
+    stats.update(operator_transmission_min=float(np.min(effective)),
+                 operator_transmission_median=float(np.median(effective)),
+                 shadow_retention_floor=1.0 - (.90 - .08 * p.brightness_protection
+                                               - .035 * p.shadow_protection) * p.strength,
+                 shadow_toe_airlight_ratio=.12)
+    return stats
 
 
 def apply_physical_dehaze(image: np.ndarray, params: DehazeParams | None = None,
@@ -186,6 +241,7 @@ def apply_physical_dehaze(image: np.ndarray, params: DehazeParams | None = None,
         _last_backend = "未处理（强度为 0）"
         return image.copy()
     transmission, atmosphere, _ = _estimate_scene(source, p, spatial)
+    transmission = _regularize_transmission(source, transmission)
     result = None
     if backend in ("native", "auto", "legacy_gpu", "pytorch"):
         try:

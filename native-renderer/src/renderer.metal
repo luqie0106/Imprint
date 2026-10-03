@@ -424,6 +424,22 @@ static float physical_smoothstep(float low, float high, float value) {
     return position * position * (3.0 - 2.0 * position);
 }
 
+static float physical_inverse_transmission(float transmission, float3 original,
+                                            DehazeParams p) {
+    float gain = 1.0f + 0.8f * p.strength * (1.0f - 0.35f * p.naturalness);
+    float floor = 1.0f / gain;
+    float width = 0.015f * (1.0f - floor);
+    float t = max(transmission, floor);
+    if (width > 0.0f) {
+        float softness = max(width - abs(transmission - floor), 0.0f);
+        t = t + softness * softness / (4.0f * width);
+    }
+    float highlight = physical_smoothstep(0.55f, 0.95f,
+                                          max(original.r, max(original.g, original.b))) *
+                      p.highlight_protection;
+    return clamp(t + (1.0f - t) * highlight, 1e-4f, 1.0f);
+}
+
 static float physical_luma(float3 rgb) {
 #pragma clang fp contract(off)
 #pragma clang fp reassociate(off)
@@ -458,25 +474,28 @@ kernel void render_physical_float(device const float *source [[buffer(0)]],
                              source[pixel * 3 + 2]);
     float3 air = float3(airlight[0], airlight[1], airlight[2]);
     float y = physical_luma(original);
-    float gain = 1.0 + 0.8 * p.strength * (1.0 - 0.35 * p.naturalness);
-    float shadow = 1.0 - physical_smoothstep(0.02, 0.15, y);
-    float retention = min(0.98, 0.65 + 0.25 * p.brightness_protection +
-                         0.13 * p.shadow_protection * shadow);
-    float3 needed_by_channel = max(air - original, float3(0.0)) /
-                               max(air - retention * original, float3(1e-6));
-    float needed = max(needed_by_channel.r,
-                       max(needed_by_channel.g, needed_by_channel.b));
-    float t = max(max(transmission[pixel], 1.0 / gain), needed);
-    float highlight = physical_smoothstep(0.55, 0.95,
-                                          max(original.r, max(original.g, original.b))) *
-                      p.highlight_protection;
-    t = t + (1.0 - t) * highlight;
-    t = clamp(t, 1e-4, 1.0);
+    float t = physical_inverse_transmission(transmission[pixel], original, p);
 
     float3 delta = original - air;
     float3 shoulder = float3(t) + (1.0 - t) * max(delta, float3(0.0)) /
                       max(float3(1.0) - air, float3(1e-4));
-    float3 recovered = air + delta / shoulder;
+    float3 positive = air + delta / shoulder;
+    float3 deficit = max(-delta, float3(0.0));
+    float3 smooth_deficit = deficit * deficit /
+                            (deficit + 0.025f * air + float3(1e-8f));
+    float3 loss = (1.0f / t - 1.0f) * smooth_deficit;
+    float retention = 0.10f + 0.08f * p.brightness_protection +
+                      0.035f * p.shadow_protection;
+    // Preserve black-level shadows while allowing fog-lifted midtones to
+    // leave the toe; match the linear CPU reference at every pixel.
+    float3 budget = (1.0f - retention) * original * original /
+                    (original + 0.12f * air + float3(1e-8f)) * p.strength;
+    float3 fraction = loss / max(budget, float3(1e-8f));
+    float3 bounded = select(fraction,
+                            1.0f - 0.5f * exp(-2.0f * max(fraction - 0.5f, float3(0.0f))),
+                            fraction > float3(0.5f));
+    float3 negative = original - budget * bounded;
+    float3 recovered = select(positive, negative, delta < float3(0.0f));
     float recovered_y = physical_luma(recovered);
     float3 source_hue = original * (recovered_y / max(y, 1e-6));
     float3 source_chroma = original - float3(y);
