@@ -1,8 +1,9 @@
-"""Read-only, full-resolution RAW acceptance of the linear physical dehaze stage.
+"""Read-only RAW acceptance of the linear physical dehaze stage.
 
 Rendered comparisons and diagnostics are written to an isolated output folder.
 This does not export DNG or test lens correction, creative adjustments or an
-external RAW editor.
+external RAW editor. Full-resolution processing is the default; --max-edge
+selects a preview-only comparison that cannot establish full-resolution quality.
 """
 from __future__ import annotations
 
@@ -19,7 +20,9 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLE_NAMES = ("DJI_0523.DNG", "DJI_0539.DNG", "LCR_9472.NEF", "LCR_1132.NEF")
+SAMPLE_NAMES = ("DJI_0523.DNG", "DJI_0539.DNG", "LCR_9472.NEF", "LCR_1132.NEF",
+                "LCR_9453.NEF", "LCR_0166.NEF", "LCR_8538.NEF")
+SUN_SAMPLE_STEMS = {"DJI_0523", "DJI_0539", "LCR_0166"}
 LUMA_WEIGHTS = np.array([.2126, .7152, .0722], dtype=np.float32)
 SOLAR_STRIP_HALF_WIDTH = 2
 
@@ -31,6 +34,10 @@ CONTRAST_ROIS = {
     "DJI_0539": ("DJI building", (.16, .42, .84, .92)),
     "LCR_9472": ("middle sea turbines", (.24, .30, .78, .74)),
     "LCR_1132": ("building", (.45, .34, .88, .84)),
+    # 新增样片仅使用通用构图区间，不推断场景语义。
+    "LCR_9453": ("generic center/lower region", (.20, .35, .80, .85)),
+    "LCR_0166": ("generic center/lower region", (.20, .35, .80, .85)),
+    "LCR_8538": ("generic center/lower region", (.20, .35, .80, .85)),
 }
 
 sys.path.insert(0, str(ROOT / "src"))
@@ -40,8 +47,11 @@ from image_io import read_image
 
 
 def digest(path: Path) -> str:
+    sha256 = hashlib.sha256()
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
 def linear_rgb(source: np.ndarray) -> np.ndarray:
@@ -84,8 +94,7 @@ def comparison(images, labels, output: Path, edge: int = 1600) -> None:
 
 
 def metrics(source: np.ndarray, result: np.ndarray) -> dict:
-    # Colour and pixel-change metrics use a regular sample; saturation counts
-    # and maximum luminance change are computed across the full-resolution image.
+    # 色彩和像素变化使用固定步长采样；饱和计数与最大亮度变化覆盖当前验收尺寸。
     before = linear_rgb(source)[::4, ::4]
     after = linear_rgb(result)[::4, ::4]
     y, new_y = before @ LUMA_WEIGHTS, after @ LUMA_WEIGHTS
@@ -206,27 +215,36 @@ def solar_profiles(source: np.ndarray, baseline: np.ndarray, current: np.ndarray
     }
 
 
-def sample_outputs(output: Path, path: Path) -> list[Path]:
+def sample_outputs(output: Path, path: Path, max_edge: int | None = None) -> list[Path]:
     names = [f"{path.stem}_全图对照.png", f"{path.stem}_结构ROI.png", f"{path.stem}_强度对照.png"]
-    names.append(f"{path.stem}_太阳原尺寸.png" if path.stem.startswith("DJI")
-                 else f"{path.stem}_边缘原尺寸.png")
+    region = "太阳" if path.stem in SUN_SAMPLE_STEMS else (
+        "边缘" if path.stem in ("LCR_9472", "LCR_1132") else "局部")
+    size = "原尺寸" if max_edge is None else "预览尺寸"
+    names.append(f"{path.stem}_{region}{size}.png")
     return [output / name for name in names]
 
 
 def refuse_existing_outputs(output: Path, paths: list[Path], args, result_path: Path) -> list[dict]:
     rows = []
+    selected = [path for path in paths if not args.only or path.name in args.only]
+    artifacts = [artifact for path in selected for artifact in sample_outputs(output, path, args.max_edge)]
+    artifacts += [result_path, output / "验证范围.json"]
+    if any(artifact.is_symlink() for artifact in artifacts):
+        raise ValueError("Acceptance outputs must not be symbolic links")
     if args.only and result_path.exists():
         rows = json.loads(result_path.read_text())
-    selected = [path for path in paths if not args.only or path.name in args.only]
-    if args.only is None:
-        existing = [artifact for path in selected for artifact in sample_outputs(output, path) if artifact.exists()]
-        if result_path.exists():
-            existing.append(result_path)
+        if any(row.get("max_edge") != args.max_edge for row in rows):
+            raise ValueError("Cannot resume with a different --max-edge; use an isolated output directory")
         scope_path = output / "验证范围.json"
         if scope_path.exists():
-            existing.append(scope_path)
+            scope = json.loads(scope_path.read_text())
+            previous_directory = scope.get("samples_directory")
+            if previous_directory is not None and previous_directory != str(args.samples_dir):
+                raise ValueError("Cannot resume from a different sample directory; use an isolated output directory")
+    if args.only is None:
+        existing = [artifact for artifact in artifacts if artifact.exists()]
         if existing:
-            raise FileExistsError("验收输出已存在；请指定独立输出目录，或用 --only 明确恢复选中的照片。 "
+            raise FileExistsError("Acceptance outputs already exist; use an isolated directory or --only to resume. "
                                   + ", ".join(p.name for p in existing))
     else:
         unknown = sorted(set(args.only) - set(SAMPLE_NAMES))
@@ -235,10 +253,6 @@ def refuse_existing_outputs(output: Path, paths: list[Path], args, result_path: 
         if not args.only:
             raise ValueError("--only requires at least one sample filename")
         rows = [row for row in rows if row.get("file") not in args.only]
-    selected_existing = [artifact for path in selected for artifact in sample_outputs(output, path)
-                         if artifact.exists()]
-    if selected_existing and args.only is None:
-        raise FileExistsError("验收输出已存在：" + ", ".join(p.name for p in selected_existing))
     return rows
 
 
@@ -258,33 +272,57 @@ def load_baseline(directory: Path, stage: str):
     return baseline, source_path
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only full-resolution four-RAW comparison.")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Read-only seven-RAW comparison; full resolution by default.")
     parser.add_argument("--baseline", type=Path, required=True, help="directory containing baseline src/")
     parser.add_argument("--baseline-stage", choices=("physical", "spatial"), default="physical",
                         help="baseline module to load (default: physical)")
     parser.add_argument("--baseline-label", default="v11", help="label shown for the baseline")
     parser.add_argument("--current-label", default="v12", help="label shown for the current source")
-    parser.add_argument("--strength", type=float, default=.7, help="full-resolution strength in [0, 1] (default: 0.7)")
+    parser.add_argument("--strength", type=float, default=.7, help="comparison strength in [0, 1] (default: 0.7)")
+    parser.add_argument("--samples-dir", type=Path,
+                        default=ROOT / ("sample" if (ROOT / "sample").is_dir() else "test_images"),
+                        help="RAW input directory (default: sample/ if present, otherwise test_images/)")
+    parser.add_argument("--max-edge", type=int,
+                        help="preview-only maximum edge in pixels; omit for full-resolution acceptance")
     parser.add_argument("--output", type=Path, required=True, help="isolated output directory")
     parser.add_argument("--backend", choices=("native", "cpu"), default="native",
-                        help="current full-resolution backend (default: native)")
+                        help="current comparison backend (default: native)")
     parser.add_argument("--only", nargs="*", help="explicitly resume selected sample filenames")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not 0 <= args.strength <= 1:
         parser.error("--strength must be in [0, 1]")
 
-    output = args.output.expanduser().resolve()
-    test_images = (ROOT / "test_images").resolve()
-    default_output_root = (test_images / "去朦胧输出").resolve()
-    inside_input_tree = output == test_images or test_images in output.parents
-    allowed_output_subtree = output == default_output_root or default_output_root in output.parents
-    if output in test_images.parents or (inside_input_tree and not allowed_output_subtree):
+    if args.max_edge is not None and args.max_edge < 1:
+        parser.error("--max-edge must be a positive integer")
+    if args.only is not None:
+        if not args.only:
+            parser.error("--only requires at least one sample filename")
+        unknown = sorted(set(args.only) - set(SAMPLE_NAMES))
+        if unknown:
+            parser.error(f"--only contains unknown sample names: {unknown}")
+    args.output = args.output.expanduser().resolve()
+    args.samples_dir = args.samples_dir.expanduser().resolve()
+    if not args.samples_dir.is_dir():
+        parser.error("--samples-dir must be an existing directory")
+    default_output_root = (args.samples_dir / "去朦胧输出").resolve()
+    inside_input_tree = args.output == args.samples_dir or args.samples_dir in args.output.parents
+    allowed_output_subtree = args.output == default_output_root or default_output_root in args.output.parents
+    if (args.output == args.samples_dir or args.output in args.samples_dir.parents
+            or (inside_input_tree and not allowed_output_subtree)):
         parser.error("--output must be isolated from the input photo directory")
-    paths = [ROOT / "test_images" / name for name in SAMPLE_NAMES]
+    if args.output.exists() and not args.output.is_dir():
+        parser.error("--output must be a directory")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    output = args.output
+    paths = [args.samples_dir / name for name in SAMPLE_NAMES]
     missing = [path.name for path in paths if not path.is_file()]
     if missing:
-        raise FileNotFoundError(f"missing required RAW samples in test_images: {missing}")
+        raise FileNotFoundError(f"missing required RAW samples in {args.samples_dir}: {missing}")
     output.mkdir(parents=True, exist_ok=True)
     result_path = output / "验证结果.json"
     rows = refuse_existing_outputs(output, paths, args, result_path)
@@ -297,12 +335,15 @@ def main() -> None:
                     "sha256": digest(current_source)},
     }
     protected = paths + [p.with_suffix(".xmp") for p in paths if p.with_suffix(".xmp").exists()]
-    hashes = {str(p.relative_to(ROOT)): digest(p) for p in protected}
+    hashes = {p.name: digest(p) for p in protected}
+    resolution = "full-resolution" if args.max_edge is None else "preview"
+    pixel_space = "native decoded pixels" if args.max_edge is None else "preview pixels"
 
     for path in paths:
         if args.only and path.name not in args.only:
             continue
-        image, metadata = read_image(path, preview=False)
+        image, metadata = read_image(path, preview=args.max_edge is not None,
+                                     max_edge=args.max_edge if args.max_edge is not None else 2048)
         assert metadata.color_space == "Linear sRGB"
         linear = linear_rgb(image)
         params = DehazeParams(strength=args.strength)
@@ -322,13 +363,13 @@ def main() -> None:
             assert "GPU" in backend, f"Acceptance requires the native GPU backend, got {backend}"
 
         percent = f"{args.strength * 100:g}%"
-        baseline_label = f"{args.baseline_label} {args.baseline_stage} / {percent}"
-        current_label = f"{args.current_label} physical / {percent}"
+        baseline_label = f"{args.baseline_label} {args.baseline_stage} / {percent} / {resolution}"
+        current_label = f"{args.current_label} physical / {percent} / {resolution}"
         roi_data = contrast_roi(path, image, old, result)
-        comparison([image, old, result], ["Original", baseline_label, current_label],
+        comparison([image, old, result], [f"Original / {resolution}", baseline_label, current_label],
                    output / f"{path.stem}_全图对照.png")
-        if path.stem.startswith("DJI"):
-            # Native-pixel crop around the brightest point in the source.
+        if path.stem in SUN_SAMPLE_STEMS:
+            # 在当前验收尺寸中裁切最亮点；预览模式不声称原图像素级验收。
             y = linear @ LUMA_WEIGHTS
             row, col = np.unravel_index(int(np.argmax(y)), y.shape)
             x0 = max(0, min(image.shape[1] - 1400, col - 700))
@@ -336,36 +377,36 @@ def main() -> None:
             slices = (slice(y0, min(image.shape[0], y0 + 1000)),
                       slice(x0, min(image.shape[1], x0 + 1400)))
             comparison([image[slices], old[slices], result[slices]],
-                       ["Original solar / native pixels", baseline_label, current_label],
-                       output / f"{path.stem}_太阳原尺寸.png", edge=2000)
+                       [f"Original solar / {pixel_space}", baseline_label, current_label],
+                       sample_outputs(output, path, args.max_edge)[3], edge=2000)
             del y
         else:
-            # Same normalized scene area as the existing visual edge review.
-            cx = round(image.shape[1] * (.81 if path.stem == "LCR_9472" else .70))
-            cy = round(image.shape[0] * (.48 if path.stem == "LCR_9472" else .60))
+            # 原有样片保持边缘区域；新增样片只采用通用中央下部区域。
+            center = {"LCR_9472": (.81, .48), "LCR_1132": (.70, .60)}.get(path.stem, (.50, .60))
+            cx, cy = round(image.shape[1] * center[0]), round(image.shape[0] * center[1])
             x0 = max(0, min(image.shape[1] - 1400, cx - 700))
             y0 = max(0, min(image.shape[0] - 1000, cy - 500))
             slices = (slice(y0, min(image.shape[0], y0 + 1000)),
                       slice(x0, min(image.shape[1], x0 + 1400)))
             comparison([image[slices], old[slices], result[slices]],
-                       ["Original edges / native pixels", baseline_label, current_label],
-                       output / f"{path.stem}_边缘原尺寸.png", edge=2000)
+                       [f"Original crop / {pixel_space}", baseline_label, current_label],
+                       sample_outputs(output, path, args.max_edge)[3], edge=2000)
 
         row_data = {
             "file": path.name, "shape": list(image.shape), "params": params.__dict__,
+            "resolution": resolution, "max_edge": args.max_edge, "crop_pixel_space": pixel_space,
             "baseline_stage": args.baseline_stage, "source_code_labels": code_labels,
             "backend": backend, "seconds_excluding_decode": seconds, "baseline_cpu_seconds": old_seconds,
             "baseline_metrics": metrics(image, old), "new_metrics": metrics(image, result),
             "contrast_roi": contrast_roi(path, image, old, result),
             "estimate": current_physical.physical_diagnostics(linear, params, spatial=True),
         }
-        if path.stem.startswith("DJI"):
+        if path.stem in SUN_SAMPLE_STEMS:
             row_data["solar_luminance_profiles"] = solar_profiles(image, old, result)
 
-        # Low-resolution strength sweep remains a diagnostic; the principal
-        # baseline/current comparison and all reported full-size metrics use
-        # the unscaled decoded image.
-        sample = cv2.resize(linear, (720, max(1, round(linear.shape[0] * 720 / linear.shape[1]))),
+        # 强度扫描只用于低分辨率诊断，不放大已经缩小的预览图。
+        sweep_width = min(720, linear.shape[1])
+        sample = cv2.resize(linear, (sweep_width, max(1, round(linear.shape[0] * sweep_width / linear.shape[1]))),
                             interpolation=cv2.INTER_AREA)
         np.clip(sample, 0, 1, out=sample)
         sweep, previous = [], sample
@@ -378,6 +419,7 @@ def main() -> None:
                           "finite": bool(np.isfinite(out).all())})
             previous = out
         row_data["strength_sweep"] = sweep
+        row_data["strength_sweep_shape"] = list(sample.shape)
         comparison([sample] + [current_physical.apply_physical_dehaze(
             sample, DehazeParams(strength=s), backend="cpu", spatial=True,
         ) for s in (.35, .7, 1)],
@@ -386,24 +428,27 @@ def main() -> None:
         roi_left, roi_top, roi_right, roi_bottom = roi_data["roi_pixels_xyxy"]
         roi_slices = (slice(roi_top, roi_bottom), slice(roi_left, roi_right))
         comparison([image[roi_slices], old[roi_slices], result[roi_slices]],
-                   ["Original", baseline_label, current_label],
+                   [f"Original / {resolution}", baseline_label, current_label],
                    output / f"{path.stem}_结构ROI.png", edge=1600)
 
         rows = [r for r in rows if r.get("file") != path.name] + [row_data]
         result_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2))
         print(json.dumps({"file": path.name, "strength": args.strength,
+                          "resolution": resolution, "shape": list(image.shape),
                           "seconds": round(seconds, 3), "backend": backend,
                           "metrics": row_data["new_metrics"], "contrast_roi": row_data["contrast_roi"],
                           "estimate": row_data["estimate"]}, ensure_ascii=False), flush=True)
         del image, old, linear, result, sample
 
-    unchanged = all(digest(p) == hashes[str(p.relative_to(ROOT))] for p in protected)
+    unchanged = all(digest(p) == hashes[p.name] for p in protected)
     completed_names = sorted(row.get("file") for row in rows)
     if args.only is None:
-        assert completed_names == sorted(SAMPLE_NAMES), f"Expected all four samples, got {completed_names}"
+        assert completed_names == sorted(SAMPLE_NAMES), f"Expected all seven samples, got {completed_names}"
     scope = {"source_and_xmp_unchanged": unchanged, "hashes": hashes,
              "completed_samples": completed_names, "selected_samples": args.only or list(SAMPLE_NAMES),
              "strength": args.strength, "source_code_labels": code_labels,
+             "samples_directory": str(args.samples_dir), "resolution": resolution, "max_edge": args.max_edge,
+             "full_resolution_acceptance": args.max_edge is None, "crop_pixel_space": pixel_space,
              "linear_stage_only": True, "dng_export": False, "external_import": False}
     (output / "验证范围.json").write_text(json.dumps(scope, ensure_ascii=False, indent=2))
     assert unchanged, "source photo or XMP hash changed during read-only acceptance"
