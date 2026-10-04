@@ -561,6 +561,63 @@ class EnhancedDNGColorError(ValueError):
     """Source RAW data cannot be represented as a camera-space enhanced DNG."""
 
 
+def _dng_exiftool_camera_profile(source_path: str | Path) -> tuple[np.ndarray, tuple[float, ...], str] | None:
+    """Read a DNG's explicit D65 color profile when LibRaw has no matrix."""
+    executable = _find_exiftool()
+    if executable is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                executable, "-json", "-n", "-ColorMatrix1", "-ColorMatrix2",
+                "-CalibrationIlluminant1", "-CalibrationIlluminant2",
+                "-AsShotNeutral", "-UniqueCameraModel", str(source_path),
+            ],
+            check=True, capture_output=True, text=True, timeout=8,
+        )
+        records = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError):
+        return None
+    record = records[0] if isinstance(records, list) and records else None
+    if not isinstance(record, dict):
+        return None
+
+    def numeric_values(value: Any) -> np.ndarray | None:
+        if isinstance(value, str):
+            values: Any = value.split()
+        else:
+            values = value
+        try:
+            return np.asarray(values, dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    neutral = numeric_values(record.get("AsShotNeutral"))
+    if neutral is None:
+        return None
+    model = record.get("UniqueCameraModel")
+    if (neutral.shape != (3,) or not np.isfinite(neutral).all()
+            or np.any(neutral <= 0) or not isinstance(model, str) or not model.strip()):
+        return None
+    for index in (2, 1):
+        try:
+            d65 = float(record.get(f"CalibrationIlluminant{index}")) == 21.0
+        except (TypeError, ValueError, OverflowError):
+            d65 = False
+        if not d65:
+            continue
+        matrix = numeric_values(record.get(f"ColorMatrix{index}"))
+        if matrix is None:
+            continue
+        if matrix.size != 9 or not np.isfinite(matrix).all():
+            continue
+        matrix = matrix.reshape(3, 3)
+        if abs(float(np.linalg.det(matrix))) < 1e-6:
+            continue
+        return matrix, tuple(float(value) for value in neutral), model.strip()
+    return None
+
+
 def enhanced_dng_source_data(
     processed_rgb16: np.ndarray,
     reference_rgb16: np.ndarray,
@@ -569,11 +626,11 @@ def enhanced_dng_source_data(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any], int]:
     """Prepare CFA and processed RGB in the same camera-native, sensor orientation.
 
-    LibRaw's camera-space rendering and the original linear-sRGB rendering are
-    sampled at matching full-resolution pixels to recover its color conversion.
-    The processed result is then mapped through the inverse conversion.  This
-    data must be paired with the CFA in an Enhanced Image Data DNG, never
-    written as a standalone camera-native linear DNG.
+    A fitted camera-to-sRGB transform maps only the processed color residual
+    onto the native camera rendering. The aligned linear luminance ratio carries
+    tonal changes without replacing camera colors with an inverse of LibRaw's
+    possibly clipped or nonlinear sRGB rendering. This data must be paired with
+    the CFA in an Enhanced Image Data DNG.
     """
     if (processed_rgb16.dtype != np.uint16 or reference_rgb16.dtype != np.uint16
             or processed_rgb16.shape != reference_rgb16.shape
@@ -598,7 +655,11 @@ def enhanced_dng_source_data(
             user_wb=[1.0, 1.0, 1.0, 1.0],
         )
         matrix = np.asarray(raw.rgb_xyz_matrix[:3, :], dtype=np.float64)
-        white_balance = np.asarray(raw.camera_whitebalance[:3], dtype=np.float64)
+        camera_whitebalance = getattr(raw, "camera_whitebalance", None)
+        white_balance = (
+            np.asarray(camera_whitebalance[:3], dtype=np.float64)
+            if camera_whitebalance is not None else np.asarray([], dtype=np.float64)
+        )
         black_levels = tuple(int(value) for value in raw.black_level_per_channel[:4])
         white_level = int(raw.white_level)
         sizes = raw.sizes if hasattr(raw, "sizes") else None
@@ -612,9 +673,21 @@ def enhanced_dng_source_data(
         )
     if camera.shape != reference_rgb16.shape:
         raise EnhancedDNGColorError("camera-space and processed image dimensions differ")
-    if not np.isfinite(matrix).all() or abs(np.linalg.det(matrix)) < 1e-6:
-        raise EnhancedDNGColorError("camera color matrix unavailable")
-    if not np.isfinite(white_balance).all() or np.any(white_balance <= 0):
+    if camera.dtype != np.uint16:
+        raise EnhancedDNGColorError("camera-space rendering must use uint16 samples")
+    dng_profile_override = None
+    matrix_valid = (
+        matrix.shape == (3, 3) and np.isfinite(matrix).all()
+        and abs(float(np.linalg.det(matrix))) >= 1e-6
+    )
+    if not matrix_valid:
+        if Path(source_path).suffix.lower() == ".dng":
+            dng_profile_override = _dng_exiftool_camera_profile(source_path)
+        if dng_profile_override is None:
+            raise EnhancedDNGColorError("camera color matrix unavailable")
+        matrix, _, _ = dng_profile_override
+    elif (white_balance.shape != (3,) or not np.isfinite(white_balance).all()
+          or np.any(white_balance <= 0)):
         raise EnhancedDNGColorError("camera white balance unavailable")
 
     source_samples = camera[::16, ::16].reshape(-1, 3).astype(np.float64) / 65535.0
@@ -648,13 +721,96 @@ def enhanced_dng_source_data(
     if camera_to_srgb is None:
         raise EnhancedDNGColorError("camera color transform does not fit")
     srgb_to_camera = np.linalg.inv(camera_to_srgb).astype(np.float32)
-    del camera
 
-    camera_rgb = np.empty_like(processed_rgb16)
-    for start in range(0, processed_rgb16.shape[0], 128):
-        end = min(start + 128, processed_rgb16.shape[0])
-        chunk = processed_rgb16[start:end].astype(np.float32) @ srgb_to_camera
-        camera_rgb[start:end] = np.clip(np.rint(chunk), 0, 65535).astype(np.uint16)
+    # The enhancement reference and processed image already include these
+    # geometric operations. Reapply them to both transfer inputs so their
+    # pixels still refer to the same scene coordinates as the processed image.
+    camera_base = camera
+    reference_base = reference_rgb16
+    lens_result = None
+    if source_exif.get("LensCorrectionApplied") is True:
+        try:
+            from lens_correction import apply_lens_correction
+
+            camera_base, camera_lens_result = apply_lens_correction(
+                camera_base, source_exif, require_correction=True,
+            )
+            reference_base, reference_lens_result = apply_lens_correction(
+                reference_base, source_exif, require_correction=True,
+            )
+        except Exception as exc:
+            raise EnhancedDNGColorError("lens correction cannot be reproduced for DNG export") from exc
+
+        def lens_signature(result: Any) -> tuple[Any, ...]:
+            return (
+                bool(result.applied), str(result.camera_name or ""), str(result.lens_name or ""),
+                bool(result.distortion_applied), bool(result.tca_applied),
+                bool(result.vignetting_applied),
+            )
+
+        camera_signature = lens_signature(camera_lens_result)
+        reference_signature = lens_signature(reference_lens_result)
+        operation_names = {
+            name for name, applied in (
+                ("distortion", camera_lens_result.distortion_applied),
+                ("tca", camera_lens_result.tca_applied),
+                ("vignetting", camera_lens_result.vignetting_applied),
+            ) if applied
+        }
+        recorded_operations = {
+            item.strip() for item in str(source_exif.get("LensCorrectionOperations") or "").split(",")
+            if item.strip()
+        }
+        if (
+            camera_signature != reference_signature
+            or not camera_lens_result.applied
+            or operation_names != recorded_operations
+            or str(source_exif.get("LensCorrectionEngine") or "") != "Lensfun/lensfunpy"
+            or str(source_exif.get("LensCorrectionCamera") or "") != str(camera_lens_result.camera_name or "")
+            or str(source_exif.get("LensCorrectionLens") or "") != str(camera_lens_result.lens_name or "")
+        ):
+            raise EnhancedDNGColorError("lens correction metadata does not match the source correction")
+        lens_result = camera_lens_result
+
+    # app_api skips the DNG opcode map when Lensfun already baked vignetting.
+    # Respect that choice even if stale metadata happens to carry both flags.
+    if source_exif.get("DNGGainMapApplied") is True and not bool(
+        lens_result is not None and lens_result.vignetting_applied
+    ):
+        try:
+            from dng_gainmap import apply_dng_gain_map
+
+            camera_base, camera_gain_applied = apply_dng_gain_map(camera_base, source_path)
+            reference_base, reference_gain_applied = apply_dng_gain_map(reference_base, source_path)
+        except Exception as exc:
+            raise EnhancedDNGColorError("DNG gain map cannot be reproduced for export") from exc
+        if not camera_gain_applied or camera_gain_applied != reference_gain_applied:
+            raise EnhancedDNGColorError("DNG gain map metadata does not match the source correction")
+
+    if camera_base.shape != reference_base.shape or processed_rgb16.shape != reference_base.shape:
+        raise EnhancedDNGColorError("corrected camera and reference dimensions differ")
+    # Preserve the native camera rendering exactly for identity operations,
+    # including dark pixels where a luminance ratio is intentionally undefined.
+    if np.array_equal(processed_rgb16, reference_base):
+        camera_rgb = np.ascontiguousarray(camera_base.copy())
+    else:
+        camera_rgb = np.empty_like(processed_rgb16)
+        luminance = np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32)
+        for start in range(0, processed_rgb16.shape[0], 128):
+            end = min(start + 128, processed_rgb16.shape[0])
+            processed = processed_rgb16[start:end].astype(np.float32)
+            reference = reference_base[start:end].astype(np.float32)
+            camera_chunk = camera_base[start:end].astype(np.float32)
+            processed_luma = np.maximum(processed @ luminance, 0.0)
+            reference_luma = np.maximum(reference @ luminance, 0.0)
+            ratio = processed_luma / np.maximum(reference_luma, 1.0)
+            residual = processed - reference * ratio[:, :, None]
+            # Below one reference code value, color is undefined and residual
+            # noise must not manufacture colored pixels in empty black regions.
+            residual[reference_luma < 1.0] = 0.0
+            ratio[reference_luma < 1.0] = 0.0
+            chunk = camera_chunk * ratio[:, :, None] + residual @ srgb_to_camera
+            camera_rgb[start:end] = np.clip(np.rint(chunk), 0, 65535).astype(np.uint16)
 
     orientation = int(source_exif.get("Orientation") or 1)
     if orientation == 8:
@@ -673,19 +829,23 @@ def enhanced_dng_source_data(
             or crop_origin[1] + crop_size[1] > mosaic.shape[0]):
         raise EnhancedDNGColorError("invalid RAW crop")
 
-    make = str(source_exif.get("Make") or "").strip()
-    model = str(source_exif.get("Model") or "").strip()
-    if not model:
-        raise EnhancedDNGColorError("camera model unavailable")
-    make_prefix = make.split()[0] if make else ""
-    unique_model = model if not make_prefix or model.casefold().startswith(make_prefix.casefold()) else f"{make_prefix} {model}"
-    # Adobe's Nikon Z III DNG uses this spaced camera identity.  Keep its
-    # spelling when the NEF's EXIF model uses Nikon's compact underscore form.
-    nikon_z_model = re.fullmatch(r"(?:NIKON\s+)?Z(\d+)_(\d+)", model, flags=re.IGNORECASE)
-    if make_prefix.casefold() == "nikon" and nikon_z_model:
-        unique_model = f"Nikon Z {nikon_z_model.group(1)} {nikon_z_model.group(2)}"
-    neutral = 1.0 / white_balance
-    neutral /= neutral[1]
+    if dng_profile_override is not None:
+        _, neutral, unique_model = dng_profile_override
+    else:
+        make = str(source_exif.get("Make") or "").strip()
+        model = str(source_exif.get("Model") or "").strip()
+        if not model:
+            raise EnhancedDNGColorError("camera model unavailable")
+        make_prefix = make.split()[0] if make else ""
+        unique_model = model if not make_prefix or model.casefold().startswith(make_prefix.casefold()) else f"{make_prefix} {model}"
+        # Adobe's Nikon Z III DNG uses this spaced camera identity. Keep its
+        # spelling when the NEF's EXIF model uses Nikon's compact underscore form.
+        nikon_z_model = re.fullmatch(r"(?:NIKON\s+)?Z(\d+)_(\d+)", model, flags=re.IGNORECASE)
+        if make_prefix.casefold() == "nikon" and nikon_z_model:
+            unique_model = f"Nikon Z {nikon_z_model.group(1)} {nikon_z_model.group(2)}"
+        neutral_array = 1.0 / white_balance
+        neutral_array /= neutral_array[1]
+        neutral = tuple(float(value) for value in neutral_array)
     profile = {
         "DNGColorMatrix1": tuple(float(value) for value in matrix.flat),
         "DNGAsShotNeutral": tuple(float(value) for value in neutral),

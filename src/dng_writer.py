@@ -300,6 +300,22 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
     picture_control = _metadata_text(info.get("NikonPictureControlName"))
     source_camera_profile = _metadata_text(info.get("SourceCameraProfileName"))
     embedded_profile = _metadata_text(info.get("DNGEmbeddedProfileName"))
+    acr_camera_profile = embedded_profile
+    source_profile_name = info.get("SourceCameraProfileName")
+    # Adobe ships this exact built-in; other source names require embedded data.
+    if (
+        acr_camera_profile is None
+        and isinstance(source_profile_name, str)
+        and source_profile_name == "Camera Standard"
+        and _metadata_text(info.get("Make")) is not None
+        and _metadata_text(info.get("Model")) is not None
+    ):
+        try:
+            has_native_camera_profile = _native_color_profile(info) is not None
+        except ValueError:
+            has_native_camera_profile = False
+        if has_native_camera_profile:
+            acr_camera_profile = source_profile_name
     if (
         lens_model is None
         and camera_model is None
@@ -369,10 +385,10 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
             'imprint:SourceCameraProfileName="'
             f'{escape(source_camera_profile, {chr(34): "&quot;"})}"'
         )
-    if embedded_profile is not None:
+    if acr_camera_profile is not None:
         correction_attributes.append(
             'crs:CameraProfile="'
-            f'{escape(embedded_profile, {chr(34): "&quot;"})}"'
+            f'{escape(acr_camera_profile, {chr(34): "&quot;"})}"'
         )
     raw_name = escape(source.name, {chr(34): "&quot;"})
     packet = (
