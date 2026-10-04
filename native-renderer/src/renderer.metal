@@ -484,8 +484,8 @@ kernel void render_physical_float(device const float *source [[buffer(0)]],
     float3 smooth_deficit = deficit * deficit /
                             (deficit + 0.025f * air + float3(1e-8f));
     float3 loss = (1.0f / t - 1.0f) * smooth_deficit;
-    float retention = 0.10f + 0.08f * p.brightness_protection +
-                      0.035f * p.shadow_protection;
+    float retention = 0.10f + 0.45f * p.brightness_protection +
+                      0.10f * p.shadow_protection;
     // Preserve black-level shadows while allowing fog-lifted midtones to
     // leave the toe; match the linear CPU reference at every pixel.
     float3 budget = (1.0f - retention) * original * original /

@@ -84,17 +84,15 @@ def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool
                     ) -> tuple[np.ndarray, np.ndarray, dict]:
     rgb = _analysis_sample(source)
     air, confidence = _estimate_airlight(rgb, p)
+    reference, _ = _global_transmission(rgb, p)
     if spatial:
-        requested = _transmission_map(source, p)
-        # The spatial estimator already guards uncertain sky and silhouettes.
-        # Gating it again by local texture/darkness raises t around buildings
-        # and lamps; later smoothing spreads that residual veil into the sky
-        # as a luminous border. Keep the image-wide airlight confidence here;
-        # black-level protection belongs to the bounded pixel operator.
-        t = 1.0 - (1.0 - requested) * confidence
+        # 天空分类只用于估计整幅场景的强度，不再把分类边界当作深度边界。
+        # 相同 RGB 在太阳、暗角和屋顶附近使用相同变换，避免平滑遮罩造成光圈。
+        # 明亮天空的保护值不能让天空占比大的照片整体停止去朦胧。
+        requested = float(np.median(np.minimum(_transmission_map(rgb, p), reference)))
     else:
-        requested, _ = _global_transmission(rgb, p)
-        t = np.full(source.shape[:2], 1.0 - (1.0 - requested) * confidence, dtype=np.float32)
+        requested = reference
+    t = np.full(source.shape[:2], 1.0 - (1.0 - requested) * confidence, dtype=np.float32)
     optical_scale = _backlit_optical_scale(rgb, confidence, p) if spatial else 1.0
     if optical_scale < 1.0:
         # Weaken the requested inverse before the shared regularizer/operator.
@@ -157,6 +155,8 @@ def _regularize_transmission(source: np.ndarray, transmission: np.ndarray) -> np
     Coefficients share one image-wide analysis grid; no per-tile statistics or
     regional exposure compensation can make a seam at a processing boundary.
     """
+    if float(np.min(transmission)) == float(np.max(transmission)):
+        return np.ascontiguousarray(transmission, dtype=np.float32)
     depth = -np.log(np.clip(transmission, 1e-4, 1.0))
     sample = _analysis_sample(source)
     size = (sample.shape[1], sample.shape[0])
@@ -187,6 +187,11 @@ def _inverse_transmission(source: np.ndarray, transmission: np.ndarray,
     return np.clip(t + (1.0 - t) * highlight, 1e-4, 1.0)
 
 
+def _shadow_retention(p: DehazeParams) -> float:
+    # 亮度保护限制明显减光，暗部保护提供额外余量；轻微去雾仍走精确反演。
+    return .10 + .45 * p.brightness_protection + .10 * p.shadow_protection
+
+
 def _physical_pixels(source: np.ndarray, transmission: np.ndarray,
                      atmosphere: np.ndarray, p: DehazeParams) -> np.ndarray:
     """Float reference for the native operator; no image-level post compensation.
@@ -206,7 +211,7 @@ def _physical_pixels(source: np.ndarray, transmission: np.ndarray,
     # ceiling hands off to the original. This avoids a contrast kink there.
     smooth_deficit = deficit * deficit / (deficit + .025 * air + 1e-8)
     loss = (1.0 / t - 1.0) * smooth_deficit
-    retention = .10 + .08 * p.brightness_protection + .035 * p.shadow_protection
+    retention = _shadow_retention(p)
     # A fixed retained fraction makes fog-lifted structures hit the shadow
     # limit before their surrounding veil, flattening their contrast. Instead
     # the subtraction budget approaches O(I^2/A) at black and O(I) above the
@@ -257,8 +262,7 @@ def physical_diagnostics(image: np.ndarray, params: DehazeParams, *, spatial: bo
     effective = _inverse_transmission(source, transmission, p)
     stats.update(operator_transmission_min=float(np.min(effective)),
                  operator_transmission_median=float(np.median(effective)),
-                 shadow_retention_floor=1.0 - (.90 - .08 * p.brightness_protection
-                                               - .035 * p.shadow_protection) * p.strength,
+                 shadow_retention_floor=1.0 - (1.0 - _shadow_retention(p)) * p.strength,
                  shadow_toe_airlight_ratio=.12)
     return stats
 
