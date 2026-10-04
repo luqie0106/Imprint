@@ -472,6 +472,12 @@ kernel void render_physical_float(device const float *source [[buffer(0)]],
     if (pixel >= pixel_count) return;
     float3 original = float3(source[pixel * 3], source[pixel * 3 + 1],
                              source[pixel * 3 + 2]);
+    if (p.strength <= 1e-6f) {
+        destination[pixel * 3] = original.r;
+        destination[pixel * 3 + 1] = original.g;
+        destination[pixel * 3 + 2] = original.b;
+        return;
+    }
     float3 air = float3(airlight[0], airlight[1], airlight[2]);
     float y = physical_luma(original);
     float t = physical_inverse_transmission(transmission[pixel], original, p);
@@ -515,6 +521,18 @@ kernel void render_physical_float(device const float *source [[buffer(0)]],
     result = physical_gamut(float3(tone_y) + chroma);
     result_y = physical_luma(result);
     result *= min(1.0, y / max(result_y, 1e-6));
+    // Bound added color by the original RGB headroom at the final luminance.
+    // Scaling the deviation from source hue avoids dimming a colored solar
+    // core or reversing its continuous radial gradient.
+    result_y = min(physical_luma(result), y);
+    float3 base = original * (result_y / max(y, 1e-20f));
+    float3 deviation = result - base;
+    float3 upper_room = max(original - base, float3(0.0f)) /
+                        max(deviation, float3(1e-20f));
+    float3 lower_room = base / max(-deviation, float3(1e-20f));
+    float3 room = select(lower_room, upper_room, deviation > float3(0.0f));
+    float colour_scale = clamp(min(room.r, min(room.g, room.b)), 0.0f, 1.0f);
+    result = base + deviation * colour_scale;
     result = clamp(result, 0.0, 1.0);
     destination[pixel * 3] = result.r;
     destination[pixel * 3 + 1] = result.g;

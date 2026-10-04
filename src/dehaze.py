@@ -11,7 +11,7 @@ import threading
 import numpy as np
 
 
-ALGORITHM_VERSION = "linear-v19-uniform-sky-shadow-color-backlit-confidence"
+ALGORITHM_VERSION = "linear-v22-uniform-sky-dark-background-envelope"
 
 
 @dataclass(frozen=True)

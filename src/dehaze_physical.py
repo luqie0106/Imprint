@@ -42,8 +42,8 @@ def _analysis_sample(source: np.ndarray) -> np.ndarray:
     return source
 
 
-def _estimate_airlight(rgb: np.ndarray, p: DehazeParams) -> tuple[np.ndarray, float]:
-    """Broad unsaturated upper candidates, with coverage and agreement checks.
+def _estimate_upper_airlight(rgb: np.ndarray, p: DehazeParams) -> tuple[np.ndarray, float]:
+    """Estimate airlight from unsaturated, low-texture upper-frame candidates.
 
     A bright object is not proof of fog. Saturated glare is excluded from the
     estimate; texture, colour/brightness disagreement and dark scenes reduce
@@ -59,7 +59,9 @@ def _estimate_airlight(rgb: np.ndarray, p: DehazeParams) -> tuple[np.ndarray, fl
                   & (np.max(upper, axis=2) < .94))
     count = int(np.count_nonzero(candidates))
     if count < 8:
-        air = np.median(upper.reshape(-1, 3), axis=0)
+        unsaturated = upper[np.max(upper, axis=2) < .94]
+        fallback = unsaturated if unsaturated.size else upper.reshape(-1, 3)
+        air = np.median(fallback, axis=0)
         confidence = .15
     else:
         pool = upper[candidates]
@@ -78,6 +80,60 @@ def _estimate_airlight(rgb: np.ndarray, p: DehazeParams) -> tuple[np.ndarray, fl
     neutral_mix = p.color_protection * (.35 + .35 * (1.0 - confidence))
     air = air * (1.0 - neutral_mix) + neutral * neutral_mix
     return air.astype(np.float32), float(confidence)
+
+
+def _estimate_broad_airlight(rgb: np.ndarray, p: DehazeParams
+                             ) -> tuple[np.ndarray, float] | None:
+    """Estimate airlight from broad dark-channel support across the full frame.
+
+    Eroding the dark channel makes narrow bright details insufficient evidence;
+    clipped light and its immediate neighborhood cannot enter the candidate pool.
+    ``None`` means there are too few eligible pixels for a stable estimate.
+    """
+    if not rgb.size:
+        return None
+    kernel = np.ones((11, 11), dtype=np.uint8)
+    dark = cv2.erode(np.min(rgb, axis=2), kernel)
+    clipped = cv2.dilate((np.max(rgb, axis=2) >= .94).astype(np.uint8), kernel).astype(bool)
+    eligible = ~clipped
+    values = dark[eligible]
+    if values.size < 8:
+        return None
+
+    threshold = float(np.percentile(values, 99))
+    candidates = eligible & (dark >= threshold)
+    smoothed = cv2.boxFilter(rgb, -1, (11, 11))
+    pool = smoothed[candidates]
+    if pool.size == 0:
+        return None
+    air = np.median(pool, axis=0)
+    air_luma = float(air @ _LUMA)
+    spread = float(np.median(np.linalg.norm(pool - air, axis=1))) / max(air_luma, 1e-6)
+    agreement = 1.0 - float(_smoothstep(.12, .60, np.asarray(spread)))
+    signal = float(_smoothstep(.001, .006, np.asarray(air_luma)))
+    confidence = .15 + .85 * agreement * signal
+
+    neutral_mix = p.color_protection * (.35 + .35 * (1.0 - confidence))
+    air = air * (1.0 - neutral_mix) + air_luma * neutral_mix
+    return np.clip(air, .00001, 1).astype(np.float32), float(confidence)
+
+
+def _estimate_airlight(rgb: np.ndarray, p: DehazeParams) -> tuple[np.ndarray, float]:
+    """Blend the upper-frame prior with full-frame broad dark-channel evidence."""
+    upper_air, upper_confidence = _estimate_upper_airlight(rgb, p)
+    upper_luma = float(upper_air @ _LUMA)
+    broad_weight = 1.0 - float(_smoothstep(.025, .12, np.asarray(upper_luma)))
+    if broad_weight <= 0:
+        return upper_air, upper_confidence
+
+    broad = _estimate_broad_airlight(rgb, p)
+    if broad is None:
+        return upper_air, upper_confidence
+    broad_air, broad_confidence = broad
+    air = upper_air * (1.0 - broad_weight) + broad_air * broad_weight
+    confidence = (upper_confidence * (1.0 - broad_weight)
+                  + broad_confidence * broad_weight)
+    return np.clip(air, .00001, 1).astype(np.float32), float(confidence)
 
 
 def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool
@@ -249,7 +305,57 @@ def _physical_pixels(source: np.ndarray, transmission: np.ndarray,
     # never changes channel ratios. It is independent of A or sky thresholds.
     result_y = _luminance(result)
     result *= np.minimum(1.0, y / np.maximum(result_y, 1e-6))[..., None]
+    return _source_colour_ceiling(source, result)
+
+
+def _source_colour_ceiling(source: np.ndarray, result: np.ndarray) -> np.ndarray:
+    """Bound added colour at fixed luminance, keeping the solar core intact."""
+    y = _luminance(source)
+    result_y = np.minimum(_luminance(result), y)
+    base = source * (result_y / np.maximum(y, 1e-20))[..., None]
+    deviation = result - base
+    upper_room = np.maximum(source - base, 0) / np.maximum(deviation, 1e-20)
+    lower_room = base / np.maximum(-deviation, 1e-20)
+    room = np.where(deviation > 0, upper_room, lower_room)
+    colour_scale = np.clip(np.min(room, axis=2), 0, 1)
+    result = base + deviation * colour_scale[..., None]
     return np.clip(result, 0, 1).astype(np.float32)
+
+
+def _dark_background_floor(source: np.ndarray, atmosphere: np.ndarray,
+                           p: DehazeParams) -> float:
+    """A dark-sky exposure reference, not an estimate of smoke radiance."""
+    authority = 1.0 - float(_smoothstep(.065, .09, _luminance(atmosphere)))
+    if authority <= 0 or p.brightness_protection <= 0:
+        return 0.0
+    sample = _analysis_sample(source)
+    upper_y = _luminance(sample[:max(1, round(sample.shape[0] * .30))])
+    background = float(np.percentile(upper_y, 90))
+    return background * 1.25 * (p.brightness_protection / .70) * authority
+
+
+def _protect_dark_background(source: np.ndarray, result: np.ndarray,
+                             floor_level: float) -> np.ndarray:
+    """Keep dark background exposure without lifting recovered smoke/lights.
+
+    A monotonic source-value envelope and C1 handoff replace the image-wide
+    gain. Above the envelope the complete inverse remains exactly unchanged.
+    One image-wide reference is shared across row blocks, with no spatial mask.
+    """
+    if floor_level <= 1e-8:
+        return result
+    source_y = _luminance(source)
+    result_y = _luminance(result)
+    floor = floor_level * (-np.expm1(-source_y / floor_level))
+    width = .02 * floor_level
+    delta = result_y - floor
+    target_y = np.maximum(result_y, floor)
+    target_y += np.maximum(width - np.abs(delta), 0) ** 2 / (4.0 * width)
+    lift = np.maximum(target_y - result_y, 0)
+    # Add luminance on the original hue line, never a colour/atmosphere lift.
+    candidate = result + source * (lift / np.maximum(source_y, 1e-20))[..., None]
+    protected = _source_colour_ceiling(source, candidate)
+    return np.where((lift > 0)[..., None], protected, result)
 
 
 def physical_diagnostics(image: np.ndarray, params: DehazeParams, *, spatial: bool = False) -> dict:
@@ -257,13 +363,14 @@ def physical_diagnostics(image: np.ndarray, params: DehazeParams, *, spatial: bo
     if not source.size:
         return {}
     p = params.normalized()
-    transmission, _, stats = _estimate_scene(source, p, spatial)
+    transmission, atmosphere, stats = _estimate_scene(source, p, spatial)
     transmission = _regularize_transmission(source, transmission)
     effective = _inverse_transmission(source, transmission, p)
     stats.update(operator_transmission_min=float(np.min(effective)),
                  operator_transmission_median=float(np.median(effective)),
                  shadow_retention_floor=1.0 - (1.0 - _shadow_retention(p)) * p.strength,
-                 shadow_toe_airlight_ratio=.12)
+                 shadow_toe_airlight_ratio=.12,
+                 dark_background_floor=_dark_background_floor(source, atmosphere, p))
     return stats
 
 
@@ -293,6 +400,14 @@ def apply_physical_dehaze(image: np.ndarray, params: DehazeParams | None = None,
             stop = min(source.shape[0], start + 256)
             result[start:stop] = _physical_pixels(source[start:stop], transmission[start:stop], atmosphere, p)
         _last_backend = "Python CPU（线性浮点）"
+    # The shared dark-background guard leaves recovered smoke and lights
+    # unchanged; it never applies an exposure gain to the complete image.
+    floor_level = _dark_background_floor(source, atmosphere, p)
+    if floor_level > 1e-8:
+        for start in range(0, source.shape[0], 256):
+            stop = min(source.shape[0], start + 256)
+            result[start:stop] = _protect_dark_background(
+                source[start:stop], result[start:stop], floor_level)
     if image.dtype == np.float32:
         return result
     peak = np.iinfo(image.dtype).max

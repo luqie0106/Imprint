@@ -254,6 +254,97 @@ def test_metal_physical_float_negative_toe_and_solar_color_match_reference(
     assert native_renderer.get_last_native_physical_backend() == "Metal"
 
 
+def _solar_ramp_reference(brightness_protection, airlight_values):
+    params = DehazeParams(
+        strength=0.91, naturalness=0.24, fog_retention=0.30,
+        local_contrast=0.74, color_recovery=0.96, color_protection=0.08,
+        highlight_protection=0.94, shadow_protection=0.12,
+        brightness_protection=brightness_protection,
+    )
+    height = width = 97
+    yy, xx = np.mgrid[:height, :width].astype(np.float32)
+    radius = np.sqrt((xx - 48.0) ** 2 + (yy - 48.0) ** 2)
+    halo = np.exp(-((radius / 22.0) ** 2))
+    source = np.empty((height, width, 3), dtype=np.float32)
+    source[:] = (0.52, 0.60, 0.68)
+    source += halo[..., None] * np.array((0.43, 0.32, 0.20), dtype=np.float32)
+    transmission = np.full((height, width), 0.46, dtype=np.float32)
+    airlight = np.array(airlight_values, dtype=np.float32)
+    original = source.copy()
+    expected = _physical_pixels(source, transmission, airlight, params)
+    return params, source, transmission, airlight, original, expected, radius
+
+
+def _assert_solar_radial_continuity(source, radius, expected):
+    radial_edges = np.arange(0.0, 32.0, 2.0, dtype=np.float32)
+    rings = [(radius >= edge) & (radius < edge + 2.0) for edge in radial_edges]
+    output_luma = expected @ physical._LUMA
+    luma_profile = np.array([output_luma[ring].mean() for ring in rings])
+    red_blue_profile = np.array([
+        (expected[..., 0] - expected[..., 2])[ring].mean() for ring in rings
+    ])
+    assert np.isfinite(expected).all()
+    assert float(np.max(output_luma - source @ physical._LUMA)) <= 3e-7
+    assert float(np.max(np.diff(luma_profile))) <= 2e-6
+    assert float(np.max(np.diff(red_blue_profile))) <= 2e-6
+
+
+@pytest.mark.parametrize("brightness_protection", (0.0, 0.7, 1.0))
+@pytest.mark.parametrize(
+    "airlight_values",
+    (
+        pytest.param((0.63, 0.69, 0.76), id="bright-airlight"),
+        pytest.param((0.07, 0.09, 0.12), id="dim-airlight"),
+    ),
+)
+def test_physical_float_colored_solar_ramp_cpu_radial_gradient(
+    brightness_protection, airlight_values,
+):
+    _, source, _, _, original, expected, radius = _solar_ramp_reference(
+        brightness_protection, airlight_values,
+    )
+    _assert_solar_radial_continuity(source, radius, expected)
+    np.testing.assert_array_equal(source, original)
+
+
+@pytest.mark.parametrize("brightness_protection", (0.0, 0.7, 1.0))
+@pytest.mark.parametrize(
+    "airlight_values",
+    (
+        pytest.param((0.63, 0.69, 0.76), id="bright-airlight"),
+        pytest.param((0.07, 0.09, 0.12), id="dim-airlight"),
+    ),
+)
+def test_metal_physical_float_colored_solar_ramp_matches_reference(
+    brightness_protection, airlight_values,
+):
+    requested = os.environ.get("IMPRINT_NATIVE_RENDERER_BACKEND")
+    if requested and requested.lower() != "metal":
+        pytest.skip(f"Physical float parity is implemented for Metal, not {requested}")
+
+    params, source, transmission, airlight, original, expected, radius = (
+        _solar_ramp_reference(brightness_protection, airlight_values)
+    )
+    # This also runs before a possible Metal-unavailable skip below.
+    _assert_solar_radial_continuity(source, radius, expected)
+    try:
+        actual = native_physical_dehaze(source, params, transmission, airlight)
+    except NativeRendererError as exc:
+        if requested and requested.lower() == "metal":
+            pytest.fail(f"Requested Metal physical float operator failed: {exc}")
+        pytest.skip(f"Metal physical float renderer is unavailable: {exc}")
+
+    assert actual.shape == source.shape
+    assert actual.dtype == np.float32
+    assert np.isfinite(actual).all()
+    assert np.max(np.abs(actual - expected)) <= 3e-6
+    actual_u16 = np.rint(actual * 65535.0).astype(np.int64)
+    expected_u16 = np.rint(expected * 65535.0).astype(np.int64)
+    assert np.max(np.abs(actual_u16 - expected_u16)) <= 2
+    np.testing.assert_array_equal(source, original)
+    assert native_renderer.get_last_native_physical_backend() == "Metal"
+
+
 def test_old_renderer_without_optional_float_abi_raises(monkeypatch):
     monkeypatch.setattr(native_renderer, "_get_library",
                         lambda: (SimpleNamespace(), "old-renderer"))
