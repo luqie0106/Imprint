@@ -498,6 +498,7 @@ def _apply_geometry(
     source = corrected.copy()
     combined_applied = False
     geometry_applied = False
+    # Bilinear interpolation avoids negative ringing around high-contrast point lights.
     for y in range(0, height, STRIP_HEIGHT):
         strip_height = min(STRIP_HEIGHT, height - y)
         maps = None
@@ -509,7 +510,7 @@ def _apply_geometry(
                     source[..., channel],
                     maps[..., channel, 0],
                     maps[..., channel, 1],
-                    interpolation=cv2.INTER_LANCZOS4,
+                    interpolation=cv2.INTER_LINEAR,
                     borderMode=cv2.BORDER_REFLECT101,
                 )
                 corrected[y : y + strip_height, :, channel] = remapped
@@ -529,7 +530,7 @@ def _apply_geometry(
                 source[..., channel],
                 coordinate_map[..., 0],
                 coordinate_map[..., 1],
-                interpolation=cv2.INTER_LANCZOS4,
+                interpolation=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_REFLECT101,
             )
             corrected[y : y + strip_height, :, channel] = remapped

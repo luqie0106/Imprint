@@ -92,7 +92,7 @@ from lens_correction import (
 )
 from dng_gainmap import apply_dng_gain_map
 
-LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-v1"
+LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-bilinear-v2"
 
 import io
 import cv2
