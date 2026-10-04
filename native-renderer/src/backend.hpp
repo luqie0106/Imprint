@@ -30,6 +30,7 @@ class Backend {
 public:
     virtual ~Backend() = default;
     virtual const char *name() const = 0;
+    virtual bool supports_physical_float() const { return false; }
     virtual bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) = 0;
     virtual bool set_filter(const im_filter_params &params,
                             const std::vector<uint16_t> &curve,

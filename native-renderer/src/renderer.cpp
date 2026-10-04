@@ -312,6 +312,10 @@ const char *im_renderer_backend_name(const im_renderer *renderer) {
     return renderer && renderer->backend ? renderer->backend->name() : "unavailable";
 }
 
+int im_renderer_supports_physical_float(const im_renderer *renderer) {
+    return renderer && renderer->backend && renderer->backend->supports_physical_float() ? 1 : 0;
+}
+
 im_status im_renderer_upload_preview_image(im_renderer *renderer, uint32_t width, uint32_t height,
                                            const uint16_t *rgb16, size_t value_count) {
     if (!renderer || !rgb16 || !width || !height || width > 65535 || height > 65535) return IM_STATUS_INVALID_ARGUMENT;

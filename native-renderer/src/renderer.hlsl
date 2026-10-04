@@ -358,3 +358,132 @@ void render_kernel(uint3 thread_id : SV_DispatchThreadID) {
     DestinationData.Store(output_base + 4, round_to_even_u16(color.g));
     DestinationData.Store(output_base + 8, round_to_even_u16(color.b));
 }
+
+float physical_smoothstep(float low, float high, float value) {
+    float position = clamp((value - low) / (high - low), 0.0, 1.0);
+    return position * position * (3.0 - 2.0 * position);
+}
+
+float physical_inverse_transmission(float transmission, float3 original) {
+    float gain = 1.0 + 0.8 * dehaze0.x * (1.0 - 0.35 * dehaze0.y);
+    float floor_value = 1.0 / gain;
+    float width = 0.015 * (1.0 - floor_value);
+    float t = max(transmission, floor_value);
+    if (width > 0.0) {
+        float softness = max(width - abs(transmission - floor_value), 0.0);
+        t = t + softness * softness / (4.0 * width);
+    }
+    float highlight = physical_smoothstep(
+        0.55, 0.95, max(original.r, max(original.g, original.b))) * dehaze1.z;
+    return clamp(t + (1.0 - t) * highlight, 1e-4, 1.0);
+}
+
+float physical_luma(float3 rgb) {
+    precise float red = rgb.r * 0.2126f;
+    precise float green = rgb.g * 0.7152f;
+    precise float blue = rgb.b * 0.0722f;
+    precise float red_green = red + green;
+    precise float result = red_green + blue;
+    return result;
+}
+
+float3 physical_gamut(float3 rgb) {
+    float y = physical_luma(rgb);
+    float3 chroma = rgb - float3(y, y, y);
+    float3 positive_room = (1.0 - float3(y, y, y)) / max(chroma, float3(1e-7, 1e-7, 1e-7));
+    float3 negative_room = float3(y, y, y) / max(-chroma, float3(1e-7, 1e-7, 1e-7));
+    float3 room = float3(chroma.r > 0.0 ? positive_room.r : negative_room.r,
+                         chroma.g > 0.0 ? positive_room.g : negative_room.g,
+                         chroma.b > 0.0 ? positive_room.b : negative_room.b);
+    float scale = clamp(min(room.r, min(room.g, room.b)), 0.0, 1.0);
+    return clamp(float3(y, y, y) + chroma * scale, 0.0, 1.0);
+}
+
+float physical_bounded_fraction(float fraction) {
+    if (fraction <= 0.5) return fraction;
+    return 1.0 - 0.5 * exp(-2.0 * max(fraction - 0.5, 0.0));
+}
+
+float3 physical_recovered(float3 positive, float3 negative, float3 delta) {
+    return float3(delta.r < 0.0 ? negative.r : positive.r,
+                  delta.g < 0.0 ? negative.g : positive.g,
+                  delta.b < 0.0 ? negative.b : positive.b);
+}
+
+float3 physical_room(float3 lower_room, float3 upper_room, float3 deviation) {
+    return float3(deviation.r > 0.0 ? upper_room.r : lower_room.r,
+                  deviation.g > 0.0 ? upper_room.g : lower_room.g,
+                  deviation.b > 0.0 ? upper_room.b : lower_room.b);
+}
+
+[numthreads(256, 1, 1)]
+void render_physical_float(uint3 thread_id : SV_DispatchThreadID) {
+    uint pixel = thread_id.x + thread_id.y * dispatch.w;
+    if (pixel >= dispatch.y) return;
+
+    uint input_base = pixel * 12u;
+    float3 original = float3(asfloat(SourceData.Load(input_base)),
+                             asfloat(SourceData.Load(input_base + 4u)),
+                             asfloat(SourceData.Load(input_base + 8u)));
+    if (dehaze0.x <= 1e-6) {
+        DestinationData.Store(input_base, asuint(original.r));
+        DestinationData.Store(input_base + 4u, asuint(original.g));
+        DestinationData.Store(input_base + 8u, asuint(original.b));
+        return;
+    }
+
+    float3 air = float3(stats0.z, stats0.w, stats1.x);
+    float y = physical_luma(original);
+    float t = physical_inverse_transmission(load_transmission(pixel), original);
+
+    float3 delta = original - air;
+    float3 shoulder = float3(t, t, t) + (1.0 - t) * max(delta, float3(0.0, 0.0, 0.0)) /
+                      max(float3(1.0, 1.0, 1.0) - air, float3(1e-4, 1e-4, 1e-4));
+    float3 positive = air + delta / shoulder;
+    float3 deficit = max(-delta, float3(0.0, 0.0, 0.0));
+    float3 smooth_deficit = deficit * deficit /
+                            (deficit + 0.025 * air + float3(1e-8, 1e-8, 1e-8));
+    float3 loss = (1.0 / t - 1.0) * smooth_deficit;
+    float retention = 0.10 + 0.45 * dehaze2.x + 0.10 * dehaze1.w;
+    float3 budget = (1.0 - retention) * original * original /
+                    (original + 0.12 * air + float3(1e-8, 1e-8, 1e-8)) * dehaze0.x;
+    float3 fraction = loss / max(budget, float3(1e-8, 1e-8, 1e-8));
+    float3 bounded = float3(physical_bounded_fraction(fraction.r),
+                            physical_bounded_fraction(fraction.g),
+                            physical_bounded_fraction(fraction.b));
+    float3 negative = original - budget * bounded;
+    float3 recovered = physical_recovered(positive, negative, delta);
+    float recovered_y = physical_luma(recovered);
+    float3 source_hue = original * (recovered_y / max(y, 1e-6));
+    float3 source_chroma = original - float3(y, y, y);
+    float chroma_confidence = physical_smoothstep(0.005, 0.08, length(source_chroma));
+    float physical_colour = (1.0 - dehaze1.y) *
+                            (0.28 + 0.72 * (1.0 - dehaze0.y)) * chroma_confidence;
+    float3 result = recovered * physical_colour + source_hue * (1.0 - physical_colour);
+
+    float result_y = physical_luma(result);
+    float3 chroma = result - float3(result_y, result_y, result_y);
+    chroma *= 1.0 + 0.25 * dehaze1.x * dehaze0.x * chroma_confidence;
+    float contrast_delta = 0.15 * dehaze0.w * dehaze0.x * result_y *
+                           (1.0 - result_y) * (2.0 * result_y - 1.0);
+    contrast_delta = clamp(contrast_delta, -0.02 * result_y,
+                           0.02 * (1.0 - result_y));
+    float tone_y = clamp(result_y + contrast_delta, 0.0, 1.0);
+    result = physical_gamut(float3(tone_y, tone_y, tone_y) + chroma);
+    result_y = physical_luma(result);
+    result *= min(1.0, y / max(result_y, 1e-6));
+
+    result_y = min(physical_luma(result), y);
+    float3 base = original * (result_y / max(y, 1e-20));
+    float3 deviation = result - base;
+    float3 upper_room = max(original - base, float3(0.0, 0.0, 0.0)) /
+                        max(deviation, float3(1e-20, 1e-20, 1e-20));
+    float3 lower_room = base / max(-deviation, float3(1e-20, 1e-20, 1e-20));
+    float3 room = physical_room(lower_room, upper_room, deviation);
+    float colour_scale = clamp(min(room.r, min(room.g, room.b)), 0.0, 1.0);
+    result = clamp(base + deviation * colour_scale, 0.0, 1.0);
+
+    DestinationData.Store(input_base, asuint(result.r));
+    DestinationData.Store(input_base + 4u, asuint(result.g));
+    DestinationData.Store(input_base + 8u, asuint(result.b));
+}

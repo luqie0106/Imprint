@@ -132,6 +132,10 @@ def _configure_library(library: ctypes.CDLL) -> None:
     library.im_renderer_last_error.restype = ctypes.c_char_p
     library.im_renderer_backend_name.argtypes = [renderer]
     library.im_renderer_backend_name.restype = ctypes.c_char_p
+    physical_support = getattr(library, "im_renderer_supports_physical_float", None)
+    if physical_support is not None:
+        physical_support.argtypes = [renderer]
+        physical_support.restype = ctypes.c_int
     library.im_renderer_render_full.argtypes = [
         renderer,
         ctypes.c_uint32,
@@ -203,10 +207,18 @@ def _configure_library(library: ctypes.CDLL) -> None:
         physical_float.restype = ctypes.c_int
 
 
+def _supports_physical_float(library: object, renderer: object, backend: str) -> bool:
+    query = getattr(library, "im_renderer_supports_physical_float", None)
+    if query is not None:
+        return bool(query(renderer))
+    # Older libraries exported the float ABI with only a Metal implementation.
+    return backend.lower() == "metal"
+
+
 def native_physical_dehaze(
     image: np.ndarray, params: object, transmission: np.ndarray, atmosphere: np.ndarray,
 ) -> np.ndarray:
-    """Run the optional linear-float physical dehaze operator on Metal."""
+    """Run the optional linear-float physical operator on Metal or D3D12."""
     global _last_native_physical_backend
     _last_native_physical_backend = None
     if not isinstance(image, np.ndarray):
@@ -252,7 +264,7 @@ def native_physical_dehaze(
         raise NativeRendererError("Native physical float dehaze ABI is unavailable")
     renderer, backend = _create_renderer(library)
     try:
-        if backend.lower() != "metal":
+        if not _supports_physical_float(library, renderer, backend):
             raise NativeRendererError(
                 f"Native physical float dehaze is unavailable on this backend ({backend})"
             )
@@ -290,7 +302,7 @@ def get_native_physical_status() -> dict[str, object]:
             renderer = None
             try:
                 renderer, backend = _create_renderer(library)
-                gpu_available = backend.lower() == "metal"
+                gpu_available = _supports_physical_float(library, renderer, backend)
                 physical_backend = backend if gpu_available else None
             finally:
                 if renderer is not None:

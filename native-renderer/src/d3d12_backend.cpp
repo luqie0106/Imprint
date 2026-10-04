@@ -169,6 +169,7 @@ public:
 
     bool ready() const { return ready_; }
     const char *name() const override { return "D3D12"; }
+    bool supports_physical_float() const override { return ready_; }
 
     bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) override {
         std::array<ComPtr<ID3D12Resource>, 3> next_resources{};
@@ -421,6 +422,112 @@ public:
         return true;
     }
 
+    bool render_physical_float(uint32_t width, uint32_t height,
+                               const float *source, const float *transmission,
+                               const float *airlight_rgb, const im_dehaze_params &params,
+                               float *destination, size_t destination_values,
+                               std::string &error) override {
+        const uint64_t pixels64 = static_cast<uint64_t>(width) * height;
+        constexpr uint64_t max_values = 1ull << 29;
+        if (!width || !height || width > 65535 || height > 65535 || !source ||
+            !transmission || !airlight_rgb || !destination || pixels64 > max_values / 3) {
+            error = "D3D12 physical float input or output dimensions are invalid";
+            return false;
+        }
+        const uint64_t values64 = pixels64 * 3;
+        if (destination_values < values64 ||
+            values64 > std::numeric_limits<size_t>::max() / sizeof(float) ||
+            pixels64 > std::numeric_limits<uint32_t>::max()) {
+            error = "D3D12 physical float input or output size is unsupported";
+            return false;
+        }
+
+        const size_t values = static_cast<size_t>(values64);
+        const size_t pixel_count = static_cast<size_t>(pixels64);
+        const size_t source_bytes = values * sizeof(float);
+        const size_t transmission_bytes = pixel_count * sizeof(float);
+        const size_t output_bytes = values * sizeof(float);
+        ComPtr<ID3D12Resource> gpu_source;
+        ComPtr<ID3D12Resource> gpu_transmission;
+        ComPtr<ID3D12Resource> source_staging;
+        ComPtr<ID3D12Resource> transmission_staging;
+        if (!create_gpu_buffer(source_bytes, D3D12_RESOURCE_FLAG_NONE,
+                               D3D12_RESOURCE_STATE_COPY_DEST, gpu_source, error,
+                               "Could not allocate D3D12 physical float input") ||
+            !create_gpu_buffer(transmission_bytes, D3D12_RESOURCE_FLAG_NONE,
+                               D3D12_RESOURCE_STATE_COPY_DEST, gpu_transmission, error,
+                               "Could not allocate D3D12 physical float transmission") ||
+            !create_staging_buffer(source, source_bytes, source_staging, error,
+                                   "Could not prepare D3D12 physical float input upload") ||
+            !create_staging_buffer(transmission, transmission_bytes, transmission_staging, error,
+                                   "Could not prepare D3D12 physical transmission upload") ||
+            !ensure_output_capacity(output_bytes, error)) {
+            return false;
+        }
+
+        constexpr uint64_t max_groups_per_axis = 65535;
+        const uint64_t needed_groups = (pixels64 + 255) / 256;
+        const UINT groups_x = static_cast<UINT>(std::min(needed_groups, max_groups_per_axis));
+        if (!groups_x) {
+            error = "D3D12 physical float dispatch has no thread groups";
+            return false;
+        }
+        const uint64_t groups_y64 = (needed_groups + groups_x - 1) / groups_x;
+        if (!groups_y64 || groups_y64 > max_groups_per_axis) {
+            error = "D3D12 physical float dispatch exceeds the supported two-dimensional grid size";
+            return false;
+        }
+        const uint32_t row_stride = groups_x * 256u;
+        ImageStats stats{};
+        stats.air_r = airlight_rgb[0];
+        stats.air_g = airlight_rgb[1];
+        stats.air_b = airlight_rgb[2];
+        im_basic_params unused_basic{};
+        const RenderConstants constants = make_constants(params, unused_basic, filter_, stats,
+                                                         lut_edge_, static_cast<uint32_t>(pixels64),
+                                                         row_stride, false);
+
+        if (!begin_commands(error)) return false;
+        command_list_->CopyBufferRegion(gpu_source.Get(), 0, source_staging.Get(), 0,
+                                         aligned_buffer_size(source_bytes));
+        command_list_->CopyBufferRegion(gpu_transmission.Get(), 0,
+                                         transmission_staging.Get(), 0,
+                                         aligned_buffer_size(transmission_bytes));
+        transition(gpu_source.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        transition(gpu_transmission.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        command_list_->SetComputeRootSignature(root_signature_.Get());
+        command_list_->SetPipelineState(physical_pipeline_.Get());
+        command_list_->SetComputeRoot32BitConstants(0, 40, &constants, 0);
+        command_list_->SetComputeRootShaderResourceView(1, gpu_source->GetGPUVirtualAddress());
+        command_list_->SetComputeRootUnorderedAccessView(2, output_->GetGPUVirtualAddress());
+        command_list_->SetComputeRootShaderResourceView(3, gpu_source->GetGPUVirtualAddress());
+        command_list_->SetComputeRootShaderResourceView(4, gpu_source->GetGPUVirtualAddress());
+        command_list_->SetComputeRootShaderResourceView(5, gpu_transmission->GetGPUVirtualAddress());
+        command_list_->SetComputeRootShaderResourceView(6, gpu_source->GetGPUVirtualAddress());
+        command_list_->Dispatch(groups_x, static_cast<UINT>(groups_y64), 1);
+
+        transition(output_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                   D3D12_RESOURCE_STATE_COPY_SOURCE);
+        command_list_->CopyBufferRegion(readback_.Get(), 0, output_.Get(), 0, output_bytes);
+        transition(output_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (!submit_and_wait(error, "D3D12 physical float render failed")) return false;
+
+        void *mapped_buffer = nullptr;
+        D3D12_RANGE read_range{0, output_bytes};
+        HRESULT result = readback_->Map(0, &read_range, &mapped_buffer);
+        if (FAILED(result)) {
+            return record_failure(error, "Could not map D3D12 physical float output", result);
+        }
+        std::memcpy(destination, mapped_buffer, output_bytes);
+        D3D12_RANGE no_write{0, 0};
+        readback_->Unmap(0, &no_write);
+        return true;
+    }
+
 private:
     bool initialize_device(std::string &error) {
         ComPtr<IDXGIFactory4> factory;
@@ -524,6 +631,34 @@ private:
         result = device_->CreateComputePipelineState(&pipeline_description,
                                                       IID_PPV_ARGS(&pipeline_));
         if (FAILED(result)) return record_failure(error, "Could not create the D3D12 compute pipeline", result);
+
+        ComPtr<ID3DBlob> physical_shader;
+        ComPtr<ID3DBlob> physical_compile_error;
+        result = D3DCompile(kHlslShaderSource, std::strlen(kHlslShaderSource), "renderer.hlsl",
+                            nullptr, nullptr, "render_physical_float", "cs_5_0",
+                            D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3 |
+                                D3DCOMPILE_IEEE_STRICTNESS,
+                            0, &physical_shader, &physical_compile_error);
+        if (FAILED(result)) {
+            std::string detail = hresult_text("Could not compile the D3D12 physical float shader", result);
+            if (physical_compile_error && physical_compile_error->GetBufferPointer()) {
+                detail += ": ";
+                detail.append(static_cast<const char *>(physical_compile_error->GetBufferPointer()),
+                              physical_compile_error->GetBufferSize());
+            }
+            error = std::move(detail);
+            return false;
+        }
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC physical_pipeline_description{};
+        physical_pipeline_description.pRootSignature = root_signature_.Get();
+        physical_pipeline_description.CS.pShaderBytecode = physical_shader->GetBufferPointer();
+        physical_pipeline_description.CS.BytecodeLength = physical_shader->GetBufferSize();
+        result = device_->CreateComputePipelineState(&physical_pipeline_description,
+                                                      IID_PPV_ARGS(&physical_pipeline_));
+        if (FAILED(result)) {
+            return record_failure(error, "Could not create the D3D12 physical float compute pipeline", result);
+        }
         return true;
     }
 
@@ -746,6 +881,7 @@ private:
     UINT64 fence_value_ = 0;
     ComPtr<ID3D12RootSignature> root_signature_;
     ComPtr<ID3D12PipelineState> pipeline_;
+    ComPtr<ID3D12PipelineState> physical_pipeline_;
     std::array<ComPtr<ID3D12Resource>, 3> sources_{};
     std::array<uint32_t, 3> widths_{};
     std::array<uint32_t, 3> heights_{};

@@ -27,7 +27,19 @@ public:
         NSError *nativeError = nil;
         NSString *source = [NSString stringWithUTF8String:kMetalShaderSource];
         MTLCompileOptions *compileOptions = [MTLCompileOptions new];
-        compileOptions.fastMathEnabled = NO;
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+        if (@available(macOS 15.0, *)) {
+            compileOptions.mathMode = MTLMathModeSafe;
+            compileOptions.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+        } else {
+#endif
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            compileOptions.fastMathEnabled = NO;
+#pragma clang diagnostic pop
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+        }
+#endif
         library_ = [device_ newLibraryWithSource:source options:compileOptions error:&nativeError];
         if (!library_) {
             error = describe_error("Could not compile the Metal shader at runtime", nativeError);
@@ -76,6 +88,7 @@ public:
                physical_pipeline_ != nil;
     }
     const char *name() const override { return "Metal"; }
+    bool supports_physical_float() const override { return ready(); }
 
     bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) override {
         std::array<id<MTLBuffer>, 3> buffers{};

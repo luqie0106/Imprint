@@ -108,7 +108,7 @@ IMPRINT_API im_status im_renderer_render_spatial_full(im_renderer *renderer,
                                                       size_t destination_samples);
 
 /* Confidence-limited physical dehaze on normalized linear float RGB. The
-   renderer must provide this optional operator (currently Metal only).
+   renderer must provide this optional operator (Metal or D3D12).
    source_values and transmission_count must exactly match width*height*3 and
    width*height; destination_values must be at least width*height*3. All input
    samples and airlight values must be finite and within [0, 1]. */
@@ -130,6 +130,8 @@ IMPRINT_API im_status im_renderer_create(im_backend_kind backend, im_renderer **
 IMPRINT_API void im_renderer_destroy(im_renderer *renderer);
 IMPRINT_API const char *im_renderer_last_error(const im_renderer *renderer);
 IMPRINT_API const char *im_renderer_backend_name(const im_renderer *renderer);
+/* Returns 1 only if this renderer implements the linear-float physical operator. */
+IMPRINT_API int im_renderer_supports_physical_float(const im_renderer *renderer);
 
 /* Upload Sidecar-decoded preview RGB16 once. L0 uses this exact image; L1/L2 are
    cached downsampled copies. value_count must equal width*height*3. */
