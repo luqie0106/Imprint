@@ -31,6 +31,18 @@ private let basicAdjustments: [Adjustment] = [
     .init(id: "saturation", title: "饱和度", range: -100...100, step: 1),
 ]
 
+private let nonlocalFallbackReasons: [String: String] = [
+    "manual_mode": "自动处理未启用",
+    "zero_strength": "去朦胧强度为 0",
+    "low_airlight": "当前场景不满足实验估计条件",
+    "uncertain_airlight": "场景估计不稳定",
+    "clipped_highlights": "高光过曝",
+    "backlit_scene": "逆光场景",
+    "no_reliable_rays": "可靠估计不足",
+    "solver_nonconverged": "可靠估计不足",
+    "reliable_estimate_unavailable": "可靠估计不足",
+]
+
 private struct EditorDisclosure<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
@@ -46,6 +58,13 @@ private struct EditorDisclosure<Content: View>: View {
 
 struct EditorView: View, Equatable {
     enum Mode { case enhance, ricoh }
+    private enum ExportScope: Equatable {
+        case current
+        case all
+
+        var title: String { self == .current ? "当前照片" : "全部照片" }
+    }
+
     private enum PreviewMode: String, CaseIterable, Identifiable {
         case original = "原图"
         case compare = "原图+效果图"
@@ -74,6 +93,11 @@ struct EditorView: View, Equatable {
     @State private var originalLoading = false
     @State private var previewing = false
     @State private var previewMode: PreviewMode = .effect
+    @State private var nonlocalRenderStatus = "off"
+    @State private var nonlocalRenderReason = ""
+    @State private var renderedAutoExposureEnabled: Bool?
+    @State private var autoExposureEV: Double?
+    @State private var autoExposureReason = "off"
     @State private var compareFraction = 0.5
     @State private var metadata: [String: Any] = [:]
     @State private var error = ""
@@ -94,12 +118,47 @@ struct EditorView: View, Equatable {
     @State private var xmpSaveTasks: [String: Task<Void, Never>] = [:]
     @State private var xmpSaveIDs: [String: UUID] = [:]
     @State private var xmpStatus = ""
+    @State private var showingExportSheet = false
+    @State private var exportScope: ExportScope = .current
+    @State private var exportSessionID = ""
+    @State private var exportPhotoIDs: [String] = []
+    @State private var exportOutputDir = ""
+    @State private var exportBitDepth = "source"
+    @State private var exportCompression = "lossless_jpeg"
+    @State private var isStartingJob = false
 
-    private var isRunning: Bool { ["queued", "running"].contains(string(job, "status")) }
-    private var job: [String: Any] { mode == .enhance ? library.enhanceJob : library.ricohJob }
+    private var isRunning: Bool {
+        string(job, "job_id") != "starting" && ["queued", "running"].contains(string(job, "status"))
+    }
+    private var job: [String: Any] { library.enhanceJob }
     private var title: String { mode == .enhance ? "去朦胧" : "理光风格" }
     private var selected: Photo? { library.photos.first { $0.id == library.selectedID } }
     private var selectedPreset: String { library.presetByPhoto[library.selectedID] ?? "" }
+    private var nonlocalRenderStatusText: String? {
+        guard mode == .enhance,
+              (library.dehazeNonlocalModeByPhoto[library.selectedID] ?? "off") != "off",
+              nonlocalRenderStatus != "off" else { return nil }
+        if nonlocalRenderStatus == "active" { return "实际已启用" }
+        let reason = nonlocalFallbackReasons[nonlocalRenderReason] ?? "可靠估计不足"
+        return "已使用原去朦胧：\(reason)"
+    }
+    private var autoExposureStatusText: String? {
+        guard mode == .enhance,
+              library.dehazeAutoExposureByPhoto[library.selectedID] ?? false else { return nil }
+        guard let renderedAutoExposureEnabled,
+              renderedAutoExposureEnabled == (library.dehazeAutoExposureByPhoto[library.selectedID] ?? false) else {
+            return "等待预览更新…"
+        }
+        let ev = autoExposureEV.map { String(format: "%+.2f EV", $0) } ?? "EV 未返回"
+        switch autoExposureReason {
+        case "target_reached": return "无需曝光补偿（\(ev)）"
+        case "highlight_limited": return "高光余量不足（实际 \(ev)）"
+        case "applied": return "实际 \(ev)"
+        case "black": return "无法估计整体曝光（+0EV）"
+        case "off": return "未进行自动曝光校正（\(ev)）"
+        default: return "自动曝光状态不可用（\(ev)）"
+        }
+    }
 
     private func selectionDidChange() {
         cancelPreviewWork()
@@ -112,6 +171,11 @@ struct EditorView: View, Equatable {
         original = nil
         originalFullResolution = false
         edited = nil
+        nonlocalRenderStatus = "off"
+        nonlocalRenderReason = ""
+        renderedAutoExposureEnabled = nil
+        autoExposureEV = nil
+        autoExposureReason = "off"
         quickThumbnail = nil
         metadata = [:]
         error = ""
@@ -233,6 +297,10 @@ struct EditorView: View, Equatable {
             metadataTask?.cancel()
             pollTask?.cancel()
         }
+        .sheet(isPresented: $showingExportSheet) {
+            exportConfigurationSheet
+                .interactiveDismissDisabled(isStartingJob)
+        }
     }
 
     private var leftPane: some View {
@@ -295,6 +363,16 @@ struct EditorView: View, Equatable {
                 Button { refreshPreview() } label: { Image(systemName: "arrow.clockwise") }
                     .help("刷新预览")
                     .disabled(selected == nil || previewing)
+                Menu {
+                    Button("当前照片") { prepareExport(scope: .current) }
+                        .disabled(selected == nil)
+                    Button("全部照片") { prepareExport(scope: .all) }
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                }
+                .help("导出 DNG")
+                .disabled(!engine.ready || library.sessionID.isEmpty || library.photos.isEmpty
+                          || library.hasActiveJob || isStartingJob)
             }
             .padding(.horizontal, 18)
             .frame(height: 76)
@@ -491,6 +569,12 @@ struct EditorView: View, Equatable {
     private var rightPane: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
+                if !xmpStatus.isEmpty {
+                    Text(xmpStatus).font(.caption2).foregroundStyle(.secondary)
+                }
+                if !job.isEmpty, string(job, "job_id") != "starting" {
+                    exportProgressView
+                }
                 if mode == .enhance {
                     editorCard("去朦胧", icon: "wand.and.stars") {
                         Toggle("自动处理", isOn: Binding(
@@ -498,6 +582,9 @@ struct EditorView: View, Equatable {
                             set: { enabled in
                                 let photoID = library.selectedID
                                 library.dehazeAutoModeByPhoto[photoID] = enabled
+                                if !enabled {
+                                    library.dehazeNonlocalModeByPhoto[photoID] = "off"
+                                }
                                 scheduleAutoSave(photoID: photoID)
                                 refreshPreview()
                             }
@@ -507,6 +594,55 @@ struct EditorView: View, Equatable {
                             Text("自动分析照片并调整去朦胧效果。关闭后可手动微调高级参数。")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                        }
+                        Toggle("自动曝光", isOn: Binding(
+                            get: { library.dehazeAutoExposureByPhoto[library.selectedID] ?? false },
+                            set: { enabled in
+                                let photoID = library.selectedID
+                                guard !photoID.isEmpty else { return }
+                                library.dehazeAutoExposureByPhoto[photoID] = enabled
+                                scheduleAutoSave(photoID: photoID)
+                                refreshPreview()
+                            }
+                        ))
+                        .disabled(library.selectedID.isEmpty)
+                        if let autoExposureStatusText {
+                            Text(autoExposureStatusText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("实验去朦胧").font(.caption)
+                            Picker("实验去朦胧", selection: Binding(
+                                get: { library.dehazeNonlocalModeByPhoto[library.selectedID] ?? "off" },
+                                set: { nonlocalMode in
+                                    let photoID = library.selectedID
+                                    guard !photoID.isEmpty else { return }
+                                    library.dehazeNonlocalModeByPhoto[photoID] = nonlocalMode
+                                    if nonlocalMode != "off" {
+                                        library.dehazeAutoModeByPhoto[photoID] = true
+                                    }
+                                    scheduleAutoSave(photoID: photoID)
+                                    refreshPreview()
+                                }
+                            )) {
+                                Text("关闭").tag("off")
+                                Text("保守").tag("conservative")
+                                Text("强").tag("strong")
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .disabled(library.selectedID.isEmpty)
+                            if (library.dehazeNonlocalModeByPhoto[library.selectedID] ?? "off") != "off" {
+                                Text("实验模式会开启自动处理")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                if let nonlocalRenderStatusText {
+                                    Text(nonlocalRenderStatusText)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                         slider(dehazeAdjustments[0], basic: false)
                         if !(library.dehazeAutoModeByPhoto[library.selectedID] ?? false) {
@@ -549,47 +685,118 @@ struct EditorView: View, Equatable {
                         }
                     }
                 }
-                editorCard("导出", icon: "square.and.arrow.up") {
-                    TextField("输出文件夹", text: mode == .enhance ? $library.dehazeOutput : $library.ricohOutput)
-                    Button("选择输出位置") {
-                        if let folder = FilePicker.folder(title: "选择输出文件夹") {
-                            if mode == .enhance { library.dehazeOutput = folder }
-                            else { library.ricohOutput = folder }
-                        }
-                    }
-                    HStack {
-                        Button("写入 XMP") { Task { await saveXMP() } }.disabled(library.sessionID.isEmpty)
-                        if isRunning {
-                            Button("停止") { Task { await cancelJob() } }
-                        } else {
-                            Button("导出 DNG") { Task { await startJob() } }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(library.sessionID.isEmpty)
-                        }
-                    }
-                    Text("XMP 使用可编辑曲线近似去朦胧效果，局部效果可能有差异。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if !xmpStatus.isEmpty {
-                        Text(xmpStatus).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !job.isEmpty {
-                        ProgressView(value: min(1, max(0, job["progress"] as? Double ?? 0)))
-                        Text("\(int(job, "processed"))/\(int(job, "total")) · 成功 \(int(job, "success")) · 失败 \(int(job, "failed"))")
-                            .font(.caption)
-                        ForEach(Array((job["files"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, file in
-                            Text("\(string(file, "name")) · \(string(file, "status"))")
-                                .font(.caption).lineLimit(1)
-                        }
-                    }
-                    Text("原始照片不会修改或覆盖。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 if !error.isEmpty { Text(error).foregroundStyle(.red).font(.caption) }
             }
             .padding(16)
         }
         .background(Color(red: 0.965, green: 0.967, blue: 0.971))
+    }
+
+    private var exportProgressView: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("DNG 导出").font(.caption.weight(.semibold))
+                Spacer()
+                if isRunning {
+                    Button("停止") { Task { await cancelJob() } }
+                        .controlSize(.small)
+                        .disabled(isStartingJob)
+                }
+            }
+            ProgressView(value: min(1, max(0, job["progress"] as? Double ?? 0)))
+            Text("\(int(job, "processed"))/\(int(job, "total")) · 成功 \(int(job, "success")) · 失败 \(int(job, "failed"))")
+                .font(.caption2).foregroundStyle(.secondary)
+            if !string(job, "current_file").isEmpty {
+                Text(string(job, "current_file")).font(.caption2).lineLimit(1)
+            }
+            ForEach(Array((job["files"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, file in
+                Text("\(string(file, "name")) · \(string(file, "status"))")
+                    .font(.caption2).lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var exportConfigurationSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("导出 DNG").font(.title3.bold())
+                    Text(exportScope.title).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    showingExportSheet = false
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .disabled(isStartingJob)
+            }
+
+            Form {
+                Section("输出") {
+                    HStack {
+                        Text("格式")
+                        Spacer()
+                        Text("DNG（固定）").foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("输出目录", text: $exportOutputDir)
+                        Button("选择文件夹") {
+                            if let folder = FilePicker.folder(title: "选择 DNG 输出文件夹") {
+                                exportOutputDir = folder
+                            }
+                        }
+                    }
+                }
+                Section("图像") {
+                    Picker("位深", selection: $exportBitDepth) {
+                        Text("源文件位深").tag("source")
+                        Text("16 bit").tag("16")
+                    }
+                    .disabled(exportCompression == "jpegxl")
+                    Picker("压缩", selection: $exportCompression) {
+                        Text("JPEG XL").tag("jpegxl")
+                        Text("无损 JPEG").tag("lossless_jpeg")
+                        Text("不压缩").tag("none")
+                    }
+                    if exportCompression == "jpegxl" {
+                        Text("JPEG XL 使用 16-bit RGB，并输出 DNG 1.7。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .onChange(of: exportCompression) { _, compression in
+                if compression == "jpegxl" { exportBitDepth = "16" }
+            }
+            .disabled(isStartingJob)
+            if !error.isEmpty {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("取消") { showingExportSheet = false }
+                    .disabled(isStartingJob)
+                Spacer()
+                Button {
+                    Task { await startJob() }
+                } label: {
+                    if isStartingJob {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("开始导出")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isStartingJob || library.hasActiveJob || exportPhotoIDs.isEmpty
+                          || exportOutputDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 480, height: 430)
     }
 
     private func editorCard<Content: View>(
@@ -668,6 +875,8 @@ struct EditorView: View, Equatable {
         // Invalidate any response rendered from an older slider value immediately,
         // while keeping the throttled L2/L1 requests on the existing fast path.
         previewRequestID = UUID()
+        nonlocalRenderStatus = "off"
+        nonlocalRenderReason = ""
         pendingPreviewLevel = nil
         pendingPreviewFullResolution = false
         sliderPreviewPending = true
@@ -706,6 +915,8 @@ struct EditorView: View, Equatable {
         fullResolution: Bool = false,
         schedulesFullResolution: Bool = true
     ) {
+        nonlocalRenderStatus = "off"
+        nonlocalRenderReason = ""
         guard isActive, !library.sessionID.isEmpty, !library.selectedID.isEmpty, engine.ready else { return }
         if previewMode != .effect && !fullResolution { loadOriginalPreviewIfNeeded() }
         if invalidatingInFlight || previewRequestID == nil {
@@ -756,6 +967,8 @@ struct EditorView: View, Equatable {
                     "full_resolution": fullResolution,
                     "mode": "original",
                     "auto_mode": library.dehazeAutoModeByPhoto[photoID] ?? false,
+                    "auto_exposure": library.dehazeAutoExposureByPhoto[photoID] ?? false,
+                    "nonlocal_mode": library.dehazeNonlocalModeByPhoto[photoID] ?? "off",
                 ]
                 let image = try await engine.api.image("/api/enhance/preview", body: request)
                 try Task.checkCancellation()
@@ -820,6 +1033,8 @@ struct EditorView: View, Equatable {
             let sessionID = library.sessionID
             let dehaze = library.dehazeByPhoto[photoID] ?? [:]
             let autoMode = library.dehazeAutoModeByPhoto[photoID] ?? false
+            let autoExposure = library.dehazeAutoExposureByPhoto[photoID] ?? false
+            let nonlocalMode = library.dehazeNonlocalModeByPhoto[photoID] ?? "off"
             let basic = library.basicByPhoto[photoID] ?? [:]
             let preset = library.presetByPhoto[photoID]
             error = ""
@@ -833,16 +1048,25 @@ struct EditorView: View, Equatable {
                 request["mode"] = "dehazed"
                 request["params"] = dehaze
                 request["auto_mode"] = autoMode
+                request["auto_exposure"] = autoExposure
+                request["nonlocal_mode"] = nonlocalMode
                 request["basic_params"] = basic
                 request["ricoh_preset_id"] = preset as Any? ?? NSNull()
                 request["render_backend"] = engine.renderBackend
                 request["basic_backend"] = engine.basicBackend
                 request["ricoh_backend"] = engine.ricohBackend
-                let image = try await engine.api.image("/api/enhance/preview", body: request)
+                let preview = try await engine.api.imageWithResponseMetadata(
+                    "/api/enhance/preview", body: request
+                )
                 try Task.checkCancellation()
                 guard library.sessionID == sessionID, library.selectedID == photoID,
                       previewRequestID == requestID else { continue }
-                edited = image
+                edited = preview.image
+                nonlocalRenderStatus = preview.headers["x-dehaze-nonlocal-status"] ?? "off"
+                nonlocalRenderReason = preview.headers["x-dehaze-nonlocal-reason"] ?? ""
+                renderedAutoExposureEnabled = autoExposure
+                autoExposureEV = preview.headers["x-auto-exposure-ev"].flatMap(Double.init)
+                autoExposureReason = preview.headers["x-auto-exposure-reason"] ?? "off"
                 // Serialize full-resolution decodes so the source and processed
                 // image do not compete for peak memory on large RAW files.
                 if fullResolution && previewMode != .effect {
@@ -874,6 +1098,8 @@ struct EditorView: View, Equatable {
         pendingPreviewFullResolution = false
         previewRequestID = nil
         previewing = false
+        nonlocalRenderStatus = "off"
+        nonlocalRenderReason = ""
         previewIdleTask?.cancel()
         previewIdleTask = nil
         previewIdleRequestID = nil
@@ -925,56 +1151,112 @@ struct EditorView: View, Equatable {
         }
     }
 
-    private func saveAllSettings() async throws {
-        for photo in library.photos { try await library.savePhoto(api: engine.api, photoID: photo.id) }
+    private func prepareExport(scope: ExportScope) {
+        guard !library.sessionID.isEmpty, !library.photos.isEmpty,
+              !library.hasActiveJob, !isStartingJob else { return }
+        let photoIDs = scope == .current
+            ? [library.selectedID].filter { !$0.isEmpty }
+            : library.photos.map(\.id)
+        guard !photoIDs.isEmpty else { return }
+        exportScope = scope
+        exportSessionID = library.sessionID
+        exportPhotoIDs = photoIDs
+        exportOutputDir = mode == .enhance ? library.dehazeOutput : library.ricohOutput
+        error = ""
+        showingExportSheet = true
     }
 
-    private func saveXMP() async {
-        do {
-            try await saveAllSettings()
-            let result = try await engine.api.json("/api/enhance/xmp", body: [
-                "session_id": library.sessionID,
-                "params_by_photo": library.dehazeByPhoto,
-                "auto_modes_by_photo": library.dehazeAutoModeByPhoto,
-                "basic_params_by_photo": library.basicByPhoto,
-                "preset_ids_by_photo": library.presetByPhoto,
-            ])
-            library.message = "XMP 已写入 \(int(result, "written")) 张，失败 \(int(result, "failed")) 张"
-        } catch { showError(error) }
+    private func saveAllSettings(photoIDs: [String], sessionID: String) async throws {
+        for photoID in photoIDs {
+            if let pendingSave = xmpSaveTasks[photoID] {
+                await pendingSave.value
+            }
+            guard library.sessionID == sessionID else {
+                throw NSError(domain: "Imprint", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "照片会话已更改，请重新开始导出"])
+            }
+            try await library.savePhoto(api: engine.api, photoID: photoID)
+        }
     }
 
     private func startJob() async {
+        guard !isStartingJob, !library.hasActiveJob,
+              !exportSessionID.isEmpty, !exportPhotoIDs.isEmpty else { return }
+        let sessionID = exportSessionID
+        let targetPhotoIDs = exportPhotoIDs
+        let allPhotoIDs = library.photos.map(\.id)
+        guard library.sessionID == sessionID,
+              Set(targetPhotoIDs).isSubset(of: Set(allPhotoIDs)) else {
+            error = "照片会话已更改，请重新选择导出范围"
+            showingExportSheet = false
+            return
+        }
+
+        isStartingJob = true
+        error = ""
+        // The library refuses to load another session while a queued/running job exists.
+        // Register the startup window there too, before the first await.
+        setJob(["job_id": "starting", "status": "queued", "progress": 0.0,
+                "processed": 0, "total": targetPhotoIDs.count, "success": 0, "failed": 0])
+        var didStart = false
+        defer {
+            if !didStart, string(job, "job_id") == "starting" { setJob([:]) }
+            isStartingJob = false
+        }
+
         do {
-            try await saveAllSettings()
-            let body: [String: Any]
-            let path: String
-            if mode == .enhance {
-                path = "/api/enhance/run"
-                body = ["session_id": library.sessionID, "output_dir": library.dehazeOutput,
-                        "params_by_photo": library.dehazeByPhoto,
-                        "auto_modes_by_photo": library.dehazeAutoModeByPhoto,
-                        "basic_params_by_photo": library.basicByPhoto,
-                        "render_backend": engine.renderBackend, "basic_backend": engine.basicBackend]
-            } else {
-                path = "/api/ricoh/run"
-                var ricohBody: [String: Any] = ["session_id": library.sessionID,
-                        "output_dir": library.ricohOutput, "preset_ids_by_photo": library.presetByPhoto,
-                        "basic_params_by_photo": library.basicByPhoto, "ricoh_backend": engine.ricohBackend,
-                        "basic_backend": engine.basicBackend]
-                if !selectedPreset.isEmpty { ricohBody["preset_id"] = selectedPreset }
-                body = ricohBody
+            try await saveAllSettings(photoIDs: allPhotoIDs, sessionID: sessionID)
+            guard library.sessionID == sessionID,
+                  Set(targetPhotoIDs).isSubset(of: Set(library.photos.map(\.id))) else {
+                throw NSError(domain: "Imprint", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "照片会话已更改，请重新开始导出"])
             }
-            setJob(try await engine.api.json(path, body: body))
+
+            var presetIDsByPhoto: [String: Any] = [:]
+            for photoID in allPhotoIDs {
+                presetIDsByPhoto[photoID] = library.presetByPhoto[photoID] as Any? ?? NSNull()
+            }
+            let photoIDsPayload: Any
+            if exportScope == .all { photoIDsPayload = NSNull() }
+            else { photoIDsPayload = targetPhotoIDs }
+            let outputDir = exportOutputDir.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body: [String: Any] = [
+                "session_id": sessionID,
+                "output_dir": outputDir,
+                "photo_ids": photoIDsPayload,
+                "params_by_photo": library.dehazeByPhoto,
+                "auto_modes_by_photo": library.dehazeAutoModeByPhoto,
+                "auto_exposures_by_photo": library.dehazeAutoExposureByPhoto,
+                "nonlocal_modes_by_photo": library.dehazeNonlocalModeByPhoto,
+                "basic_params_by_photo": library.basicByPhoto,
+                "preset_ids_by_photo": presetIDsByPhoto,
+                "render_backend": engine.renderBackend,
+                "basic_backend": engine.basicBackend,
+                "ricoh_backend": engine.ricohBackend,
+                "compression": exportCompression,
+                "bit_depth": exportBitDepth,
+            ]
+            if mode == .enhance { library.dehazeOutput = outputDir }
+            else { library.ricohOutput = outputDir }
+            let result = try await engine.api.json("/api/enhance/run", body: body)
+            guard library.sessionID == sessionID else {
+                throw NSError(domain: "Imprint", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "导出已提交，但照片会话已更改"])
+            }
+            setJob(result)
+            didStart = true
+            showingExportSheet = false
             pollTask?.cancel()
             pollTask = Task { await pollJob() }
-        } catch { showError(error) }
+        } catch {
+            showError(error)
+        }
     }
 
     private func pollJob() async {
         while !Task.isCancelled && isRunning {
             do {
-                let path = mode == .enhance ? "/api/enhance/job/" : "/api/ricoh/job/"
-                setJob(try await engine.api.json(path + string(job, "job_id")))
+                setJob(try await engine.api.json("/api/enhance/job/" + string(job, "job_id")))
                 if !isRunning { break }
                 try await Task.sleep(for: .milliseconds(700))
             } catch is CancellationError { break }
@@ -988,14 +1270,12 @@ struct EditorView: View, Equatable {
 
     private func cancelJob() async {
         do {
-            let path = mode == .enhance ? "/api/enhance/cancel/" : "/api/ricoh/cancel/"
-            _ = try await engine.api.json(path + string(job, "job_id"), body: [:])
+            _ = try await engine.api.json("/api/enhance/cancel/" + string(job, "job_id"), body: [:])
             library.message = "已通知后端停止；当前照片可完成"
         } catch { showError(error) }
     }
 
     private func setJob(_ value: [String: Any]) {
-        if mode == .enhance { library.enhanceJob = value }
-        else { library.ricohJob = value }
+        library.enhanceJob = value
     }
 }

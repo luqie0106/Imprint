@@ -2,27 +2,25 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { photoExportRunning } from "../stores/photoExport";
+import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
 import { BASE_URL } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
 import {
-  autoSaveError, clearAutoSaveErrors, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
-  sharedDehazeAlgorithmByPhoto, sharedDehazeAutoByPhoto, sharedDehazeByPhoto, sharedPhotoSource, sharedPresetByPhoto,
+  autoSaveError, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
+  sharedDehazeAutoByPhoto, sharedDehazeAutoExposureByPhoto,
+  sharedDehazeByPhoto, sharedDehazeNonlocalByPhoto,
+  sharedPhotoSource, sharedPresetByPhoto,
   sharedSelectedPhotoId, sharePhotoSource,
-  type DehazeAlgorithm, type DehazeParams, type PhotoSource,
+  type DehazeAlgorithm, type DehazeParams, type NonlocalMode, type PhotoSource,
 } from "../stores/photoSource";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
-  LoaderCircle, Play, RotateCcw, ShieldCheck, SlidersHorizontal, Square,
+  LoaderCircle, RotateCcw, SlidersHorizontal,
   Maximize2, Minus, Plus, Rows2, Sparkles,
 } from "lucide-vue-next";
 
-interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: Partial<DehazeParams> | null; dehaze_algorithm?: DehazeAlgorithm; dehaze_auto_mode?: boolean; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
-interface JobFile { photo_id: string; name: string; status: string; output?: string; error?: string }
-interface EnhanceJob {
-  job_id: string; status: string; total: number; processed: number; success: number;
-  failed: number; progress: number; current_file: string; output_dir: string; files: JobFile[];
-}
-
+interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: Partial<DehazeParams> | null; dehaze_algorithm?: DehazeAlgorithm; dehaze_auto_mode?: boolean; dehaze_auto_exposure?: boolean; dehaze_nonlocal_mode?: NonlocalMode; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
 type EnhanceParams = DehazeParams;
 interface BasicParams { exposure: number; contrast: number; highlights: number; shadows: number; whites: number; blacks: number; vibrance: number; saturation: number }
 const basicDefaults: BasicParams = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, vibrance: 0, saturation: 0 };
@@ -42,6 +40,23 @@ type ThumbnailState = "loading" | "loaded" | "error";
 type PhotoListLayout = "vertical" | "horizontal";
 
 type AdvancedParamKey = Exclude<keyof EnhanceParams, "strength">;
+const nonlocalModes: Array<{ value: NonlocalMode; label: string }> = [
+  { value: "off", label: "关闭" },
+  { value: "conservative", label: "保守" },
+  { value: "strong", label: "强" },
+];
+const nonlocalFallbackReasons: Record<string, string> = {
+  manual_mode: "自动处理未启用",
+  zero_strength: "去朦胧强度为 0",
+  low_airlight: "当前场景不满足实验估计条件",
+  uncertain_airlight: "场景估计不稳定",
+  clipped_highlights: "高光过曝",
+  backlit_scene: "逆光场景",
+  no_reliable_rays: "可靠估计不足",
+  solver_nonconverged: "可靠估计不足",
+  reliable_estimate_unavailable: "可靠估计不足",
+};
+type AutoExposureReason = "off" | "target_reached" | "highlight_limited" | "applied" | "black";
 
 const advancedParameters: Array<{ key: AdvancedParamKey; label: string; description?: string }> = [
   { key: "naturalness", label: "自然度" },
@@ -66,9 +81,14 @@ const files = ref<SessionFile[]>([]);
 const thumbnailStates = ref<Record<string, ThumbnailState>>({});
 const photoListLayout = ref<PhotoListLayout>("vertical");
 const selectedId = ref("");
-const outputDir = ref("");
 const originalUrl = ref("");
 const enhancedUrl = ref("");
+const nonlocalRenderStatus = ref<"off" | "active" | "fallback">("off");
+const nonlocalRenderReason = ref("");
+const autoExposurePreview = ref<{
+  sessionId: string; photoId: string; enabled: boolean;
+  ev: number | null; reason: AutoExposureReason;
+} | null>(null);
 const previewLoading = ref(false);
 const sessionLoading = ref(false);
 const previewError = ref("");
@@ -76,24 +96,25 @@ const imageSize = ref("");
 const split = ref(50);
 const previewViewport = ref<HTMLElement | null>(null);
 const zoom = ref(1);
-const lastZoom = ref(2);
+const lastZoom = ref<number | null>(null);
 const panX = ref(0);
 const panY = ref(0);
 const viewportWidth = ref(0);
 const viewportHeight = ref(0);
+const devicePixelRatio = ref(1);
 const imageWidth = ref(0);
 const imageHeight = ref(0);
+const sourceImageWidth = ref(0);
+const sourceImageHeight = ref(0);
 const isScrubbing = ref(false);
-const previewMode = ref<PreviewMode>("compare");
+const previewMode = ref<PreviewMode>("enhanced");
 let resizeObserver: ResizeObserver | undefined;
 let pointerDownX = 0;
 let pointerDownY = 0;
 let pointerDownZoom = 1;
 let pointerMoved = false;
 const advancedOpen = ref(false);
-const job = ref<EnhanceJob | null>(null);
 const actionMessage = ref("");
-const savingXmp = ref(false);
 const revealMenu = ref<{ left: number; top: number } | null>(null);
 const revealBusy = ref(false);
 let previewTimer: number | undefined;
@@ -101,7 +122,6 @@ let intermediatePreviewTimer: number | undefined;
 let fullResolutionTimer: number | undefined;
 let previewGeneration = 0;
 let previewController: AbortController | undefined;
-let pollTimer: number | undefined;
 const displayedPhotoId = ref("");
 const displayedSessionId = ref("");
 let sliderAdjusting = false;
@@ -114,10 +134,49 @@ const dehazeAutoMode = computed({
   set: (enabled: boolean) => {
     if (!selectedId.value) return;
     sharedDehazeAutoByPhoto.value[selectedId.value] = enabled;
+    if (!enabled) sharedDehazeNonlocalByPhoto.value[selectedId.value] = "off";
+    nonlocalRenderStatus.value = "off";
+    nonlocalRenderReason.value = "";
+  },
+});
+const dehazeNonlocalMode = computed<NonlocalMode>({
+  get: () => sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off",
+  set: (mode) => {
+    if (!selectedId.value) return;
+    sharedDehazeNonlocalByPhoto.value[selectedId.value] = mode;
+    if (mode !== "off") sharedDehazeAutoByPhoto.value[selectedId.value] = true;
+    nonlocalRenderStatus.value = "off";
+    nonlocalRenderReason.value = "";
+  },
+});
+const dehazeAutoExposure = computed({
+  get: () => sharedDehazeAutoExposureByPhoto.value[selectedId.value] ?? false,
+  set: (enabled: boolean) => {
+    if (!selectedId.value) return;
+    sharedDehazeAutoExposureByPhoto.value[selectedId.value] = enabled;
   },
 });
 const basicParams = computed<BasicParams>(() => basicByPhoto.value[selectedId.value] ?? basicDefaults);
 const ricohPresetId = computed(() => sharedPresetByPhoto.value[selectedId.value] ?? null);
+const nonlocalRenderStatusText = computed(() => {
+  if (dehazeNonlocalMode.value === "off" || nonlocalRenderStatus.value === "off") return "";
+  if (nonlocalRenderStatus.value === "active") return "实际已启用";
+  const reason = nonlocalFallbackReasons[nonlocalRenderReason.value] ?? "可靠估计不足";
+  return `已使用原去朦胧：${reason}`;
+});
+const autoExposureStatusText = computed(() => {
+  const result = autoExposurePreview.value;
+  if (!dehazeAutoExposure.value || !result || !result.enabled
+    || result.sessionId !== sessionId.value || result.photoId !== selectedId.value) return "";
+  if (result.reason === "black") return "无法估计整体曝光（+0 EV）";
+  const actual = result.ev === null
+    ? "曝光值未返回"
+    : `实际 ${result.ev >= 0 ? "+" : ""}${result.ev.toFixed(2)} EV`;
+  if (result.reason === "highlight_limited") return `${actual} · 高光余量不足，已限制提亮`;
+  if (result.reason === "target_reached") return `${actual} · 无需曝光补偿`;
+  if (result.reason === "applied") return actual;
+  return "当前预览未应用自动曝光";
+});
 const enhancedReady = computed(() => Boolean(enhancedUrl.value));
 const showComparePreview = computed(() => previewMode.value === "compare" && enhancedReady.value);
 const previewImageUrl = computed(() => {
@@ -142,15 +201,23 @@ const fitHeight = computed(() => {
   const scale = Math.min(viewportWidth.value / imageWidth.value, viewportHeight.value / imageHeight.value);
   return Math.max(1, imageHeight.value * scale);
 });
+const pixelScale = computed(() => sourceImageWidth.value > 0
+  ? fitWidth.value * devicePixelRatio.value / sourceImageWidth.value
+  : 0);
+const maxZoom = computed(() => pixelScale.value > 0 ? Math.max(1, 4 / pixelScale.value) : 1);
+const canZoom = computed(() => sourceImageWidth.value > 0 && sourceImageHeight.value > 0 && maxZoom.value > 1.001);
+const zoomDisplayText = computed(() => {
+  if (pixelScale.value <= 0) return "适合";
+  const percent = Math.round(zoom.value * pixelScale.value * 100);
+  return zoom.value <= 1.001 ? `适合（${percent}%）` : `${percent}%`;
+});
 const imageStageStyle = computed(() => ({
-  width: `${fitWidth.value}px`,
-  height: `${fitHeight.value}px`,
-  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
+  width: `${fitWidth.value * zoom.value}px`,
+  height: `${fitHeight.value * zoom.value}px`,
+  transform: `translate(${panX.value}px, ${panY.value}px)`,
 }));
 
 const currentFile = computed(() => files.value.find((file) => file.photo_id === selectedId.value));
-const isRunning = computed(() => job.value?.status === "queued" || job.value?.status === "running");
-const failedFiles = computed(() => job.value?.files.filter((file) => file.status === "failed") ?? []);
 const revealMenuLabel = computed(() => {
   const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`;
   if (/Mac/i.test(platform)) return "在 Finder 中显示";
@@ -196,16 +263,38 @@ function clampPan() {
   panY.value = clamp(panY.value, -maxY, maxY);
 }
 
-function resetView() {
-  if (zoom.value > 1.001) lastZoom.value = zoom.value;
+function preservePixelScale(
+  previousPixelScale: number,
+  nextPixelScale: number,
+  previousFitWidth: number,
+  nextFitWidth: number,
+) {
+  if (previousPixelScale <= 0 || nextPixelScale <= 0) return;
+  if (zoom.value > 1.001) {
+    const previousZoom = zoom.value;
+    zoom.value = clamp(zoom.value * previousPixelScale / nextPixelScale, 1, maxZoom.value);
+    const panRatio = (zoom.value * nextFitWidth) / (previousZoom * previousFitWidth);
+    panX.value *= panRatio;
+    panY.value *= panRatio;
+  } else {
+    zoom.value = 1;
+  }
+  if (lastZoom.value !== null)
+    lastZoom.value = clamp(lastZoom.value * previousPixelScale / nextPixelScale, 1, maxZoom.value);
+  clampPan();
+}
+
+function resetView(rememberCurrent = true) {
+  if (rememberCurrent && zoom.value > 1.001) lastZoom.value = zoom.value;
   zoom.value = 1;
   panX.value = 0;
   panY.value = 0;
 }
 
 function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
+  if (!canZoom.value) return;
   const previousZoom = zoom.value;
-  const targetZoom = clamp(nextZoom, 1, 4);
+  const targetZoom = clamp(nextZoom, 1, maxZoom.value);
   if (Math.abs(targetZoom - previousZoom) < 0.001) return;
 
   let offsetX = 0;
@@ -226,13 +315,13 @@ function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
 }
 
 function zoomBy(delta: number) {
-  setZoom(zoom.value + delta);
+  if (pixelScale.value > 0) setZoom(zoom.value + delta / pixelScale.value);
 }
 
 function onPreviewPointerDown(event: PointerEvent) {
   const target = event.target as HTMLElement | null;
   if (target?.closest(".compare-split")) return;
-  if (event.button !== 0 || !originalUrl.value) return;
+  if (event.button !== 0 || !originalUrl.value || !canZoom.value) return;
   isScrubbing.value = true;
   pointerMoved = false;
   pointerDownX = event.clientX;
@@ -269,7 +358,7 @@ function finishPreviewPointer(event: PointerEvent, cancelled = false) {
     resetView();
   } else {
     // Restore the previous non-Fit zoom around the click location.
-    setZoom(lastZoom.value, pointerDownX, pointerDownY);
+    setZoom(lastZoom.value ?? Math.max(1, 1 / pixelScale.value), pointerDownX, pointerDownY);
   }
 }
 
@@ -336,10 +425,10 @@ function onWindowKeyDown(event: KeyboardEvent) {
 }
 
 function updateViewportSize() {
+  devicePixelRatio.value = window.devicePixelRatio || 1;
   if (!previewViewport.value) return;
   viewportWidth.value = previewViewport.value.clientWidth;
   viewportHeight.value = previewViewport.value.clientHeight;
-  clampPan();
 }
 
 function onPreviewImageLoad(event: Event) {
@@ -357,17 +446,22 @@ function adoptSession(source: PhotoSource) {
   thumbnailStates.value = Object.fromEntries(
     source.files.map(file => [file.photo_id, "loading" as ThumbnailState]),
   );
-  resetView();
+  if (sessionChanged) {
+    sourceImageWidth.value = 0;
+    sourceImageHeight.value = 0;
+    lastZoom.value = null;
+    resetView(false);
+  } else {
+    resetView();
+  }
   selectedId.value = sharedSelectedPhotoId.value || source.files[0]?.photo_id || "";
-  outputDir.value = source.default_output_dir;
-  job.value = null;
   emptyParams.value = cloneParams(source.dehaze_defaults);
-  actionMessage.value = `已载入 ${source.files.length} 张照片`;
+  actionMessage.value = "";
   if (sessionChanged && selectedId.value) schedulePreview(true);
 }
 
 async function createSession(payload: { paths?: string[]; input_dir?: string }) {
-  if (!BASE_URL.value) return;
+  if (!BASE_URL.value || photoExportRunning.value) return;
   sessionLoading.value = true;
   previewError.value = "";
   actionMessage.value = "";
@@ -388,41 +482,8 @@ async function createSession(payload: { paths?: string[]; input_dir?: string }) 
   }
 }
 
-async function saveXmp() {
-  if (!sessionId.value || !BASE_URL.value || savingXmp.value) return;
-  savingXmp.value = true;
-  try {
-    await flushPendingSaves();
-    const response = await fetch(`${BASE_URL.value}/api/enhance/xmp`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: sessionId.value,
-        params_by_photo: Object.fromEntries(files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? emptyParams.value)])),
-        auto_modes_by_photo: { ...sharedDehazeAutoByPhoto.value },
-        algorithms_by_photo: Object.fromEntries(files.value.map(file => [file.photo_id, sharedDehazeAlgorithmByPhoto.value[file.photo_id] ?? "physical"])),
-        basic_params_by_photo: basicByPhoto.value,
-        preset_ids_by_photo: Object.fromEntries(files.value.map(file => [file.photo_id, sharedPresetByPhoto.value[file.photo_id] ?? null])),
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "写入 XMP 失败");
-    if (!data.failed) clearAutoSaveErrors();
-    actionMessage.value = `XMP 已写入 ${data.written ?? 0} 张，失败 ${data.failed ?? 0} 张`;
-  } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : "写入 XMP 失败";
-  } finally {
-    savingXmp.value = false;
-  }
-}
-
-
-async function chooseSingle() {
-  const result = await open({ multiple: false, directory: false, title: "选择一张照片" });
-  if (typeof result === "string") await createSession({ paths: [result] });
-}
-
 async function chooseMultiple() {
-  const result = await open({ multiple: true, directory: false, title: "选择多张照片" });
+  const result = await open({ multiple: true, directory: false, title: "选择照片" });
   if (Array.isArray(result) && result.length) await createSession({ paths: result });
   else if (typeof result === "string") await createSession({ paths: [result] });
 }
@@ -432,17 +493,22 @@ async function chooseFolder() {
   if (typeof result === "string") await createSession({ input_dir: result });
 }
 
-async function chooseOutput() {
-  const result = await open({ multiple: false, directory: true, title: "选择去朦胧输出目录" });
-  if (typeof result === "string") outputDir.value = result;
+interface PreviewAsset {
+  url: string;
+  width: number;
+  height: number;
+  nonlocalStatus: "off" | "active" | "fallback";
+  nonlocalReason: string;
+  autoExposureEV: number | null;
+  autoExposureReason: AutoExposureReason;
 }
-
-interface PreviewAsset { url: string; width: number; height: number }
 interface PreviewRequestContext {
   sessionId: string;
   photoId: string;
   params: EnhanceParams;
   autoMode: boolean;
+  autoExposure: boolean;
+  nonlocalMode: NonlocalMode;
   basicParams: BasicParams;
   ricohPresetId: string | null;
   renderBackend: string;
@@ -456,6 +522,8 @@ function capturePreviewContext(): PreviewRequestContext {
     photoId: selectedId.value,
     params: cloneParams(params.value),
     autoMode: sharedDehazeAutoByPhoto.value[selectedId.value] ?? false,
+    autoExposure: sharedDehazeAutoExposureByPhoto.value[selectedId.value] ?? false,
+    nonlocalMode: sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off",
     basicParams: { ...basicParams.value },
     ricohPresetId: ricohPresetId.value,
     renderBackend: renderBackend.value,
@@ -476,6 +544,8 @@ async function fetchPreview(
     body: JSON.stringify({
       session_id: context.sessionId, photo_id: context.photoId, algorithm: "physical", params: context.params,
       auto_mode: context.autoMode,
+      auto_exposure: context.autoExposure,
+      nonlocal_mode: context.nonlocalMode,
       basic_params: context.basicParams,
       ricoh_preset_id: context.ricohPresetId,
       max_edge: 1800, preview_level: previewLevel, full_resolution: fullResolution,
@@ -490,8 +560,20 @@ async function fetchPreview(
   }
   const width = response.headers.get("X-Image-Width");
   const height = response.headers.get("X-Image-Height");
+  const status = response.headers.get("X-Dehaze-Nonlocal-Status");
+  const nonlocalStatus = status === "active" || status === "fallback" ? status : "off";
+  const nonlocalReason = response.headers.get("X-Dehaze-Nonlocal-Reason") ?? "";
+  const exposureHeader = response.headers.get("X-Auto-Exposure-EV");
+  const parsedExposure = exposureHeader === null ? Number.NaN : Number(exposureHeader);
+  const autoExposureEV = Number.isFinite(parsedExposure) ? parsedExposure : null;
+  const exposureReasonHeader = response.headers.get("X-Auto-Exposure-Reason") ?? "off";
+  const autoExposureReason: AutoExposureReason = ["off", "target_reached", "highlight_limited", "applied", "black"]
+    .includes(exposureReasonHeader) ? exposureReasonHeader as AutoExposureReason : "off";
   const url = URL.createObjectURL(await response.blob());
-  return { url, width: Number(width) || 0, height: Number(height) || 0 };
+  return {
+    url, width: Number(width) || 0, height: Number(height) || 0,
+    nonlocalStatus, nonlocalReason, autoExposureEV, autoExposureReason,
+  };
 }
 
 async function refreshPreview(
@@ -528,16 +610,27 @@ async function refreshPreview(
     }
     releaseUrl(enhancedUrl.value);
     enhancedUrl.value = enhanced.url;
+    nonlocalRenderStatus.value = enhanced.nonlocalStatus;
+    nonlocalRenderReason.value = enhanced.nonlocalReason;
+    autoExposurePreview.value = {
+      sessionId: context.sessionId,
+      photoId: context.photoId,
+      enabled: context.autoExposure,
+      ev: enhanced.autoExposureEV,
+      reason: enhanced.autoExposureReason,
+    };
     stagedAssets.length = 0;
     displayedPhotoId.value = context.photoId;
     displayedSessionId.value = context.sessionId;
     const width = enhanced.width || original?.width || 0;
     const height = enhanced.height || original?.height || 0;
+    if (fullResolution && width && height) {
+      sourceImageWidth.value = width;
+      sourceImageHeight.value = height;
+    }
     imageWidth.value = width || imageWidth.value;
     imageHeight.value = height || imageHeight.value;
-    const resolutionLabel = fullResolution
-      ? "全分辨率"
-      : `低分辨率预览 · L${previewLevel}`;
+    const resolutionLabel = fullResolution ? "全分辨率" : "低分辨率预览";
     imageSize.value = width && height ? `${resolutionLabel} · ${width} × ${height}` : resolutionLabel;
     previewError.value = "";
     await nextTick();
@@ -567,6 +660,8 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
   window.clearTimeout(fullResolutionTimer);
   previewController?.abort();
   const generation = ++previewGeneration;
+  nonlocalRenderStatus.value = "off";
+  nonlocalRenderReason.value = "";
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) {
     previewLoading.value = false;
     return;
@@ -632,6 +727,7 @@ function endSliderInteraction() {
 function resetParams() {
   if (!selectedId.value) return;
   paramsByPhoto.value[selectedId.value] = cloneParams(emptyParams.value);
+  sharedDehazeNonlocalByPhoto.value[selectedId.value] = "off";
   schedulePreview();
 }
 
@@ -645,75 +741,21 @@ function syncParamsToAll() {
   actionMessage.value = `已将当前参数同步到全部 ${files.value.length} 张照片`;
 }
 
-async function pollJob() {
-  if (!job.value || !BASE_URL.value) return;
-  try {
-    const response = await fetch(`${BASE_URL.value}/api/enhance/job/${job.value.job_id}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "无法读取任务进度");
-    job.value = data;
-    if (!["queued", "running"].includes(data.status)) {
-      window.clearInterval(pollTimer);
-      pollTimer = undefined;
-      actionMessage.value = data.status === "cancelled"
-        ? `任务已停止，已完成 ${data.success} 张`
-        : `处理完成：成功 ${data.success} 张，失败 ${data.failed} 张`;
-    }
-  } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : String(error);
-  }
-}
-
-async function startBatch() {
-  if (!sessionId.value || isRunning.value || !BASE_URL.value) return;
-  actionMessage.value = "正在创建导出任务…";
-  try {
-    await flushPendingSaves();
-    const paramsByPhotoPayload = Object.fromEntries(
-      files.value.map((file) => [file.photo_id, cloneParams(paramsByPhoto.value[file.photo_id] ?? emptyParams.value)]),
-    );
-    const response = await fetch(`${BASE_URL.value}/api/enhance/run`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: sessionId.value,
-        output_dir: outputDir.value,
-        params: cloneParams(params.value),
-        params_by_photo: paramsByPhotoPayload,
-        auto_modes_by_photo: { ...sharedDehazeAutoByPhoto.value },
-        algorithms_by_photo: Object.fromEntries(files.value.map(file => [file.photo_id, sharedDehazeAlgorithmByPhoto.value[file.photo_id] ?? "physical"])),
-        basic_params_by_photo: basicByPhoto.value,
-        render_backend: renderBackend.value, basic_backend: basicBackend.value,
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "任务启动失败");
-    job.value = data;
-    actionMessage.value = "正在全分辨率处理；原图不会被修改";
-    window.clearInterval(pollTimer);
-    pollTimer = window.setInterval(() => void pollJob(), 700);
-    await pollJob();
-  } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : String(error);
-  }
-}
-
-async function cancelBatch() {
-  if (!job.value || !BASE_URL.value) return;
-  await fetch(`${BASE_URL.value}/api/enhance/cancel/${job.value.job_id}`, { method: "POST" });
-  actionMessage.value = "停止请求已发送，当前照片完成后停止";
-  await pollJob();
-}
-
 watch(selectedId, () => {
   if (selectedId.value && sharedPhotoSource.value?.session_id === sessionId.value)
     sharedSelectedPhotoId.value = selectedId.value;
   closeRevealMenu();
-  resetView();
+  sourceImageWidth.value = 0;
+  sourceImageHeight.value = 0;
+  lastZoom.value = null;
+  resetView(false);
   if (originalUrl.value) imageSize.value = "正在载入低分辨率预览，暂显上一张照片";
   schedulePreview(true);
 });
 watch(params, () => { scheduleParameterPreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
 watch(dehazeAutoMode, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); });
+watch(dehazeNonlocalMode, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); });
+watch(dehazeAutoExposure, () => { schedulePreview(); if (selectedId.value) markPhotoChanged(selectedId.value); });
 watch(basicParams, () => { scheduleParameterPreview(); if (selectedId.value) markPhotoChanged(selectedId.value); }, { deep: true });
 watch(ricohPresetId, () => schedulePreview());
 watch(renderBackend, () => {
@@ -721,6 +763,9 @@ watch(renderBackend, () => {
 });
 watch([basicBackend, ricohBackend], () => {
   if (sessionId.value && selectedId.value) schedulePreview();
+});
+watch([pixelScale, fitWidth], ([nextScale, nextFitWidth], [previousScale, previousFitWidth]) => {
+  preservePixelScale(previousScale, nextScale, previousFitWidth, nextFitWidth);
 });
 watch([fitWidth, fitHeight], clampPan);
 watch(sharedPhotoSource, (source) => {
@@ -735,6 +780,7 @@ onMounted(() => {
   window.addEventListener("blur", closeRevealMenu);
   window.addEventListener("pointerup", endSliderInteraction);
   window.addEventListener("pointercancel", endSliderInteraction);
+  window.addEventListener("resize", updateViewportSize);
   updateViewportSize();
   if (previewViewport.value) {
     resizeObserver = new ResizeObserver(updateViewportSize);
@@ -748,11 +794,12 @@ onBeforeUnmount(() => {
   window.removeEventListener("blur", closeRevealMenu);
   window.removeEventListener("pointerup", endSliderInteraction);
   window.removeEventListener("pointercancel", endSliderInteraction);
+  window.removeEventListener("resize", updateViewportSize);
   releaseUrl(originalUrl.value); releaseUrl(enhancedUrl.value);
   previewGeneration += 1;
   previewController?.abort();
   window.clearTimeout(previewTimer); window.clearTimeout(intermediatePreviewTimer);
-  window.clearTimeout(fullResolutionTimer); window.clearInterval(pollTimer);
+  window.clearTimeout(fullResolutionTimer);
   resizeObserver?.disconnect();
 });
 </script>
@@ -764,9 +811,8 @@ onBeforeUnmount(() => {
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-3 flex items-center gap-2"><ImagePlus class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">输入照片</h2></div>
           <div class="grid gap-2">
-            <button @click="chooseSingle" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs hover:border-blue-400 dark:border-zinc-700"><ImagePlus class="mr-2 inline h-3.5 w-3.5" />选择单张照片</button>
-            <button @click="chooseMultiple" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs hover:border-blue-400 dark:border-zinc-700"><Images class="mr-2 inline h-3.5 w-3.5" />选择多张照片</button>
-            <button @click="chooseFolder" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs hover:border-blue-400 dark:border-zinc-700"><FolderOpen class="mr-2 inline h-3.5 w-3.5" />选择照片文件夹</button>
+            <button @click="chooseMultiple" :disabled="photoExportRunning" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs hover:border-blue-400 dark:border-zinc-700"><Images class="mr-2 inline h-3.5 w-3.5" />选择照片</button>
+            <button @click="chooseFolder" :disabled="photoExportRunning" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs hover:border-blue-400 dark:border-zinc-700"><FolderOpen class="mr-2 inline h-3.5 w-3.5" />选择照片文件夹</button>
           </div>
           <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-zinc-800 dark:text-zinc-400">
             <LoaderCircle v-if="sessionLoading" class="mr-1 inline h-3 w-3 animate-spin" />
@@ -796,7 +842,10 @@ onBeforeUnmount(() => {
                   :class="thumbnailState(file.photo_id) === 'loaded' ? 'opacity-100' : 'opacity-0'"
                   @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
               </span>
-              <span class="min-w-0 flex-1 truncate">{{ compactFileName(file.name) }}</span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate">{{ compactFileName(file.name) }}</span>
+                <span v-if="photoChangeSummary(file.photo_id)" class="block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ photoChangeSummary(file.photo_id) }}</span>
+              </span>
             </button>
           </div>
         </section>
@@ -814,14 +863,14 @@ onBeforeUnmount(() => {
                 <button type="button" @click="previewMode = 'enhanced'" :aria-pressed="previewMode === 'enhanced'" title="仅效果图" aria-label="仅效果图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'enhanced' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Sparkles class="h-3.5 w-3.5" /></button>
               </div>
               <div class="flex shrink-0 items-center gap-1 rounded-lg bg-slate-50 p-1 dark:bg-zinc-800">
-                <button @click="zoomBy(-0.25)" :disabled="zoom <= 1" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
-                <button @click="resetView" title="适合窗口" aria-label="适合窗口" class="min-w-[3.8rem] rounded px-1.5 py-1 text-[11px] font-medium tabular-nums hover:bg-white dark:hover:bg-zinc-700">{{ Math.round(zoom * 100) }}%</button>
-                <button @click="resetView" title="适合窗口" aria-label="适合窗口" class="rounded p-1.5 hover:bg-white dark:hover:bg-zinc-700"><Maximize2 class="h-3.5 w-3.5" /></button>
-                <button @click="zoomBy(0.25)" :disabled="zoom >= 4" title="放大" aria-label="放大" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Plus class="h-3.5 w-3.5" /></button>
+                <button @click="zoomBy(-0.25)" :disabled="!canZoom || zoom <= 1.001" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
+                <button @click="resetView()" title="适合窗口" aria-label="适合窗口" class="w-[6.5rem] shrink-0 whitespace-nowrap rounded px-1.5 py-1 text-[11px] font-medium tabular-nums hover:bg-white dark:hover:bg-zinc-700">{{ zoomDisplayText }}</button>
+                <button @click="resetView()" title="适合窗口" aria-label="适合窗口" class="rounded p-1.5 hover:bg-white dark:hover:bg-zinc-700"><Maximize2 class="h-3.5 w-3.5" /></button>
+                <button @click="zoomBy(0.25)" :disabled="!canZoom || zoom >= maxZoom - 0.001" title="放大" aria-label="放大" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Plus class="h-3.5 w-3.5" /></button>
               </div>
             </div>
           </div>
-          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in')) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel" @click="onPreviewClick" @contextmenu="onPreviewContextMenu">
+          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (!canZoom ? 'cursor-default' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'))) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel" @click="onPreviewClick" @contextmenu="onPreviewContextMenu">
             <template v-if="originalUrl">
               <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
                 <div class="preview-stage relative shrink-0" :style="imageStageStyle">
@@ -877,6 +926,7 @@ onBeforeUnmount(() => {
                   @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
               </span>
               <span class="block truncate" :title="file.name">{{ compactFileName(file.name) }}</span>
+              <span v-if="photoChangeSummary(file.photo_id)" class="mt-0.5 block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ photoChangeSummary(file.photo_id) }}</span>
             </button>
           </div>
         </section>
@@ -888,18 +938,34 @@ onBeforeUnmount(() => {
           <p class="mb-3 text-[11px] text-slate-500">调整后自动保存到 XMP。去朦胧会转换为 Camera Raw 可编辑的近似曲线，局部效果可能有差异。</p>
           <label v-for="item in basicControls" :key="item.key" class="mb-3 block text-[11px]">
             <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-500">{{ basicParams[item.key] > 0 ? '+' : '' }}{{ basicParams[item.key] }}</span></span>
-            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" @pointerdown="beginSliderInteraction" />
+            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" :style="rangeChangeStyle(basicParams[item.key], item.min, item.max, 0)" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" @pointerdown="beginSliderInteraction" />
           </label>
         </section>
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button type="button" @click="resetParams" :disabled="!selectedId" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
           <div v-if="selectedId">
             <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-400">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
+            <div class="mb-3 rounded-xl border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/70 dark:bg-amber-950/20">
+              <h3 class="mb-2 text-xs font-semibold text-slate-800 dark:text-zinc-200">实验去朦胧</h3>
+              <div class="grid grid-cols-3 gap-1 rounded-lg bg-white p-1 dark:bg-zinc-900">
+                <button v-for="item in nonlocalModes" :key="item.value" type="button" :aria-pressed="dehazeNonlocalMode === item.value" :disabled="!selectedId" @click="dehazeNonlocalMode = item.value" class="rounded-md px-2 py-1.5 text-[11px] font-medium transition" :class="dehazeNonlocalMode === item.value ? 'bg-amber-500 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 dark:text-zinc-400 dark:hover:bg-zinc-800'">{{ item.label }}</button>
+              </div>
+              <p v-if="nonlocalRenderStatusText" class="mt-2 text-[10px] leading-4 text-slate-600 dark:text-zinc-300" role="status">{{ nonlocalRenderStatusText }}</p>
+              <p class="mt-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">实验模式会开启自动处理</p>
+            </div>
             <label class="mb-3 flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2.5 text-xs dark:border-zinc-700">
               <span class="font-medium">自动处理</span>
               <input v-model="dehazeAutoMode" type="checkbox" class="h-4 w-4 accent-blue-600" />
             </label>
             <p v-if="dehazeAutoMode" class="mb-3 text-[11px] leading-5 text-slate-500 dark:text-zinc-400">自动分析照片并调整去朦胧效果。关闭后可手动微调高级参数。</p>
+            <div class="mb-3 rounded-xl border border-slate-200 px-3 py-2.5 dark:border-zinc-700">
+              <label class="flex items-center justify-between text-xs">
+                <span class="font-medium">自动曝光</span>
+                <input v-model="dehazeAutoExposure" type="checkbox" class="h-4 w-4 accent-blue-600" />
+              </label>
+              <p class="mt-1.5 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">统一提高整张照片曝光，高光余量不足时限制增益</p>
+              <p v-if="autoExposureStatusText" class="mt-1.5 text-[10px] leading-4 text-slate-700 dark:text-zinc-300" role="status">{{ autoExposureStatusText }}</p>
+            </div>
             <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" @pointerdown="beginSliderInteraction" /></label>
             <template v-if="!dehazeAutoMode">
               <button type="button" @click="advancedOpen = !advancedOpen" :aria-expanded="advancedOpen" class="mt-4 flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-medium dark:border-zinc-800">高级参数<ChevronDown class="h-3.5 w-3.5 transition" :class="advancedOpen ? 'rotate-180' : ''" /></button>
@@ -921,26 +987,7 @@ onBeforeUnmount(() => {
           <p v-else class="text-[11px] leading-5 text-slate-500 dark:text-zinc-400">载入照片后可调整去朦胧参数。</p>
         </section>
 
-        <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 class="mb-3 text-sm font-semibold">导出</h2>
-          <button @click="saveXmp" :disabled="!files.length || savingXmp" class="mb-3 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-300 px-4 py-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40 dark:text-blue-300"><LoaderCircle v-if="savingXmp" class="h-3.5 w-3.5 animate-spin" /><CheckCircle2 v-else class="h-3.5 w-3.5" />手动补写 XMP</button>
-          <p v-if="autoSaveError" class="mb-3 text-[11px] text-rose-600">{{ autoSaveError }}</p>
-          <button @click="chooseOutput" class="w-full truncate rounded-xl border border-slate-200 px-3 py-2 text-left text-[11px] text-slate-500 hover:border-blue-400 dark:border-zinc-700" :title="outputDir"><FolderOpen class="mr-1.5 inline h-3.5 w-3.5" />{{ outputDir || "选择输出目录" }}</button>
-          <div class="mt-3 space-y-1.5 rounded-xl bg-emerald-50 p-3 text-[11px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
-            <div><ShieldCheck class="mr-1 inline h-3.5 w-3.5" />原始照片始终保持不变</div><div>RAW 导出包含原始数据和 16 位去朦胧图层</div><div>文件名增加 _dehaze 后缀</div>
-          </div>
-          <p class="mt-2 text-[10px] leading-4 text-slate-400">JPG、PNG 等普通图片会生成 RGB Linear DNG，不会被标记成相机传感器 RAW。</p>
-          <button v-if="!isRunning" @click="startBatch" :disabled="!files.length" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"><Play class="h-3.5 w-3.5" />{{ files.length > 1 ? `导出 ${files.length} 张 DNG` : "导出 DNG" }}</button>
-          <button v-else @click="cancelBatch" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-xs font-semibold text-white"><Square class="h-3.5 w-3.5" />停止后续处理</button>
-        </section>
-
-        <section v-if="job" class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div class="mb-2 flex justify-between text-xs"><span>批量进度</span><span>{{ Math.round(job.progress * 100) }}%</span></div>
-          <div class="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-zinc-800"><div class="h-full bg-blue-600 transition-all" :style="{ width: `${job.progress * 100}%` }"></div></div>
-          <div class="mt-3 grid grid-cols-3 gap-2 text-center text-[11px]"><div class="rounded-lg bg-slate-50 p-2 dark:bg-zinc-800">{{ job.total }}<br><span class="text-slate-400">总数</span></div><div class="rounded-lg bg-emerald-50 p-2 text-emerald-700 dark:bg-emerald-950/30">{{ job.success }}<br><span>完成</span></div><div class="rounded-lg bg-rose-50 p-2 text-rose-600 dark:bg-rose-950/30">{{ job.failed }}<br><span>失败</span></div></div>
-          <div v-if="job.current_file" class="mt-3 truncate text-[11px] text-slate-500"><LoaderCircle class="mr-1 inline h-3 w-3 animate-spin" />{{ job.current_file }}</div>
-          <div v-if="failedFiles.length" class="mt-3 max-h-24 overflow-y-auto text-[10px] text-rose-600"><div v-for="file in failedFiles" :key="file.photo_id" :title="file.error">{{ file.name }}：{{ file.error }}</div></div>
-        </section>
+        <p v-if="autoSaveError" class="text-[11px] text-rose-600">{{ autoSaveError }}</p>
         <div v-if="actionMessage" class="flex items-start gap-2 px-1 text-[11px] text-slate-500"><CheckCircle2 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />{{ actionMessage }}</div>
       </aside>
     </div>
@@ -1023,7 +1070,6 @@ onBeforeUnmount(() => {
 
 .preview-stage {
   transform-origin: center center;
-  will-change: transform;
 }
 
 .compare-split {

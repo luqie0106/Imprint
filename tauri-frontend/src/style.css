@@ -87,9 +87,11 @@ html, body, #app {
   }
 }
 
-/* 统一的参数滑杆：进度由调用方通过 --range-progress 提供。 */
+/* 统一的参数滑杆：旧调用方用 --range-progress，新调用方可指定蓝色区间。 */
 .app-range {
   --range-progress: 0%;
+  --range-start: 0%;
+  --range-end: var(--range-progress);
   height: 18px;
   appearance: none;
   -webkit-appearance: none;
@@ -102,9 +104,11 @@ html, body, #app {
   border-radius: 999px;
   background: linear-gradient(
     to right,
-    #2563eb 0,
-    #2563eb var(--range-progress),
-    #cbd5e1 var(--range-progress),
+    #cbd5e1 0,
+    #cbd5e1 var(--range-start),
+    #2563eb var(--range-start),
+    #2563eb var(--range-end),
+    #cbd5e1 var(--range-end),
     #cbd5e1 100%
   );
 }
@@ -125,13 +129,21 @@ html, body, #app {
   height: 4px;
   border: 0;
   border-radius: 999px;
-  background: #cbd5e1;
+  background: linear-gradient(
+    to right,
+    #cbd5e1 0,
+    #cbd5e1 var(--range-start),
+    #2563eb var(--range-start),
+    #2563eb var(--range-end),
+    #cbd5e1 var(--range-end),
+    #cbd5e1 100%
+  );
 }
 
 .app-range::-moz-range-progress {
   height: 4px;
   border-radius: 999px;
-  background: #2563eb;
+  background: transparent;
 }
 
 .app-range::-moz-range-thumb {
@@ -151,9 +163,11 @@ html, body, #app {
 .dark .app-range::-webkit-slider-runnable-track {
   background: linear-gradient(
     to right,
-    #3b82f6 0,
-    #3b82f6 var(--range-progress),
-    #52525b var(--range-progress),
+    #52525b 0,
+    #52525b var(--range-start),
+    #3b82f6 var(--range-start),
+    #3b82f6 var(--range-end),
+    #52525b var(--range-end),
     #52525b 100%
   );
 }
@@ -164,11 +178,19 @@ html, body, #app {
 }
 
 .dark .app-range::-moz-range-track {
-  background: #52525b;
+  background: linear-gradient(
+    to right,
+    #52525b 0,
+    #52525b var(--range-start),
+    #3b82f6 var(--range-start),
+    #3b82f6 var(--range-end),
+    #52525b var(--range-end),
+    #52525b 100%
+  );
 }
 
 .dark .app-range::-moz-range-progress {
-  background: #3b82f6;
+  background: transparent;
 }
 
 .dark .app-range::-moz-range-thumb {

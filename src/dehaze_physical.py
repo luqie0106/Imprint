@@ -5,11 +5,15 @@ exposure and DNG quantization follow it. Scene priors are evidence, not depth.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import cv2
 import numpy as np
 
-from dehaze import DehazeParams, _global_transmission
+from dehaze import DehazeParams, _global_transmission, resolve_nonlocal_mode
 from dehaze_spatial import _transmission_map, _box, _smoothstep, _guided_coefficients
+from dehaze_nonlocal import (build_reliability_lut, lookup_transmission_relief,
+                             build_nonlocal_transmission)
 
 _LUMA = np.array((0.2126, 0.7152, 0.0722), dtype=np.float32)
 _last_backend = "尚未处理"
@@ -136,8 +140,10 @@ def _estimate_airlight(rgb: np.ndarray, p: DehazeParams) -> tuple[np.ndarray, fl
     return np.clip(air, .00001, 1).astype(np.float32), float(confidence)
 
 
-def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool
+def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool,
+                    nonlocal_mode: str | None = None,
                     ) -> tuple[np.ndarray, np.ndarray, dict]:
+    nonlocal_mode = resolve_nonlocal_mode(nonlocal_mode)
     rgb = _analysis_sample(source)
     air, confidence = _estimate_airlight(rgb, p)
     reference, _ = _global_transmission(rgb, p)
@@ -154,11 +160,81 @@ def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool
         # Weaken the requested inverse before the shared regularizer/operator.
         # One scene-wide factor cannot selectively lift a wall beside texture.
         t = np.exp(np.log(np.clip(t, 1e-4, 1.0)) * optical_scale)
+    nonlocal_stats = {"nonlocal_active": False, "fallback_reason": ""}
+    eligible = (spatial and p.strength > 1e-6 and confidence >= .85
+                and float(air @ _LUMA) >= .12 and optical_scale == 1.0
+                and float(np.mean(np.max(rgb, axis=2) >= .95)) < .002)
+    if nonlocal_mode != "off":
+        if p.strength <= 1e-6:
+            nonlocal_stats["fallback_reason"] = "zero_strength"
+        elif not spatial:
+            nonlocal_stats["fallback_reason"] = "manual_mode"
+        elif float(air @ _LUMA) < (.20 if nonlocal_mode == "strong" else .12):
+            nonlocal_stats["fallback_reason"] = "low_airlight"
+        elif confidence < .85:
+            nonlocal_stats["fallback_reason"] = "uncertain_airlight"
+        elif optical_scale != 1.0:
+            nonlocal_stats["fallback_reason"] = "backlit_scene"
+        elif float(np.mean(np.max(rgb, axis=2) >= .95)) >= .002:
+            nonlocal_stats["fallback_reason"] = "clipped_highlights"
+    # The stronger ray fit flattens low-airlight water/shading in the RAW
+    # turbine trial. Keep those already-acceptable scenes on the original path.
+    if (nonlocal_mode == "strong" and eligible
+            and float(air @ _LUMA) >= .20):
+        field, nonlocal_stats = build_nonlocal_transmission(
+            source, air, float(t.flat[0]), p.strength)
+        nonlocal_stats["nonlocal_active"] = bool(nonlocal_stats.get("nonlocal_field_active"))
+        if nonlocal_stats["nonlocal_active"]:
+            t = field
+    # Reliability is allowed to relieve an over-darkened foreground, never to
+    # increase the existing inverse. Keep uncertain airlight, night scenes and
+    # clipped solar backlight on their established operator. No sky/roof masks.
+    # Opt-in until distant-detail acceptance improves: the initial RAW trial
+    # preserves colour/edges but can trade some distant contrast for relief.
+    if nonlocal_mode == "conservative" and eligible:
+        base = max(float(t.flat[0]),
+                   1.0 / (1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)))
+        lut, nonlocal_stats = build_reliability_lut(rgb, air, base)
+        nonlocal_stats["nonlocal_active"] = bool(np.any(lut > 0))
+        nonlocal_stats["fallback_reason"] = ("" if nonlocal_stats["nonlocal_active"] else
+            "no_reliable_rays" if nonlocal_stats.get("solver_converged", True) else "solver_nonconverged")
+        if nonlocal_stats["nonlocal_active"]:
+            relief = lookup_transmission_relief(source, lut)
+            # The RGB lookup retains equal treatment at every coordinate.
+            # Reapplying a spatial guided filter would break that invariant.
+            # Reject the ill-conditioned neighbourhood of I=A continuously.
+            for start in range(0, source.shape[0], 256):
+                stop = min(source.shape[0], start + 256)
+                deficit = air - source[start:stop]
+                radius = np.linalg.norm(deficit, axis=2) / max(float(np.linalg.norm(air)), 1e-6)
+                below_air = np.min(deficit / np.maximum(air, 1e-6), axis=2)
+                support = (_smoothstep(.10, .25, radius)
+                           * _smoothstep(0.0, .05, below_air))
+                knee = .015 * (1.0 - 1.0 / (
+                    1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)))
+                target = base - knee + (1.0 - base) * .5 * relief[start:stop] * support
+                t[start:stop] = np.maximum(t[start:stop], target)
     stats = {"airlight": air.tolist(), "airlight_confidence": confidence,
              "transmission_min": float(np.min(t)), "transmission_median": float(np.median(t)),
              "backlit_optical_scale": optical_scale,
-             "max_inverse_gain": 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)}
+             "max_inverse_gain": 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness),
+             "nonlocal_mode": nonlocal_mode,
+             **nonlocal_stats}
     return np.ascontiguousarray(t, dtype=np.float32), air, stats
+
+
+def _operator_params(p: DehazeParams, stats: dict) -> DehazeParams:
+    """Stronger inversion only after a reliable experimental field succeeds.
+
+    Keep the source chroma direction and established highlight protections.
+    Failed fits and solar/night fallback use the original parameters exactly.
+    """
+    if not stats.get("nonlocal_field_active", False):
+        return p
+    return replace(p, naturalness=p.naturalness * .25,
+                   brightness_protection=p.brightness_protection ** 3,
+                   shadow_protection=p.shadow_protection ** 2,
+                   color_protection=1.0, color_recovery=0.0)
 
 
 def _backlit_optical_scale(rgb: np.ndarray, airlight_confidence: float,
@@ -358,13 +434,18 @@ def _protect_dark_background(source: np.ndarray, result: np.ndarray,
     return np.where((lift > 0)[..., None], protected, result)
 
 
-def physical_diagnostics(image: np.ndarray, params: DehazeParams, *, spatial: bool = False) -> dict:
+def physical_diagnostics(image: np.ndarray, params: DehazeParams, *, spatial: bool = False,
+                         nonlocal_mode: str | None = None) -> dict:
     source = _linear_source(image)
     if not source.size:
         return {}
     p = params.normalized()
-    transmission, atmosphere, stats = _estimate_scene(source, p, spatial)
-    transmission = _regularize_transmission(source, transmission)
+    transmission, atmosphere, stats = (_estimate_scene(source, p, spatial)
+        if nonlocal_mode is None else _estimate_scene(source, p, spatial, nonlocal_mode))
+    p = _operator_params(p, stats)
+    stats["max_inverse_gain"] = 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)
+    if not stats.get("nonlocal_active", False):
+        transmission = _regularize_transmission(source, transmission)
     effective = _inverse_transmission(source, transmission, p)
     stats.update(operator_transmission_min=float(np.min(effective)),
                  operator_transmission_median=float(np.median(effective)),
@@ -375,15 +456,29 @@ def physical_diagnostics(image: np.ndarray, params: DehazeParams, *, spatial: bo
 
 
 def apply_physical_dehaze(image: np.ndarray, params: DehazeParams | None = None,
-                          *, backend: str = "cpu", spatial: bool = False) -> np.ndarray:
+                          *, backend: str = "cpu", spatial: bool = False,
+                          nonlocal_mode: str | None = None,
+                          diagnostics: dict | None = None) -> np.ndarray:
     global _last_backend
     source = _linear_source(image)
     p = (params or DehazeParams()).normalized()
     if p.strength <= 1e-6 or not source.size:
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(nonlocal_mode=resolve_nonlocal_mode(nonlocal_mode),
+                               nonlocal_active=False,
+                               fallback_reason="zero_strength" if p.strength <= 1e-6 else "empty_source")
         _last_backend = "未处理（强度为 0）"
         return image.copy()
-    transmission, atmosphere, _ = _estimate_scene(source, p, spatial)
-    transmission = _regularize_transmission(source, transmission)
+    transmission, atmosphere, stats = (_estimate_scene(source, p, spatial)
+        if nonlocal_mode is None else _estimate_scene(source, p, spatial, nonlocal_mode))
+    p = _operator_params(p, stats)
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(stats)
+        diagnostics["max_inverse_gain"] = 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)
+    if not stats.get("nonlocal_active", False):
+        transmission = _regularize_transmission(source, transmission)
     result = None
     if backend in ("native", "auto", "legacy_gpu", "pytorch"):
         try:

@@ -9,9 +9,22 @@ import os
 import threading
 
 import numpy as np
+from auto_exposure import ALGORITHM_VERSION as AUTO_EXPOSURE_ALGORITHM_VERSION
 
 
-ALGORITHM_VERSION = "linear-v22-uniform-sky-dark-background-envelope"
+ALGORITHM_VERSION = "linear-v27-calibrated-nonlocal-auto-exposure"
+
+NONLOCAL_MODES = ("off", "conservative", "strong")
+
+
+def resolve_nonlocal_mode(mode: str | None = None) -> str:
+    """Resolve an explicit per-render mode; keep the old CLI opt-in fallback."""
+    if mode is None:
+        return {"1": "conservative", "strong": "strong"}.get(
+            os.environ.get("IMPRINT_NONLOCAL_RELIEF", ""), "off")
+    if mode not in NONLOCAL_MODES:
+        raise ValueError("nonlocal_mode must be off, conservative or strong")
+    return mode
 
 
 @dataclass(frozen=True)
@@ -35,8 +48,13 @@ class DehazeParams:
             values[key] = float(np.clip(value, 0.0, 1.0))
         return DehazeParams(**values)
 
-    def cache_token(self) -> str:
-        payload = {"version": ALGORITHM_VERSION, **asdict(self.normalized())}
+    def cache_token(self, *, nonlocal_mode: str | None = None,
+                    auto_exposure: bool = False) -> str:
+        payload = {"version": ALGORITHM_VERSION,
+                   "nonlocal_relief": resolve_nonlocal_mode(nonlocal_mode),
+                   "auto_exposure": bool(auto_exposure),
+                   "auto_exposure_algorithm": AUTO_EXPOSURE_ALGORITHM_VERSION,
+                   **asdict(self.normalized())}
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
 
 

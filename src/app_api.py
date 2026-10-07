@@ -62,7 +62,9 @@ from model_manager import (
 )
 from onnx_exporter import fuse_mlp_weights_to_onnx, export_to_onnx, TORCH_EXPORT_AVAILABLE
 from dehaze import ALGORITHM_VERSION as DEHAZE_ALGORITHM_VERSION
-from dehaze import DehazeParams
+from dehaze import DehazeParams, resolve_nonlocal_mode
+from auto_exposure import ALGORITHM_VERSION as AUTO_EXPOSURE_ALGORITHM_VERSION
+from auto_exposure import apply_auto_exposure, estimate_auto_exposure
 from dehaze_physical import apply_physical_dehaze, get_last_physical_backend
 from native_renderer import (
     get_native_status, get_native_physical_status, native_basic, native_ricoh,
@@ -125,7 +127,7 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="Imprint API", version="3.0.2")
+app = FastAPI(title="Imprint API", version="3.0.3")
 
 # 最近几次筛选结果的缩略图访问表。只保存不可猜测的临时 ID 与本地路径映射，
 # 不把任意文件路径暴露为公开查询参数。
@@ -138,7 +140,7 @@ _MAX_PREVIEW_GROUPS = 40
 # 去朦胧使用完全独立的会话、预览缓存和后台任务；会话中保存真实路径，HTTP
 # 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
 _ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
-_ENHANCE_PREVIEW_CACHE: dict[tuple, tuple[bytes, int, int]] = {}
+_ENHANCE_PREVIEW_CACHE: dict[tuple, tuple[bytes, int, int, str, str, float, str]] = {}
 _ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str, int], bytes] = {}
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _RICOH_PREVIEW_CACHE: dict[tuple, bytes] = {}
@@ -150,6 +152,8 @@ _DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DISPLAY_PREVIEW_BYTES = 64 * 1024 * 1024
 _DEHAZED_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DEHAZED_PREVIEW_BYTES = 64 * 1024 * 1024
+_DEHAZED_PREVIEW_STATUS_CACHE: OrderedDict[tuple, tuple[str, str, float, str]] = OrderedDict()
+_MAX_DEHAZED_PREVIEW_STATUS_ENTRIES = 512
 _PROCESSING_PREVIEW_CACHE: OrderedDict[tuple, tuple[np.ndarray, Any]] = OrderedDict()
 _MAX_PROCESSING_PREVIEW_BYTES = 96 * 1024 * 1024
 _MAX_ENHANCE_SESSIONS = 8
@@ -162,6 +166,11 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "X-Image-Width", "X-Image-Height", "X-Dehaze-Nonlocal-Status",
+        "X-Dehaze-Nonlocal-Reason", "X-Auto-Exposure-EV",
+        "X-Auto-Exposure-Reason",
+    ],
 )
 
 
@@ -253,6 +262,8 @@ class EnhancePreviewRequest(BaseModel):
     photo_id: str
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
     auto_mode: bool = False
+    auto_exposure: bool = False
+    nonlocal_mode: Literal["off", "conservative", "strong"] = "off"
     algorithm: Literal["physical"] = "physical"
     basic_params: BasicParamsRequest = Field(default_factory=BasicParamsRequest)
     max_edge: int = Field(default=1800, ge=320, le=3000)
@@ -275,12 +286,21 @@ class EnhanceRevealRequest(BaseModel):
 class EnhanceRunRequest(BaseModel):
     session_id: str
     output_dir: str = ""
+    photo_ids: list[str] | None = None
     params: EnhanceParamsRequest = Field(default_factory=EnhanceParamsRequest)
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
     auto_mode: bool = False
     auto_modes_by_photo: dict[str, bool] = Field(default_factory=dict)
+    auto_exposure: bool = False
+    auto_exposures_by_photo: dict[str, bool] = Field(default_factory=dict)
+    nonlocal_mode: Literal["off", "conservative", "strong"] = "off"
+    nonlocal_modes_by_photo: dict[str, Literal["off", "conservative", "strong"]] = Field(default_factory=dict)
     algorithms_by_photo: dict[str, Literal["physical"]] = Field(default_factory=dict)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
+    preset_ids_by_photo: dict[str, str | None] = Field(default_factory=dict)
+    ricoh_backend: Literal["python", "native"] = "python"
+    compression: Literal["none", "lossless_jpeg", "jpegxl"] = "lossless_jpeg"
+    bit_depth: Literal["source", "16"] = "source"
     use_gpu: bool = False
     render_backend: Literal["auto", "native", "pytorch", "cpu"] | None = None
     basic_backend: Literal["python", "native"] | None = None
@@ -296,6 +316,10 @@ class EnhanceXmpRequest(BaseModel):
     params_by_photo: dict[str, EnhanceParamsRequest] = Field(default_factory=dict)
     auto_mode: bool = False
     auto_modes_by_photo: dict[str, bool] = Field(default_factory=dict)
+    auto_exposure: bool = False
+    auto_exposures_by_photo: dict[str, bool] = Field(default_factory=dict)
+    nonlocal_mode: Literal["off", "conservative", "strong"] = "off"
+    nonlocal_modes_by_photo: dict[str, Literal["off", "conservative", "strong"]] = Field(default_factory=dict)
     algorithms_by_photo: dict[str, Literal["physical"]] = Field(default_factory=dict)
     basic_params_by_photo: dict[str, BasicParamsRequest] = Field(default_factory=dict)
     preset_ids_by_photo: dict[str, str | None] = Field(default_factory=dict)
@@ -315,6 +339,8 @@ class PhotoSettingsRequest(BaseModel):
     photo_id: str
     dehaze_params: EnhanceParamsRequest
     auto_mode: bool = False
+    auto_exposure: bool = False
+    nonlocal_mode: Literal["off", "conservative", "strong"] = "off"
     dehaze_algorithm: Literal["physical"] = "physical"
     basic_params: BasicParamsRequest
     ricoh_preset_id: str | None = Field(default=None, min_length=1, max_length=80)
@@ -511,9 +537,11 @@ def save_photo_settings_snapshot(req: PhotoSettingsRequest):
             req.basic_params.values(),
             req.ricoh_preset_id,
             req.auto_mode,
+            nonlocal_mode=req.nonlocal_mode,
+            auto_exposure=req.auto_exposure,
             compatibility_curves=_build_dehaze_xmp_curves(
                 req.session_id, req.photo_id, Path(path), req.dehaze_params.to_params(),
-                req.auto_mode,
+                req.auto_mode, req.nonlocal_mode, req.auto_exposure,
             ),
         )
         return {
@@ -724,14 +752,92 @@ def _linear_float_to_uint16(image: np.ndarray) -> np.ndarray:
 
 
 def _render_dehaze(image: np.ndarray, params: DehazeParams, mode: str,
-                   auto_mode: bool = False) -> np.ndarray:
+                   auto_mode: bool = False,
+                   nonlocal_mode: str | None = None,
+                   diagnostics: dict[str, Any] | None = None,
+                   auto_exposure: bool = False,
+                   auto_exposure_ev: float | None = None,
+                   auto_exposure_reason: str | None = None) -> np.ndarray:
     """Render linear float RGB through the single physical dehaze operator."""
     # Historical GPU settings now prefer the optional float native operator.
     # CPU fallback always retains the same inverse, including older bundles.
     backend = "native" if mode == "native" else (
         "auto" if mode in ("auto", "legacy_gpu", "pytorch") else "cpu"
     )
-    return apply_physical_dehaze(image, params, backend=backend, spatial=auto_mode)
+    kwargs: dict[str, Any] = {
+        "backend": backend, "spatial": auto_mode, "nonlocal_mode": nonlocal_mode,
+    }
+    source = image
+    exposure_diagnostics: dict[str, Any] = {}
+    apply_exposure = auto_exposure or auto_exposure_ev is not None
+    if apply_exposure:
+        source = apply_auto_exposure(
+            image, enabled=True, ev_override=auto_exposure_ev,
+            reason_override=auto_exposure_reason,
+            diagnostics=exposure_diagnostics,
+        )
+    physical_diagnostics: dict[str, Any] | None = {} if diagnostics is not None else None
+    if physical_diagnostics is not None:
+        kwargs["diagnostics"] = physical_diagnostics
+    rendered = apply_physical_dehaze(source, params, **kwargs)
+    if diagnostics is not None:
+        diagnostics.clear()
+        if physical_diagnostics is not None:
+            diagnostics.update(physical_diagnostics)
+        if apply_exposure:
+            diagnostics.update(exposure_diagnostics)
+        else:
+            diagnostics.update(auto_exposure_ev=0.0, auto_exposure_reason="off")
+    return rendered
+
+
+_NONLOCAL_STATUS_REASON_CODES = {
+    "manual_mode", "zero_strength", "low_airlight", "uncertain_airlight",
+    "clipped_highlights", "backlit_scene", "no_reliable_rays",
+    "solver_nonconverged", "reliable_estimate_unavailable",
+}
+
+
+def _nonlocal_preview_status(
+    nonlocal_mode: str | None, diagnostics: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Describe the nonlocal result reported by the render that produced the image."""
+    mode = resolve_nonlocal_mode(nonlocal_mode)
+    details = diagnostics or {}
+    reason = str(details.get("fallback_reason") or "")
+    if reason not in _NONLOCAL_STATUS_REASON_CODES:
+        reason = "reliable_estimate_unavailable" if mode != "off" else ""
+    if mode == "off":
+        return "off", reason
+    if bool(details.get("nonlocal_active")):
+        return "active", ""
+    return "fallback", reason or "reliable_estimate_unavailable"
+
+
+def _remember_dehazed_preview_status(key: tuple, status: tuple[str, str, float, str]) -> None:
+    """Keep status metadata paired with the bounded dehazed-display image cache."""
+    with _DISPLAY_PREVIEW_LOCK:
+        for old_key in [
+            old_key for old_key in _DEHAZED_PREVIEW_STATUS_CACHE
+            if old_key[:2] == key[:2] and old_key[2:4] != key[2:4]
+        ]:
+            _DEHAZED_PREVIEW_STATUS_CACHE.pop(old_key, None)
+        _DEHAZED_PREVIEW_STATUS_CACHE[key] = status
+        _DEHAZED_PREVIEW_STATUS_CACHE.move_to_end(key)
+        while len(_DEHAZED_PREVIEW_STATUS_CACHE) > _MAX_DEHAZED_PREVIEW_STATUS_ENTRIES:
+            evicted_key, _ = _DEHAZED_PREVIEW_STATUS_CACHE.popitem(last=False)
+            _DEHAZED_PREVIEW_CACHE.pop(evicted_key, None)
+
+
+def _set_preview_status(
+    target: dict[str, Any] | None, status: tuple[str, str, float, str],
+) -> None:
+    if target is not None:
+        target.clear()
+        target.update(
+            status=status[0], reason=status[1],
+            auto_exposure_ev=status[2], auto_exposure_reason=status[3],
+        )
 
 
 def _render_basic(image: np.ndarray, basic: dict[str, float], mode: str) -> np.ndarray:
@@ -744,19 +850,25 @@ def _render_basic(image: np.ndarray, basic: dict[str, float], mode: str) -> np.n
 
 
 def _build_dehaze_xmp_curves(session_id: str, photo_id: str, path: Path,
-                             params: DehazeParams, auto_mode: bool):
+                             params: DehazeParams, auto_mode: bool,
+                             nonlocal_mode: str | None = None,
+                             auto_exposure: bool = False):
     """Fit the real physical operator's display RGB change before creative edits.
 
     A bounded preview supplies the sample. These global curves cannot represent
     spatial transmission or Adobe's different camera profile and processing order.
     A decoding/fitting failure aborts the XMP write, preserving the old packet.
     """
-    if params.strength <= 0:
+    if params.strength <= 0 and not auto_exposure:
         return None
     from dehaze_xmp import fit_dehaze_curves
     image, metadata = _cached_processing_preview(session_id, photo_id, path, 1024)
     source = _prepare_dehaze_input(image, metadata, path, color_manage_srgb=True)
-    target = _render_dehaze(source, params, "cpu", auto_mode=auto_mode)
+    target = _render_dehaze(
+        source, params, "cpu", auto_mode=auto_mode,
+        nonlocal_mode=nonlocal_mode,
+        **({"auto_exposure": True} if auto_exposure else {}),
+    )
     def display(rgb):
         return np.where(rgb <= .0031308, rgb * 12.92,
                         1.055 * np.power(np.maximum(rgb, 0), 1 / 2.4) - .055).astype(np.float32)
@@ -837,28 +949,43 @@ def _cached_dehazed_display_preview(
     color_manage_srgb: bool,
     preview_level: int = 0,
     auto_mode: bool = False,
+    auto_exposure: bool = False,
+    nonlocal_mode: str | None = None,
+    status_out: dict[str, Any] | None = None,
 ) -> np.ndarray:
     """Cache the post-dehaze display base so basic and Ricoh edits stay responsive."""
+    effective_nonlocal_mode = resolve_nonlocal_mode(nonlocal_mode)
     stat = path.stat()
     dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
     key = (
         session_id, photo_id, stat.st_mtime_ns, stat.st_size,
-        DEHAZE_ALGORITHM_VERSION, LENS_PREVIEW_VERSION, dehaze_values,
+        DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
+        LENS_PREVIEW_VERSION, dehaze_values,
         max_edge, preview_level, backend,
         bool(auto_mode),
+        bool(auto_exposure),
+        effective_nonlocal_mode,
         bool(color_manage_srgb),
     )
     with _DISPLAY_PREVIEW_LOCK:
         cached = _DEHAZED_PREVIEW_CACHE.get(key)
         if cached is not None:
-            _DEHAZED_PREVIEW_CACHE.move_to_end(key)
-            return cached
+            status = _DEHAZED_PREVIEW_STATUS_CACHE.get(key)
+            if status is not None:
+                _DEHAZED_PREVIEW_CACHE.move_to_end(key)
+                _DEHAZED_PREVIEW_STATUS_CACHE.move_to_end(key)
+                _set_preview_status(status_out, status)
+                return cached
+            _DEHAZED_PREVIEW_CACHE.pop(key, None)
 
     image, metadata = _cached_processing_preview(
         session_id, photo_id, path, max_edge,
     )
     linear = _prepare_dehaze_input(
         image, metadata, path, color_manage_srgb=color_manage_srgb,
+    )
+    exposure_ev, exposure_reason = (
+        estimate_auto_exposure(linear) if auto_exposure else (0.0, "off")
     )
     if preview_level:
         scale = 2 ** preview_level
@@ -868,10 +995,23 @@ def _cached_dehazed_display_preview(
             interpolation=cv2.INTER_AREA,
         )
         np.clip(linear, 0.0, 1.0, out=linear)
+    diagnostics: dict[str, Any] = {}
     dehazed = _render_dehaze(
         np.ascontiguousarray(linear, dtype=np.float32), params, backend,
-        auto_mode=auto_mode,
+        auto_mode=auto_mode, nonlocal_mode=effective_nonlocal_mode,
+        diagnostics=diagnostics,
+        **({"auto_exposure": True, "auto_exposure_ev": exposure_ev,
+            "auto_exposure_reason": exposure_reason} if auto_exposure else {}),
     )
+    nonlocal_status, nonlocal_reason = _nonlocal_preview_status(
+        effective_nonlocal_mode, diagnostics,
+    )
+    status = (
+        nonlocal_status, nonlocal_reason,
+        float(diagnostics.get("auto_exposure_ev", 0.0)),
+        str(diagnostics.get("auto_exposure_reason", "off")),
+    )
+    _set_preview_status(status_out, status)
     dehazed16 = _linear_float_to_uint16(dehazed)
     corrected, _, _ = _correct_enhanced_raw(dehazed16, metadata, path, preview=True)
     display = _display_rgb8(corrected, linear=True)
@@ -881,21 +1021,29 @@ def _cached_dehazed_display_preview(
         with _DISPLAY_PREVIEW_LOCK:
             cached = _DEHAZED_PREVIEW_CACHE.get(key)
             if cached is not None:
-                _DEHAZED_PREVIEW_CACHE.move_to_end(key)
-                return cached
+                cached_status = _DEHAZED_PREVIEW_STATUS_CACHE.get(key)
+                if cached_status is not None:
+                    _DEHAZED_PREVIEW_CACHE.move_to_end(key)
+                    _DEHAZED_PREVIEW_STATUS_CACHE.move_to_end(key)
+                    _set_preview_status(status_out, cached_status)
+                    return cached
+                _DEHAZED_PREVIEW_CACHE.pop(key, None)
             # Drop stale copies if the source file changed during the session.
             for old_key in [
                 old_key for old_key in _DEHAZED_PREVIEW_CACHE
                 if old_key[:2] == key[:2] and old_key[2:4] != key[2:4]
             ]:
                 _DEHAZED_PREVIEW_CACHE.pop(old_key, None)
+                _DEHAZED_PREVIEW_STATUS_CACHE.pop(old_key, None)
             while (
                 _DEHAZED_PREVIEW_CACHE
                 and sum(value.nbytes for value in _DEHAZED_PREVIEW_CACHE.values())
                 + display.nbytes > _MAX_DEHAZED_PREVIEW_BYTES
             ):
-                _DEHAZED_PREVIEW_CACHE.popitem(last=False)
+                evicted_key, _ = _DEHAZED_PREVIEW_CACHE.popitem(last=False)
+                _DEHAZED_PREVIEW_STATUS_CACHE.pop(evicted_key, None)
             _DEHAZED_PREVIEW_CACHE[key] = display
+            _remember_dehazed_preview_status(key, status)
     return display
 
 
@@ -1306,6 +1454,8 @@ def create_enhance_session(req: EnhanceSessionRequest):
                 "extension": path.suffix.lower(),
                 "dehaze_params": settings["dehaze_params"],
                 "dehaze_auto_mode": settings.get("dehaze_auto_mode", True),
+                "dehaze_auto_exposure": settings.get("dehaze_auto_exposure", False),
+                "dehaze_nonlocal_mode": settings.get("dehaze_nonlocal_mode", "off"),
                 "dehaze_algorithm": "physical",
                 "ricoh_preset_id": settings["ricoh_preset_id"],
                 "basic_params": settings["basic_params"],
@@ -1329,6 +1479,8 @@ def create_enhance_session(req: EnhanceSessionRequest):
                         _DISPLAY_PREVIEW_CACHE.pop(key, None)
                     for key in [key for key in _DEHAZED_PREVIEW_CACHE if key[0] == expired]:
                         _DEHAZED_PREVIEW_CACHE.pop(key, None)
+                    for key in [key for key in _DEHAZED_PREVIEW_STATUS_CACHE if key[0] == expired]:
+                        _DEHAZED_PREVIEW_STATUS_CACHE.pop(key, None)
                     for key in [key for key in _PROCESSING_PREVIEW_CACHE if key[0] == expired]:
                         _PROCESSING_PREVIEW_CACHE.pop(key, None)
         return {
@@ -1390,6 +1542,16 @@ def save_enhance_session_xmp(req: EnhanceXmpRequest):
         for photo_id, params in req.params_by_photo.items()
         if photo_id in records
     ]
+    scoped_nonlocal_modes = MappingProxyType({
+        photo_id: mode for photo_id, mode in req.nonlocal_modes_by_photo.items()
+        if photo_id in records
+    })
+    scoped_auto_exposures = MappingProxyType({
+        photo_id: bool(enabled)
+        for photo_id, enabled in req.auto_exposures_by_photo.items()
+        if photo_id in records
+    })
+    default_nonlocal_mode = req.nonlocal_mode
     try:
         return write_dehaze_session_settings(
             scoped,
@@ -1399,7 +1561,13 @@ def save_enhance_session_xmp(req: EnhanceXmpRequest):
             req.auto_mode,
             curve_builder=lambda photo_id, path, params, mode: _build_dehaze_xmp_curves(
                 req.session_id, photo_id, path, DehazeParams(**params), mode,
+                scoped_nonlocal_modes.get(photo_id, default_nonlocal_mode),
+                scoped_auto_exposures.get(photo_id, req.auto_exposure),
             ),
+            nonlocal_mode=default_nonlocal_mode,
+            nonlocal_modes_by_photo=scoped_nonlocal_modes,
+            auto_exposure=req.auto_exposure,
+            auto_exposures_by_photo=dict(scoped_auto_exposures),
         )
     except KeyError:
         return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
@@ -1462,10 +1630,11 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     render_mode = _render_mode(req.render_backend, req.use_gpu)
     basic_mode = _basic_mode(req.basic_backend, render_mode)
     cache_key = (req.session_id, req.photo_id, stat.st_mtime_ns, stat.st_size,
-                 DEHAZE_ALGORITHM_VERSION, LENS_PREVIEW_VERSION,
+                 DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
+                 LENS_PREVIEW_VERSION,
                  dehaze_values, req.max_edge,
                  req.preview_level, bool(req.full_resolution), req.mode,
-                 req.algorithm, bool(req.auto_mode),
+                 req.algorithm, bool(req.auto_mode), bool(req.auto_exposure), req.nonlocal_mode,
                  effective_preset_id, render_mode, basic_mode, req.ricoh_backend,
                  bool(req.color_manage_srgb),
                  tuple(basic[key] for key in sorted(basic)))
@@ -1478,7 +1647,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         with _ENHANCE_LOCK:
             cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
         if cached is not None:
-            payload, width, height = cached
+            (payload, width, height, nonlocal_status, nonlocal_reason,
+             auto_exposure_ev, auto_exposure_reason) = cached
             return Response(
                 content=payload,
                 media_type="image/jpeg",
@@ -1486,9 +1656,17 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                     "Cache-Control": "private, max-age=3600",
                     "X-Image-Width": str(width),
                     "X-Image-Height": str(height),
+                    "X-Dehaze-Nonlocal-Status": nonlocal_status,
+                    "X-Dehaze-Nonlocal-Reason": nonlocal_reason,
+                    "X-Auto-Exposure-EV": format(auto_exposure_ev, ".8g"),
+                    "X-Auto-Exposure-Reason": auto_exposure_reason,
                 },
             )
     try:
+        nonlocal_status = "off"
+        nonlocal_reason = ""
+        auto_exposure_ev = 0.0
+        auto_exposure_reason = "off"
         if req.full_resolution:
             # Full-size previews intentionally skip every in-memory image/JPEG
             # cache: camera RAWs can decode to very large arrays, and parameter
@@ -1507,8 +1685,17 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                         image, metadata, path,
                         color_manage_srgb=req.color_manage_srgb,
                     )
+                    diagnostics: dict[str, Any] = {}
                     enhanced = _render_dehaze(
                         linear_input, params, render_mode, auto_mode=req.auto_mode,
+                        nonlocal_mode=req.nonlocal_mode,
+                        diagnostics=diagnostics,
+                        **({"auto_exposure": True} if req.auto_exposure else {}),
+                    )
+                    auto_exposure_ev = float(diagnostics.get("auto_exposure_ev", 0.0))
+                    auto_exposure_reason = str(diagnostics.get("auto_exposure_reason", "off"))
+                    nonlocal_status, nonlocal_reason = _nonlocal_preview_status(
+                        req.nonlocal_mode, diagnostics,
                     )
                     enhanced16 = _linear_float_to_uint16(enhanced)
                     enhanced16, _, _ = _correct_enhanced_raw(
@@ -1528,13 +1715,21 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             payload = _encode_preview(display)
             width, height = display.shape[1], display.shape[0]
         elif req.mode == "dehazed":
+            status_out: dict[str, Any] = {}
             display = _cached_dehazed_display_preview(
                 req.session_id, req.photo_id, Path(path), req.max_edge, params,
                 backend=render_mode,
                 color_manage_srgb=req.color_manage_srgb,
                 preview_level=req.preview_level,
                 auto_mode=req.auto_mode,
+                auto_exposure=req.auto_exposure,
+                nonlocal_mode=req.nonlocal_mode,
+                status_out=status_out,
             )
+            nonlocal_status = status_out.get("status", "off")
+            nonlocal_reason = status_out.get("reason", "")
+            auto_exposure_ev = float(status_out.get("auto_exposure_ev", 0.0))
+            auto_exposure_reason = str(status_out.get("auto_exposure_reason", "off"))
             if effective_preset_id is not None:
                 effected = _render_ricoh(
                     display, effective_preset_id, basic, req.ricoh_backend,
@@ -1552,7 +1747,10 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             with _ENHANCE_LOCK:
                 if len(_ENHANCE_PREVIEW_CACHE) >= 128:
                     _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)
-                _ENHANCE_PREVIEW_CACHE[cache_key] = (payload, width, height)
+                _ENHANCE_PREVIEW_CACHE[cache_key] = (
+                    payload, width, height, nonlocal_status, nonlocal_reason,
+                    auto_exposure_ev, auto_exposure_reason,
+                )
         return Response(
             content=payload,
             media_type="image/jpeg",
@@ -1560,6 +1758,10 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 "Cache-Control": "private, no-store" if req.full_resolution else "private, max-age=3600",
                 "X-Image-Width": str(width),
                 "X-Image-Height": str(height),
+                "X-Dehaze-Nonlocal-Status": nonlocal_status,
+                "X-Dehaze-Nonlocal-Reason": nonlocal_reason,
+                "X-Auto-Exposure-EV": format(auto_exposure_ev, ".8g"),
+                "X-Auto-Exposure-Reason": auto_exposure_reason,
             },
         )
     except KeyError:
@@ -1700,6 +1902,134 @@ def _snapshot_enhance_modes(
     return bool(req.auto_mode), MappingProxyType(scoped_modes)
 
 
+def _snapshot_enhance_nonlocal_modes(
+    req: EnhanceRunRequest,
+    photo_ids: set[str] | None = None,
+) -> tuple[str, Mapping[str, str]]:
+    """Freeze the experiment mode per active photo before a batch starts."""
+    scoped_modes = {
+        photo_id: nonlocal_mode
+        for photo_id, nonlocal_mode in req.nonlocal_modes_by_photo.items()
+        if photo_ids is None or photo_id in photo_ids
+    }
+    return req.nonlocal_mode, MappingProxyType(scoped_modes)
+
+
+def _snapshot_enhance_auto_exposures(
+    req: EnhanceRunRequest,
+    photo_ids: set[str] | None = None,
+) -> tuple[bool, Mapping[str, bool]]:
+    """Freeze the independent per-photo auto-exposure option for the job."""
+    scoped = {
+        photo_id: bool(enabled)
+        for photo_id, enabled in req.auto_exposures_by_photo.items()
+        if photo_ids is None or photo_id in photo_ids
+    }
+    return bool(req.auto_exposure), MappingProxyType(scoped)
+
+
+def _snapshot_enhance_presets(
+    req: EnhanceRunRequest,
+    photo_ids: set[str],
+) -> Mapping[str, str | None]:
+    """Freeze only selected per-photo Ricoh presets for the export job."""
+    return MappingProxyType({
+        photo_id: preset_id
+        for photo_id, preset_id in req.preset_ids_by_photo.items()
+        if photo_id in photo_ids
+    })
+
+
+def _parse_bits_per_sample(value: Any) -> int | None:
+    """Read a usable integer sample depth from common EXIF representations."""
+    if isinstance(value, (tuple, list, np.ndarray)):
+        values = list(np.asarray(value, dtype=object).reshape(-1))
+    elif isinstance(value, str):
+        values = value.strip().strip("[]()").replace(",", " ").replace(";", " ").split()
+    else:
+        values = [value]
+
+    parsed: list[int] = []
+    for item in values:
+        if isinstance(item, str) and "/" in item:
+            item = item.split("/", 1)[0]
+        try:
+            number = float(item)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if np.isfinite(number) and number.is_integer() and 1 <= number <= 16:
+            parsed.append(int(number))
+    return max(parsed) if parsed else None
+
+
+def _infer_bits_from_white_level(value: Any) -> int | None:
+    """Estimate sensor depth from a white-level threshold, not from RGB dtype.
+
+    TIFF/DNG white level is commonly the exclusive upper threshold (for
+    example 4096 for a 12-bit sensor). Using ``bit_length()`` directly would
+    turn that value into 13 bits and round it up to 14. Subtracting one first
+    handles both 4095 and 4096 as 12-bit, and 16383/16384 as 14-bit.
+    """
+    if isinstance(value, (tuple, list, np.ndarray)):
+        values = list(np.asarray(value, dtype=object).reshape(-1))
+    elif isinstance(value, str):
+        values = value.strip().strip("[]()").replace(",", " ").replace(";", " ").split()
+    else:
+        values = [value]
+
+    levels: list[int] = []
+    for item in values:
+        if isinstance(item, str) and "/" in item:
+            numerator, _, denominator = item.partition("/")
+            try:
+                divisor = float(denominator)
+                item = float(numerator) / divisor if divisor else None
+            except (TypeError, ValueError, OverflowError):
+                continue
+        try:
+            number = float(item)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if np.isfinite(number) and number.is_integer() and 1 <= number <= 65536:
+            levels.append(int(number))
+    if not levels:
+        return None
+
+    detected = max(1, (max(levels) - 1).bit_length())
+    return next((depth for depth in (8, 10, 12, 14, 16) if detected <= depth), 16)
+
+
+def _resolve_export_bit_depth(metadata: Any, requested: str) -> tuple[int, int | None, str]:
+    """Resolve RGB output and source RAW depths, preferring the actual EXIF tag."""
+    if getattr(metadata, "source_kind", "") != "raw":
+        # Standard raster inputs are always exported as 16-bit Linear DNG.
+        return 16, None, "rgb_16"
+
+    exif = getattr(metadata, "exif", {}) or {}
+    raw_bits = _parse_bits_per_sample(exif.get("BitsPerSample"))
+    source = "exif" if raw_bits is not None else ""
+    if raw_bits is None:
+        raw_bits = _infer_bits_from_white_level(exif.get("DNGWhiteLevel"))
+        if raw_bits is not None:
+            source = "dng_white_level"
+    if raw_bits is None:
+        # ImageMetadata.bit_depth is populated from LibRaw's sensor white level.
+        raw_bits = _parse_bits_per_sample(getattr(metadata, "bit_depth", None))
+        if raw_bits is not None:
+            source = "sensor_white_level"
+    if raw_bits is None:
+        raw_bits = 16
+        source = "fallback_16"
+
+    target_bits = raw_bits if requested == "source" else 16
+    return target_bits, raw_bits, source
+
+
+def _resolve_output_bits_per_sample(target_bits: int, compression: str | None) -> int:
+    """Honor the writer's JPEG XL 16-bit constraint without changing CFA depth."""
+    return 16 if compression == "jpegxl" and target_bits < 16 else target_bits
+
+
 def _select_enhance_params(
     photo_id: str,
     params_by_photo: Mapping[str, DehazeParams],
@@ -1717,6 +2047,22 @@ def _select_enhance_mode(
     return auto_modes_by_photo.get(photo_id, default_auto_mode)
 
 
+def _select_enhance_nonlocal_mode(
+    photo_id: str,
+    nonlocal_modes_by_photo: Mapping[str, str],
+    default_nonlocal_mode: str,
+) -> str:
+    return nonlocal_modes_by_photo.get(photo_id, default_nonlocal_mode)
+
+
+def _select_enhance_auto_exposure(
+    photo_id: str,
+    auto_exposures_by_photo: Mapping[str, bool],
+    default_auto_exposure: bool,
+) -> bool:
+    return auto_exposures_by_photo.get(photo_id, default_auto_exposure)
+
+
 def _run_enhance_job(
     job_id: str,
     session_id: str,
@@ -1728,10 +2074,23 @@ def _run_enhance_job(
     basic_backend: str = "python",
     default_auto_mode: bool = False,
     auto_modes_by_photo: Mapping[str, bool] | None = None,
+    default_nonlocal_mode: str = "off",
+    nonlocal_modes_by_photo: Mapping[str, str] | None = None,
+    default_auto_exposure: bool = False,
+    auto_exposures_by_photo: Mapping[str, bool] | None = None,
+    preset_ids_by_photo: Mapping[str, str | None] | None = None,
+    ricoh_backend: str = "python",
+    compression: str | None = None,
+    requested_bit_depth: str = "source",
 ) -> None:
     with _ENHANCE_LOCK:
         job = _ENHANCE_JOBS[job_id]
-        records = list(_ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).items())
+        selected_photo_ids = {item["photo_id"] for item in job.get("files", [])}
+        records = [
+            (photo_id, path)
+            for photo_id, path in _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).items()
+            if photo_id in selected_photo_ids
+        ]
         job["status"] = "running"
     for photo_id, path in records:
         with _ENHANCE_LOCK:
@@ -1748,18 +2107,40 @@ def _run_enhance_job(
             photo_auto_mode = _select_enhance_mode(
                 photo_id, auto_modes_by_photo or {}, default_auto_mode,
             )
+            photo_nonlocal_mode = _select_enhance_nonlocal_mode(
+                photo_id, nonlocal_modes_by_photo or {}, default_nonlocal_mode,
+            )
+            photo_auto_exposure = _select_enhance_auto_exposure(
+                photo_id, auto_exposures_by_photo or {}, default_auto_exposure,
+            )
             linear_input = _prepare_dehaze_input(
                 image, metadata, path, color_manage_srgb=True,
             )
+            render_diagnostics: dict[str, Any] = {}
             enhanced = _render_dehaze(
                 linear_input, photo_params, backend, auto_mode=photo_auto_mode,
+                nonlocal_mode=photo_nonlocal_mode,
+                **({"auto_exposure": True, "diagnostics": render_diagnostics}
+                   if photo_auto_exposure else {}),
+            )
+            photo_auto_exposure_ev = float(render_diagnostics.get("auto_exposure_ev", 0.0))
+            photo_auto_exposure_reason = str(
+                render_diagnostics.get("auto_exposure_reason", "off")
             )
             enhanced16 = _linear_float_to_uint16(enhanced)
             corrected, correction, gain_map_applied = _correct_enhanced_raw(
                 enhanced16, metadata, Path(path), require_correction=True,
             )
-            basic = (basic_params_by_photo or {}).get(photo_id)
-            if basic and any(basic.values()):
+            basic = (basic_params_by_photo or {}).get(photo_id, {})
+            photo_preset_id = (preset_ids_by_photo or {}).get(photo_id)
+            if photo_preset_id is not None:
+                display = _linear16_to_srgb16(corrected)
+                adjusted = _render_ricoh(
+                    display, photo_preset_id, basic, ricoh_backend,
+                    use_measured_color=True,
+                )
+                corrected = _srgb16_to_linear16(adjusted)
+            elif basic and any(basic.values()):
                 display = _linear16_to_srgb16(corrected)
                 adjusted = _render_basic(display, basic, basic_backend)
                 corrected = _srgb16_to_linear16(adjusted)
@@ -1790,6 +2171,22 @@ def _run_enhance_job(
                     }
                 )
             is_raw = getattr(metadata, "source_kind", "") == "raw"
+            bits_per_sample, raw_bits_per_sample, bit_depth_source = _resolve_export_bit_depth(
+                metadata, requested_bit_depth,
+            )
+            output_bits_per_sample = _resolve_output_bits_per_sample(
+                bits_per_sample, compression,
+            )
+            writer_options: dict[str, Any] = (
+                {} if is_raw and compression is None
+                else {"bits_per_sample": output_bits_per_sample}
+            )
+            # Older direct callers and test doubles can omit these options;
+            # the HTTP export route always supplies the request's default.
+            if compression is not None:
+                writer_options["compression"] = compression
+                if is_raw:
+                    writer_options["raw_bits_per_sample"] = raw_bits_per_sample
             if is_raw:
                 output_metadata.update(camera_profile_names(path))
                 profile_reference = matching_embedded_profile_dng(path, output_metadata)
@@ -1825,32 +2222,47 @@ def _run_enhance_job(
                 output_path = write_enhanced_dng(
                     camera_rgb, mosaic, cfa_pattern, path, output_dir,
                     output_metadata, orientation=orientation, preview_rgb16=preview_rgb,
+                    **writer_options,
                 )
             else:
                 del image
                 output_path = write_linear_dng(
                     corrected, path, output_dir, output_metadata,
-                    bits_per_sample=16,
+                    **writer_options,
                 )
-            xmp_status = "failed"
-            try:
-                write_dehaze_settings(
-                    path, photo_params.__dict__, basic, auto_mode=photo_auto_mode,
-                    compatibility_curves=_build_dehaze_xmp_curves(
-                        session_id, photo_id, Path(path), photo_params, photo_auto_mode,
-                    ),
-                )
-                xmp_status = "written"
-            except Exception:
-                # DNG export is the primary job result. A sidecar failure is
-                # reported separately and never rolls back a valid DNG.
-                pass
+            if preset_ids_by_photo is None:
+                # Keep the legacy private-worker behavior for existing callers.
+                xmp_status = "failed"
+                try:
+                    write_dehaze_settings(
+                        path, photo_params.__dict__, basic, auto_mode=photo_auto_mode,
+                        nonlocal_mode=photo_nonlocal_mode,
+                        auto_exposure=photo_auto_exposure,
+                        compatibility_curves=_build_dehaze_xmp_curves(
+                            session_id, photo_id, Path(path), photo_params, photo_auto_mode,
+                            photo_nonlocal_mode, photo_auto_exposure,
+                        ),
+                    )
+                    xmp_status = "written"
+                except Exception:
+                    # A sidecar failure never rolls back a valid DNG.
+                    pass
+            else:
+                # The editor's debounced settings save owns XMP updates. Export
+                # must not replace or clear an existing Ricoh preset on source.
+                xmp_status = "unchanged"
             with _ENHANCE_LOCK:
                 item.update(
                     {
                         "status": "success",
                         "output": str(output_path),
                         "xmp_status": xmp_status,
+                        "bits_per_sample": output_bits_per_sample,
+                        "output_bits_per_sample": output_bits_per_sample,
+                        "raw_bits_per_sample": raw_bits_per_sample,
+                        "bit_depth_source": bit_depth_source,
+                        "auto_exposure_ev": photo_auto_exposure_ev,
+                        "auto_exposure_reason": photo_auto_exposure_reason,
                         "lens_correction": {
                             "applied": correction.applied,
                             "camera": correction.camera_name,
@@ -1882,15 +2294,54 @@ def run_enhance(req: EnhanceRunRequest):
         session = _ENHANCE_SESSIONS.get(req.session_id)
     if session is None:
         return JSONResponse(status_code=404, content={"error": "去朦胧会话已失效"})
-    records = list(session["files"].items())
+    all_records = list(session["files"].items())
+    session_photo_ids = {photo_id for photo_id, _ in all_records}
+    if req.photo_ids is not None:
+        if not req.photo_ids:
+            return JSONResponse(status_code=400, content={"error": "请选择要处理的照片"})
+        unknown_photo_ids = set(req.photo_ids) - session_photo_ids
+        if unknown_photo_ids:
+            return JSONResponse(status_code=400, content={"error": "所选照片不属于当前会话"})
+        selected_photo_ids = set(req.photo_ids)
+        records = [record for record in all_records if record[0] in selected_photo_ids]
+    else:
+        selected_photo_ids = session_photo_ids
+        records = all_records
+    if not records:
+        return JSONResponse(status_code=400, content={"error": "没有可处理的照片"})
+    if len(records) > 500:
+        return JSONResponse(status_code=413, content={"error": "一次最多处理 500 张照片"})
+    if set(req.preset_ids_by_photo) - session_photo_ids:
+        return JSONResponse(status_code=400, content={"error": "理光预设对应的照片不属于当前会话"})
+    valid_preset_ids = {preset["id"] for preset in list_ricoh_presets()}
+    if any(
+        preset_id is not None and preset_id not in valid_preset_ids
+        for preset_id in req.preset_ids_by_photo.values()
+    ):
+        return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
+
     default_params, params_by_photo = _snapshot_enhance_params(
         req,
-        {photo_id for photo_id, _ in records},
+        selected_photo_ids,
     )
     default_auto_mode, auto_modes_by_photo = _snapshot_enhance_modes(
         req,
-        {photo_id for photo_id, _ in records},
+        selected_photo_ids,
     )
+    default_nonlocal_mode, nonlocal_modes_by_photo = _snapshot_enhance_nonlocal_modes(
+        req,
+        selected_photo_ids,
+    )
+    default_auto_exposure, auto_exposures_by_photo = _snapshot_enhance_auto_exposures(
+        req,
+        selected_photo_ids,
+    )
+    preset_ids_by_photo = _snapshot_enhance_presets(req, selected_photo_ids)
+    basic_params_by_photo = MappingProxyType({
+        photo_id: req.basic_params_by_photo[photo_id].values()
+        for photo_id in selected_photo_ids
+        if photo_id in req.basic_params_by_photo
+    })
     first_path = Path(records[0][1])
     output_dir = Path(req.output_dir.strip().strip('\"\'')) if req.output_dir.strip() else first_path.parent / OUTPUT_DIR_NAME
     try:
@@ -1903,6 +2354,9 @@ def run_enhance(req: EnhanceRunRequest):
         "job_id": job_id, "status": "queued", "total": len(records), "processed": 0,
         "success": 0, "failed": 0, "progress": 0.0, "current_file": "",
         "output_dir": str(output_dir),
+        "photo_ids": [photo_id for photo_id, _ in records],
+        "compression": req.compression,
+        "bit_depth": req.bit_depth,
         "files": [{"photo_id": photo_id, "name": Path(path).name, "status": "waiting"} for photo_id, path in records],
         "_cancel": threading.Event(),
     }
@@ -1910,9 +2364,12 @@ def run_enhance(req: EnhanceRunRequest):
         target=_run_enhance_job,
         args=(job_id, req.session_id, output_dir, default_params, params_by_photo,
               _render_mode(req.render_backend, req.use_gpu),
-              {key: value.values() for key, value in req.basic_params_by_photo.items()},
+              basic_params_by_photo,
               _basic_mode(req.basic_backend, _render_mode(req.render_backend, req.use_gpu)),
-              default_auto_mode, auto_modes_by_photo),
+              default_auto_mode, auto_modes_by_photo,
+              default_nonlocal_mode, nonlocal_modes_by_photo,
+              default_auto_exposure, auto_exposures_by_photo,
+              preset_ids_by_photo, req.ricoh_backend, req.compression, req.bit_depth),
         name=f"enhance-{job_id[:8]}", daemon=True,
     )
     job["_thread"] = thread

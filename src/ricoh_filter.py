@@ -858,6 +858,8 @@ def read_photo_settings(photo: str | Path) -> dict[str, object]:
     sidecar = _sidecar_path(path)
     result: dict[str, object] = {"dehaze_params": None, "ricoh_preset_id": None,
                                  "dehaze_auto_mode": True,
+                                 "dehaze_auto_exposure": False,
+                                 "dehaze_nonlocal_mode": "off",
                                  "dehaze_algorithm": "physical",
                                  "basic_params": {key: 0.0 for key in _BASIC_FIELDS}}
     if sidecar is None:
@@ -892,6 +894,18 @@ def read_photo_settings(photo: str | Path) -> dict[str, object]:
         elif values:
             # Older Imprint sidecars only stored the global/manual parameters.
             result["dehaze_auto_mode"] = False
+        raw_auto_exposure = _find_simple(description, _IMPRINT_NS, "DehazeAutoExposure")
+        if raw_auto_exposure is not None:
+            normalized_auto_exposure = raw_auto_exposure.strip().casefold()
+            if normalized_auto_exposure in {"true", "1", "yes"}:
+                result["dehaze_auto_exposure"] = True
+            elif normalized_auto_exposure in {"false", "0", "no"}:
+                result["dehaze_auto_exposure"] = False
+        raw_nonlocal_mode = _find_simple(description, _IMPRINT_NS, "DehazeNonlocalMode")
+        if raw_nonlocal_mode is not None:
+            normalized_nonlocal_mode = raw_nonlocal_mode.strip().casefold()
+            if normalized_nonlocal_mode in {"off", "conservative", "strong"}:
+                result["dehaze_nonlocal_mode"] = normalized_nonlocal_mode
         preset_id = _find_simple(description, _IMPRINT_NS, "RicohPresetId")
         result["ricoh_preset_id"] = preset_id if preset_id in _PRESETS_BY_ID else None
         basic = {}
@@ -921,6 +935,22 @@ def _write_dehaze_auto_mode(description: ET.Element, auto_mode: bool | None) -> 
         raise ValueError("invalid dehaze mode")
     description.set("{" + _IMPRINT_NS + "}DehazeAutoMode",
                     "true" if auto_mode else "false")
+
+
+def _write_dehaze_nonlocal_mode(description: ET.Element, nonlocal_mode: str | None) -> None:
+    """Write the Imprint experiment mode without mapping it to Adobe Dehaze."""
+    if nonlocal_mode is None:
+        return
+    if nonlocal_mode not in {"off", "conservative", "strong"}:
+        raise ValueError("invalid nonlocal dehaze mode")
+    description.set("{" + _IMPRINT_NS + "}DehazeNonlocalMode", nonlocal_mode)
+
+
+def _write_dehaze_auto_exposure(description: ET.Element, auto_exposure: bool | None) -> None:
+    """Persist Imprint's independent linear exposure option in the sidecar."""
+    if auto_exposure is not None:
+        description.set("{" + _IMPRINT_NS + "}DehazeAutoExposure",
+                        "true" if auto_exposure else "false")
 
 
 _COMPAT_FIELDS = ("ToneCurvePV2012Red", "ToneCurvePV2012Green", "ToneCurvePV2012Blue",
@@ -1168,7 +1198,9 @@ def write_ricoh_preset(photo: str | Path, preset_id: str,
 
 def write_dehaze_settings(photo: str | Path, params: dict[str, float],
                           basic_params: dict[str, float] | None = None,
-                          auto_mode: bool | None = None, *, compatibility_curves=None) -> str:
+                          auto_mode: bool | None = None, *, compatibility_curves=None,
+                          nonlocal_mode: str | None = None,
+                          auto_exposure: bool | None = None) -> str:
     """Merge the nine validated dehaze parameters into a photo's XMP packet."""
     if set(params) != set(_DEHAZE_FIELDS):
         raise ValueError("invalid dehaze settings")
@@ -1193,6 +1225,8 @@ def write_dehaze_settings(photo: str | Path, params: dict[str, float],
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
         _write_dehaze_auto_mode(description, auto_mode)
+        _write_dehaze_nonlocal_mode(description, nonlocal_mode)
+        _write_dehaze_auto_exposure(description, auto_exposure)
         description.set("{" + _IMPRINT_NS + "}DehazeAlgorithm", "physical")
         if basic_params is not None:
             basic = validate_basic_params(basic_params)
@@ -1213,7 +1247,8 @@ def write_photo_settings(
     basic_params: dict[str, float],
     ricoh_preset_id: str | None,
     auto_mode: bool | None = None,
-    *, compatibility_curves=None,
+    *, compatibility_curves=None, nonlocal_mode: str | None = None,
+    auto_exposure: bool | None = None,
 ) -> dict[str, str]:
     """Atomically merge one complete Imprint photo-settings snapshot into XMP."""
     if set(dehaze_params) != set(_DEHAZE_FIELDS):
@@ -1265,6 +1300,8 @@ def write_photo_settings(
             local = "Dehaze" + "".join(part.title() for part in field_name.split("_"))
             description.set("{" + _IMPRINT_NS + "}" + local, format(value, ".8g"))
         _write_dehaze_auto_mode(description, auto_mode)
+        _write_dehaze_nonlocal_mode(description, nonlocal_mode)
+        _write_dehaze_auto_exposure(description, auto_exposure)
         description.set("{" + _IMPRINT_NS + "}DehazeAlgorithm", "physical")
         _atomic_write_sidecar(photo_path, _serialize_xmp(root))
         return {
@@ -1389,6 +1426,10 @@ def write_dehaze_session_settings(
     auto_modes_by_photo: dict[str, bool] | None = None,
     auto_mode: bool | None = None,
     *, curve_builder: Callable | None = None,
+    nonlocal_mode: str | None = None,
+    nonlocal_modes_by_photo: dict[str, str] | None = None,
+    auto_exposure: bool | None = None,
+    auto_exposures_by_photo: dict[str, bool] | None = None,
 ) -> dict[str, object]:
     """Write per-photo dehaze values through active session records."""
     if any(value is not None and value not in _PRESETS_BY_ID
@@ -1412,6 +1453,14 @@ def write_dehaze_session_settings(
             mode = (auto_modes_by_photo or {}).get(photo_id, auto_mode)
             if mode is None:
                 mode = bool(read_photo_settings(photo)["dehaze_auto_mode"])
+            photo_nonlocal_mode = (nonlocal_modes_by_photo or {}).get(
+                photo_id, nonlocal_mode,
+            )
+            photo_auto_exposure = (auto_exposures_by_photo or {}).get(
+                photo_id, auto_exposure,
+            )
+            if photo_auto_exposure is None:
+                photo_auto_exposure = bool(read_photo_settings(photo)["dehaze_auto_exposure"])
             curves = curve_builder(photo_id, photo, params, mode) if curve_builder else None
             basic = (basic_params_by_photo or {}).get(photo_id)
             if preset_ids_by_photo is not None and photo_id in preset_ids_by_photo:
@@ -1420,11 +1469,15 @@ def write_dehaze_session_settings(
                 name = write_photo_settings(
                     photo, params, basic, preset_ids_by_photo[photo_id],
                     mode, compatibility_curves=curves,
+                    nonlocal_mode=photo_nonlocal_mode,
+                    auto_exposure=photo_auto_exposure,
                 )["name"]
             else:
                 name = write_dehaze_settings(
                     photo, params, basic,
                     auto_mode=mode, compatibility_curves=curves,
+                    nonlocal_mode=photo_nonlocal_mode,
+                    auto_exposure=photo_auto_exposure,
                 )
             files.append({"photo_id": photo_id, "name": name, "status": "updated" if existing else "written"})
         except (OSError, RuntimeError, ValueError, ET.ParseError) as exc:

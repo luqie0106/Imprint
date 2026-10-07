@@ -11,6 +11,7 @@ import {
   themePreference,
   cycleTheme,
 } from "./stores/theme";
+import PhotoExport from "./components/PhotoExport.vue";
 import BurstPage from "./views/BurstPage.vue";
 import ModelsPage from "./views/ModelsPage.vue";
 import TrainerPage from "./views/TrainerPage.vue";
@@ -130,6 +131,7 @@ onMounted(() => {
 
       <!-- 右侧控制区: 后端状态指标 + 主题切换按钮 -->
       <div class="flex items-center gap-3 text-[13px]" data-tauri-drag-region>
+        <PhotoExport :visible="activeTab === 'enhance' || activeTab === 'ricoh'" />
         <!-- 主题切换按钮 -->
         <button
           @click="cycleTheme"

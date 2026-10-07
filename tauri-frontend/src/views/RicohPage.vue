@@ -1,11 +1,14 @@
 <script setup lang="ts">
+import { photoExportRunning } from "../stores/photoExport";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
+import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
 import { BASE_URL, isServerReady } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
 import {
-  autoSaveError, clearAutoSaveErrors, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
-  sharedDehazeByPhoto,
+  autoSaveError, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
+  sharedDehazeAutoByPhoto, sharedDehazeAutoExposureByPhoto,
+  sharedDehazeByPhoto, sharedDehazeNonlocalByPhoto,
   sharedPhotoSource, sharedPresetByPhoto, sharedSelectedPhotoId, sharePhotoSource,
   type PhotoSource,
 } from "../stores/photoSource";
@@ -26,8 +29,6 @@ interface BasicParams {
   saturation: number;
 }
 interface Photo { photo_id: string; name: string; ricoh_preset_id?: string | null; dehaze_params?: object | null; basic_params?: Partial<BasicParams> | null }
-interface Summary { written: number; skipped: number; failed: number }
-interface Job { job_id: string; status: string; total: number; processed: number; success: number; failed: number }
 type PreviewMode = "compare" | "original" | "effect";
 type ThumbnailState = "loading" | "loaded" | "error";
 type PhotoListLayout = "vertical" | "horizontal";
@@ -66,37 +67,36 @@ const thumbnailStates = ref<Record<string, ThumbnailState>>({});
 const photoListLayout = ref<PhotoListLayout>("vertical");
 const basicParamsByPhoto = sharedBasicByPhoto;
 const selectedId = ref("");
-const outputDir = ref("");
 const originalUrl = ref("");
 const effectUrl = ref("");
-const mode = ref<PreviewMode>("compare");
+const mode = ref<PreviewMode>("effect");
 const split = ref(50);
 const previewViewport = ref<HTMLElement | null>(null);
 const zoom = ref(1);
-const lastZoom = ref(2);
+const lastZoom = ref<number | null>(null);
 const panX = ref(0);
 const panY = ref(0);
 const viewportWidth = ref(0);
 const viewportHeight = ref(0);
+const devicePixelRatio = ref(1);
 const imageWidth = ref(0);
 const imageHeight = ref(0);
+const sourceImageWidth = ref(0);
+const sourceImageHeight = ref(0);
 const isScrubbing = ref(false);
 const loading = ref(false);
-const busy = ref(false);
 const error = ref("");
 const message = ref("");
-const summary = ref<Summary | null>(null);
-const job = ref<Job | null>(null);
 const currentFile = computed(() => files.value.find(file => file.photo_id === selectedId.value));
 const basicParams = computed<BasicParams>(() => basicParamsByPhoto.value[selectedId.value] ?? defaultBasicParams);
 const dehazeParams = computed(() => sharedDehazeByPhoto.value[selectedId.value]);
 const effectReady = computed(() => Boolean(effectUrl.value));
 const showComparePreview = computed(() => mode.value === "compare" && effectReady.value);
 const previewImageUrl = computed(() => mode.value !== "original" && effectReady.value ? effectUrl.value : originalUrl.value);
-const isRunning = computed(() => job.value?.status === "queued" || job.value?.status === "running");
 let generation = 0;
-let pollTimer: number | undefined;
 let previewTimer: number | undefined;
+let fullResolutionTimer: number | undefined;
+let scheduledPreviewTask: Promise<void> | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let pointerDownX = 0;
 let pointerDownY = 0;
@@ -113,10 +113,20 @@ const fitHeight = computed(() => {
   const scale = Math.min(viewportWidth.value / imageWidth.value, viewportHeight.value / imageHeight.value);
   return Math.max(1, imageHeight.value * scale);
 });
+const pixelScale = computed(() => sourceImageWidth.value > 0
+  ? fitWidth.value * devicePixelRatio.value / sourceImageWidth.value
+  : 0);
+const maxZoom = computed(() => pixelScale.value > 0 ? Math.max(1, 4 / pixelScale.value) : 1);
+const canZoom = computed(() => sourceImageWidth.value > 0 && sourceImageHeight.value > 0 && maxZoom.value > 1.001);
+const zoomDisplayText = computed(() => {
+  if (pixelScale.value <= 0) return "适合";
+  const percent = Math.round(zoom.value * pixelScale.value * 100);
+  return zoom.value <= 1.001 ? `适合（${percent}%）` : `${percent}%`;
+});
 const imageStageStyle = computed(() => ({
-  width: `${fitWidth.value}px`,
-  height: `${fitHeight.value}px`,
-  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
+  width: `${fitWidth.value * zoom.value}px`,
+  height: `${fitHeight.value * zoom.value}px`,
+  transform: `translate(${panX.value}px, ${panY.value}px)`,
 }));
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -131,16 +141,38 @@ function clampPan() {
   panY.value = clamp(panY.value, -maxY, maxY);
 }
 
-function resetView() {
-  if (zoom.value > 1.001) lastZoom.value = zoom.value;
+function preservePixelScale(
+  previousPixelScale: number,
+  nextPixelScale: number,
+  previousFitWidth: number,
+  nextFitWidth: number,
+) {
+  if (previousPixelScale <= 0 || nextPixelScale <= 0) return;
+  if (zoom.value > 1.001) {
+    const previousZoom = zoom.value;
+    zoom.value = clamp(zoom.value * previousPixelScale / nextPixelScale, 1, maxZoom.value);
+    const panRatio = (zoom.value * nextFitWidth) / (previousZoom * previousFitWidth);
+    panX.value *= panRatio;
+    panY.value *= panRatio;
+  } else {
+    zoom.value = 1;
+  }
+  if (lastZoom.value !== null)
+    lastZoom.value = clamp(lastZoom.value * previousPixelScale / nextPixelScale, 1, maxZoom.value);
+  clampPan();
+}
+
+function resetView(rememberCurrent = true) {
+  if (rememberCurrent && zoom.value > 1.001) lastZoom.value = zoom.value;
   zoom.value = 1;
   panX.value = 0;
   panY.value = 0;
 }
 
 function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
+  if (!canZoom.value) return;
   const previousZoom = zoom.value;
-  const targetZoom = clamp(nextZoom, 1, 4);
+  const targetZoom = clamp(nextZoom, 1, maxZoom.value);
   if (Math.abs(targetZoom - previousZoom) < 0.001) return;
   let offsetX = 0;
   let offsetY = 0;
@@ -159,12 +191,12 @@ function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
 }
 
 function zoomBy(delta: number) {
-  setZoom(zoom.value + delta);
+  if (pixelScale.value > 0) setZoom(zoom.value + delta / pixelScale.value);
 }
 
 function onPreviewPointerDown(event: PointerEvent) {
   const target = event.target as HTMLElement | null;
-  if (target?.closest(".compare-split") || event.button !== 0 || !originalUrl.value) return;
+  if (target?.closest(".compare-split") || event.button !== 0 || !originalUrl.value || !canZoom.value) return;
   isScrubbing.value = true;
   pointerMoved = false;
   pointerDownX = event.clientX;
@@ -194,7 +226,7 @@ function finishPreviewPointer(event: PointerEvent, cancelled = false) {
     lastZoom.value = pointerDownZoom;
     resetView();
   } else {
-    setZoom(lastZoom.value, pointerDownX, pointerDownY);
+    setZoom(lastZoom.value ?? Math.max(1, 1 / pixelScale.value), pointerDownX, pointerDownY);
   }
 }
 
@@ -202,10 +234,10 @@ function onPreviewPointerUp(event: PointerEvent) { finishPreviewPointer(event); 
 function onPreviewPointerCancel(event: PointerEvent) { finishPreviewPointer(event, true); }
 
 function updateViewportSize() {
+  devicePixelRatio.value = window.devicePixelRatio || 1;
   if (!previewViewport.value) return;
   viewportWidth.value = previewViewport.value.clientWidth;
   viewportHeight.value = previewViewport.value.clientHeight;
-  clampPan();
 }
 
 function onPreviewImageLoad(event: Event) {
@@ -218,11 +250,6 @@ function onPreviewImageLoad(event: Event) {
 
 function formatParam(key: keyof BasicParams, value: number) {
   return key === "exposure" ? value.toFixed(2) : String(Math.round(value));
-}
-
-function rangeProgress(key: keyof BasicParams, value: number) {
-  const control = basicParamControls.find(item => item.key === key)!;
-  return `${((value - control.min) / (control.max - control.min)) * 100}%`;
 }
 
 function resetBasicParams() {
@@ -252,17 +279,22 @@ async function loadPresets() {
 }
 
 function adoptSession(source: PhotoSource) {
+  const sessionChanged = sessionId.value !== source.session_id;
   sessionId.value = source.session_id;
   files.value = source.files as Photo[];
   thumbnailStates.value = Object.fromEntries(source.files.map(file => [file.photo_id, "loading"]));
   selectedId.value = sharedSelectedPhotoId.value || source.files[0]?.photo_id || "";
-  outputDir.value = source.ricoh_default_output_dir;
-  job.value = null;
-  message.value = `已载入 ${source.files.length} 张照片`;
+  message.value = "";
+  if (sessionChanged) {
+    sourceImageWidth.value = 0;
+    sourceImageHeight.value = 0;
+    lastZoom.value = null;
+    resetView(false);
+  }
 }
 
 async function createSession(source: { paths?: string[]; input_dir?: string }) {
-  if (!BASE_URL.value) return;
+  if (!BASE_URL.value || photoExportRunning.value) return;
   loading.value = true;
   error.value = "";
   try {
@@ -282,10 +314,6 @@ async function choosePhotos() {
 async function chooseFolder() {
   const selected = await open({ multiple: false, directory: true, title: "选择照片文件夹" });
   if (typeof selected === "string") await createSession({ input_dir: selected });
-}
-async function chooseOutput() {
-  const selected = await open({ multiple: false, directory: true, title: "选择 DNG 输出目录" });
-  if (typeof selected === "string") outputDir.value = selected;
 }
 function thumbnailUrl(file: Photo) {
   const baseUrl = BASE_URL.value;
@@ -307,7 +335,9 @@ function releasePreview() {
   originalUrl.value = "";
   effectUrl.value = "";
 }
-async function requestPreview(endpoint: string, body: object, token: number) {
+interface PreviewAsset { url: string; width: number; height: number }
+
+async function requestPreview(endpoint: string, body: object, token: number): Promise<PreviewAsset> {
   const response = await fetch(`${BASE_URL.value}${endpoint}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
@@ -317,35 +347,36 @@ async function requestPreview(endpoint: string, body: object, token: number) {
   }
   const width = response.headers.get("X-Image-Width");
   const height = response.headers.get("X-Image-Height");
-  if (width && height && token === generation) {
-    imageWidth.value = Number(width) || imageWidth.value;
-    imageHeight.value = Number(height) || imageHeight.value;
-    await nextTick(updateViewportSize);
-  }
   const url = URL.createObjectURL(await response.blob());
-  if (token !== generation) { URL.revokeObjectURL(url); return ""; }
-  return url;
+  if (token !== generation) URL.revokeObjectURL(url);
+  return {
+    url: token === generation ? url : "",
+    width: Number(width) || 0,
+    height: Number(height) || 0,
+  };
 }
-async function refreshPreview(includeOriginal = false) {
-  const token = ++generation;
+async function refreshPreview(includeOriginal = false, fullResolution = false, token = ++generation) {
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) {
     releasePreview();
     return;
   }
-  if (includeOriginal) {
-    if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
-    originalUrl.value = "";
-  }
   error.value = "";
   try {
-    const common = { session_id: sessionId.value, photo_id: selectedId.value, max_edge: 1800 };
-    const requests: Array<Promise<string>> = [];
-    const requestOriginal = includeOriginal || !originalUrl.value;
+    const common = {
+      session_id: sessionId.value, photo_id: selectedId.value, max_edge: 1800,
+      preview_level: fullResolution ? 0 : 2, full_resolution: fullResolution,
+    };
+    const autoMode = sharedDehazeAutoByPhoto.value[selectedId.value] ?? false;
+    const autoExposure = sharedDehazeAutoExposureByPhoto.value[selectedId.value] ?? false;
+    const nonlocalMode = sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off";
+    const dehazeContext = { ...common, auto_mode: autoMode, auto_exposure: autoExposure, nonlocal_mode: nonlocalMode };
+    const requests: Array<Promise<PreviewAsset>> = [];
+    const requestOriginal = includeOriginal || fullResolution || !originalUrl.value;
     if (requestOriginal) requests.push(requestPreview("/api/enhance/preview", {
-      ...common, mode: "original", color_manage_srgb: true,
+      ...dehazeContext, mode: "original", color_manage_srgb: true,
     }, token));
     requests.push(requestPreview("/api/enhance/preview", {
-      ...common, mode: "dehazed", color_manage_srgb: true,
+      ...dehazeContext, mode: "dehazed", color_manage_srgb: true,
       params: dehazeParams.value,
       basic_params: cloneBasicParams(basicParams.value),
       ricoh_preset_id: selectedPreset.value || null,
@@ -353,101 +384,66 @@ async function refreshPreview(includeOriginal = false) {
       basic_backend: basicBackend.value, ricoh_backend: ricohBackend.value,
     }, token));
     const results = await Promise.allSettled(requests);
-    if (token !== generation) return;
+    if (token !== generation) {
+      for (const result of results) {
+        if (result.status === "fulfilled" && result.value.url) URL.revokeObjectURL(result.value.url);
+      }
+      return;
+    }
     const rejected = results.find(result => result.status === "rejected");
+    if (rejected?.status === "rejected") {
+      for (const result of results) {
+        if (result.status === "fulfilled" && result.value.url) URL.revokeObjectURL(result.value.url);
+      }
+      throw rejected.reason;
+    }
     let resultIndex = 0;
     if (requestOriginal) {
       const result = results[resultIndex++];
-      if (result?.status === "fulfilled") originalUrl.value = result.value;
+      if (result?.status === "fulfilled" && result.value.url) {
+        if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
+        originalUrl.value = result.value.url;
+      }
     }
     const effectResult = results[resultIndex];
-    if (effectResult?.status === "fulfilled") {
+    if (effectResult?.status === "fulfilled" && effectResult.value.url) {
       if (effectUrl.value) URL.revokeObjectURL(effectUrl.value);
-      effectUrl.value = effectResult.value;
+      effectUrl.value = effectResult.value.url;
+      const dimensions = effectResult.value.width && effectResult.value.height
+        ? effectResult.value
+        : requestOriginal && results[0]?.status === "fulfilled" ? results[0].value : null;
+      if (dimensions?.width && dimensions.height) {
+        if (fullResolution) {
+          sourceImageWidth.value = dimensions.width;
+          sourceImageHeight.value = dimensions.height;
+        }
+        imageWidth.value = dimensions.width;
+        imageHeight.value = dimensions.height;
+        await nextTick(updateViewportSize);
+      }
     }
-    if (rejected?.status === "rejected") throw rejected.reason;
   } catch (cause) {
     if (token === generation) error.value = cause instanceof Error ? cause.message : "预览失败";
   }
 }
 
-function schedulePreview() {
+function schedulePreview(includeOriginal = false, immediate = false) {
   window.clearTimeout(previewTimer);
-  previewTimer = window.setTimeout(() => void refreshPreview(false), 180);
+  window.clearTimeout(fullResolutionTimer);
+  const token = ++generation;
+  previewTimer = window.setTimeout(() => {
+    if (token !== generation) return;
+    scheduledPreviewTask = refreshPreview(includeOriginal, false, token);
+  }, immediate ? 0 : 180);
+  fullResolutionTimer = window.setTimeout(() => {
+    void (async () => {
+      if (token !== generation) return;
+      await scheduledPreviewTask;
+      if (token === generation) await refreshPreview(true, true, token);
+    })();
+  }, 900);
 }
 
-async function saveXmp() {
-  if (!sessionId.value || busy.value) return;
-  busy.value = true;
-  error.value = "";
-  try {
-    await flushPendingSaves();
-    summary.value = await postJson("/api/enhance/xmp", {
-      session_id: sessionId.value,
-      params_by_photo: Object.fromEntries(files.value.map(file => [
-        file.photo_id, sharedDehazeByPhoto.value[file.photo_id],
-      ])),
-      preset_ids_by_photo: Object.fromEntries(files.value.map(file => [
-        file.photo_id, sharedPresetByPhoto.value[file.photo_id] ?? null,
-      ])),
-      basic_params_by_photo: Object.fromEntries(files.value.map(file => [
-        file.photo_id, cloneBasicParams(basicParamsByPhoto.value[file.photo_id] ?? file.basic_params),
-      ])),
-    });
-    if (!summary.value?.failed) clearAutoSaveErrors();
-    message.value = `XMP 已写入 ${summary.value?.written ?? 0} 张，失败 ${summary.value?.failed ?? 0} 张`;
-  } catch (cause) { error.value = cause instanceof Error ? cause.message : "写入 XMP 失败"; }
-  finally { busy.value = false; }
-}
-async function pollJob() {
-  if (!job.value || !BASE_URL.value) return;
-  try {
-    const response = await fetch(`${BASE_URL.value}/api/ricoh/job/${job.value.job_id}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "无法读取导出进度");
-    job.value = data;
-    if (!["queued", "running"].includes(data.status)) {
-      window.clearInterval(pollTimer);
-      pollTimer = undefined;
-      message.value = `DNG 导出完成：成功 ${data.success} 张，失败 ${data.failed} 张`;
-    }
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : "无法读取导出进度";
-    window.clearInterval(pollTimer);
-    pollTimer = undefined;
-  }
-}
-async function exportDng() {
-  if (!sessionId.value || isRunning.value) return;
-  error.value = "";
-  try {
-    await flushPendingSaves();
-    job.value = await postJson("/api/ricoh/run", {
-      session_id: sessionId.value,
-      preset_id: selectedPreset.value || null,
-      preset_ids_by_photo: Object.fromEntries(files.value.flatMap(file => {
-        const presetId = sharedPresetByPhoto.value[file.photo_id];
-        return presetId ? [[file.photo_id, presetId]] : [];
-      })),
-      output_dir: outputDir.value,
-      ricoh_backend: ricohBackend.value,
-      basic_backend: basicBackend.value,
-      basic_params_by_photo: Object.fromEntries(files.value.map(file => [
-        file.photo_id, cloneBasicParams(basicParamsByPhoto.value[file.photo_id] ?? file.basic_params),
-      ])),
-    });
-    window.clearInterval(pollTimer);
-    pollTimer = window.setInterval(() => void pollJob(), 700);
-    await pollJob();
-  } catch (cause) { error.value = cause instanceof Error ? cause.message : "导出 DNG 失败"; }
-}
-async function cancelExport() {
-  if (!job.value) return;
-  try {
-    await postJson(`/api/ricoh/cancel/${job.value.job_id}`, {});
-    message.value = "停止请求已发送，当前照片完成后停止";
-  } catch (cause) { error.value = cause instanceof Error ? cause.message : "停止失败"; }
-}
 watch([isServerReady, BASE_URL], () => { void loadPresets(); }, { immediate: true });
 watch(sharedPhotoSource, source => {
   if (source?.owner === "enhance") adoptSession(source);
@@ -455,17 +451,30 @@ watch(sharedPhotoSource, source => {
 watch([sessionId, selectedId], () => {
   if (selectedId.value && sharedPhotoSource.value?.session_id === sessionId.value)
     sharedSelectedPhotoId.value = selectedId.value;
-  window.clearTimeout(previewTimer);
   releasePreview();
-  resetView();
+  sourceImageWidth.value = 0;
+  sourceImageHeight.value = 0;
+  lastZoom.value = null;
+  resetView(false);
   split.value = 50;
   imageWidth.value = 0;
   imageHeight.value = 0;
-  void refreshPreview(true);
+  schedulePreview(true, true);
 });
 watch(selectedPreset, () => { schedulePreview(); });
-watch(dehazeParams, schedulePreview, { deep: true });
-watch([renderBackend, basicBackend, ricohBackend], schedulePreview);
+watch(dehazeParams, () => schedulePreview(), { deep: true });
+watch(() => ({
+  photoId: selectedId.value,
+  autoMode: sharedDehazeAutoByPhoto.value[selectedId.value] ?? false,
+  autoExposure: sharedDehazeAutoExposureByPhoto.value[selectedId.value] ?? false,
+  nonlocalMode: sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off",
+}), (current, previous) => {
+  if (current.photoId === previous.photoId
+    && (current.autoMode !== previous.autoMode || current.autoExposure !== previous.autoExposure
+      || current.nonlocalMode !== previous.nonlocalMode))
+    schedulePreview();
+});
+watch([renderBackend, basicBackend, ricohBackend], () => schedulePreview());
 watch(basicParams, (next, previous) => {
   schedulePreview();
   if (selectedId.value && next === previous) {
@@ -476,8 +485,12 @@ watch(sharedSelectedPhotoId, photoId => {
   if (photoId && photoId !== selectedId.value && files.value.some(file => file.photo_id === photoId))
     selectedId.value = photoId;
 });
+watch([pixelScale, fitWidth], ([nextScale, nextFitWidth], [previousScale, previousFitWidth]) => {
+  preservePixelScale(previousScale, nextScale, previousFitWidth, nextFitWidth);
+});
 watch([fitWidth, fitHeight], clampPan);
 onMounted(() => {
+  window.addEventListener("resize", updateViewportSize);
   updateViewportSize();
   if (previewViewport.value) {
     resizeObserver = new ResizeObserver(updateViewportSize);
@@ -489,7 +502,8 @@ onBeforeUnmount(() => {
   generation++;
   releasePreview();
   window.clearTimeout(previewTimer);
-  window.clearInterval(pollTimer);
+  window.clearTimeout(fullResolutionTimer);
+  window.removeEventListener("resize", updateViewportSize);
   resizeObserver?.disconnect();
 });
 </script>
@@ -501,8 +515,8 @@ onBeforeUnmount(() => {
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-3 flex items-center gap-2"><ImagePlus class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">输入照片</h2></div>
           <div class="grid gap-2">
-            <button type="button" @click="choosePhotos" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs transition hover:border-blue-400 dark:border-zinc-700"><Images class="mr-2 inline h-3.5 w-3.5" />选择照片</button>
-            <button type="button" @click="chooseFolder" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs transition hover:border-blue-400 dark:border-zinc-700"><FolderOpen class="mr-2 inline h-3.5 w-3.5" />选择照片文件夹</button>
+            <button type="button" @click="choosePhotos" :disabled="photoExportRunning" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs transition hover:border-blue-400 dark:border-zinc-700"><Images class="mr-2 inline h-3.5 w-3.5" />选择照片</button>
+            <button type="button" @click="chooseFolder" :disabled="photoExportRunning" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs transition hover:border-blue-400 dark:border-zinc-700"><FolderOpen class="mr-2 inline h-3.5 w-3.5" />选择照片文件夹</button>
           </div>
           <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-zinc-800 dark:text-zinc-400">
             <LoaderCircle v-if="loading" class="mr-1 inline h-3 w-3 animate-spin" />
@@ -526,7 +540,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="min-w-0 flex-1">
                 <span class="block truncate">{{ file.name }}</span>
-                <span v-if="sharedPresetByPhoto[file.photo_id] || file.dehaze_params" class="block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ sharedPresetByPhoto[file.photo_id] ? '理光预设' : '' }}{{ sharedPresetByPhoto[file.photo_id] && file.dehaze_params ? ' · ' : '' }}{{ file.dehaze_params ? '去朦胧参数' : '' }}</span>
+                <span v-if="photoChangeSummary(file.photo_id)" class="block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ photoChangeSummary(file.photo_id) }}</span>
               </span>
             </button>
           </div>
@@ -535,7 +549,7 @@ onBeforeUnmount(() => {
       <main class="flex min-h-0 min-w-0 flex-col gap-4">
         <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 dark:border-zinc-800">
-            <div class="min-w-0"><h2 class="truncate text-sm font-semibold">{{ currentFile?.name || "理光风格预览" }}</h2><p class="mt-1 text-[11px] text-slate-500">同时预览去朦胧、理光预设和基础参数；理光色彩仍是近似模拟</p></div>
+            <div class="min-w-0"><h2 class="truncate text-sm font-semibold">{{ currentFile?.name || "理光风格预览" }}</h2><p class="mt-1 text-[11px] text-slate-500">{{ imageWidth && imageHeight ? `${imageWidth} × ${imageHeight} · ` : "" }}同时预览去朦胧、理光预设和基础参数；理光色彩仍是近似模拟</p></div>
             <div class="flex flex-wrap items-center gap-2">
               <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="预览模式">
                 <button type="button" @click="mode = 'original'" :aria-pressed="mode === 'original'" title="仅原图" aria-label="仅原图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="mode === 'original' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><ImageIcon class="h-3.5 w-3.5" /></button>
@@ -543,14 +557,14 @@ onBeforeUnmount(() => {
                 <button type="button" @click="mode = 'effect'" :aria-pressed="mode === 'effect'" title="仅效果图" aria-label="仅效果图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="mode === 'effect' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Sparkles class="h-3.5 w-3.5" /></button>
               </div>
               <div class="flex shrink-0 items-center gap-1 rounded-lg bg-slate-50 p-1 dark:bg-zinc-800">
-                <button type="button" @click="zoomBy(-0.25)" :disabled="zoom <= 1" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
-                <button type="button" @click="resetView" title="适合窗口" aria-label="适合窗口" class="min-w-[3.8rem] rounded px-1.5 py-1 text-[11px] font-medium tabular-nums hover:bg-white dark:hover:bg-zinc-700">{{ Math.round(zoom * 100) }}%</button>
-                <button type="button" @click="resetView" title="适合窗口" aria-label="适合窗口" class="rounded p-1.5 hover:bg-white dark:hover:bg-zinc-700"><Maximize2 class="h-3.5 w-3.5" /></button>
-                <button type="button" @click="zoomBy(0.25)" :disabled="zoom >= 4" title="放大" aria-label="放大" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Plus class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="zoomBy(-0.25)" :disabled="!canZoom || zoom <= 1.001" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="resetView()" title="适合窗口" aria-label="适合窗口" class="w-[6.5rem] shrink-0 whitespace-nowrap rounded px-1.5 py-1 text-[11px] font-medium tabular-nums hover:bg-white dark:hover:bg-zinc-700">{{ zoomDisplayText }}</button>
+                <button type="button" @click="resetView()" title="适合窗口" aria-label="适合窗口" class="rounded p-1.5 hover:bg-white dark:hover:bg-zinc-700"><Maximize2 class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="zoomBy(0.25)" :disabled="!canZoom || zoom >= maxZoom - 0.001" title="放大" aria-label="放大" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Plus class="h-3.5 w-3.5" /></button>
               </div>
             </div>
           </div>
-          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in')) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel">
+          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (!canZoom ? 'cursor-default' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'))) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel">
             <template v-if="originalUrl">
               <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
                 <div class="preview-stage relative shrink-0" :style="imageStageStyle">
@@ -590,7 +604,7 @@ onBeforeUnmount(() => {
                 <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async" class="absolute inset-0 block h-full w-full object-contain transition-opacity" :class="thumbnailState(file.photo_id) === 'loaded' ? 'opacity-100' : 'opacity-0'" @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
               </span>
               <span class="block truncate" :title="file.name">{{ file.name }}</span>
-              <span v-if="sharedPresetByPhoto[file.photo_id] || file.dehaze_params" class="mt-0.5 block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ sharedPresetByPhoto[file.photo_id] ? '理光预设' : '' }}{{ sharedPresetByPhoto[file.photo_id] && file.dehaze_params ? ' · ' : '' }}{{ file.dehaze_params ? '去朦胧参数' : '' }}</span>
+              <span v-if="photoChangeSummary(file.photo_id)" class="mt-0.5 block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ photoChangeSummary(file.photo_id) }}</span>
             </button>
           </div>
         </section>
@@ -605,7 +619,7 @@ onBeforeUnmount(() => {
           <div class="space-y-3">
             <label v-for="item in basicParamControls" :key="item.key" class="block text-[11px]">
               <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-blue-600">{{ formatParam(item.key, basicParams[item.key]) }}</span></span>
-              <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': rangeProgress(item.key, basicParams[item.key]) }" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" :aria-label="item.label" />
+              <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" :style="rangeChangeStyle(basicParams[item.key], item.min, item.max, 0)" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" :aria-label="item.label" />
             </label>
           </div>
         </section>
@@ -617,17 +631,7 @@ onBeforeUnmount(() => {
             <button v-for="preset in presets" :key="preset.id" @click="selectedPreset = preset.id" class="w-full rounded-xl border p-2.5 text-left text-xs" :class="selectedPreset === preset.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-slate-200 dark:border-zinc-700'"><span class="font-semibold">{{ preset.model }} · {{ preset.name }}</span><span class="mt-1 block text-[11px] text-slate-500">{{ preset.description }}</span></button>
           </div>
         </section>
-        <section class="rounded-2xl border border-slate-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 class="mb-3 text-sm font-semibold">导出</h2>
-          <button @click="saveXmp" :disabled="!files.length || busy" class="w-full rounded-xl border border-blue-300 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-40 dark:text-blue-300">手动补写 XMP</button>
-          <p v-if="autoSaveError" class="mt-2 text-[11px] text-rose-600">{{ autoSaveError }}</p>
-          <button @click="chooseOutput" :title="outputDir" class="mt-3 w-full truncate rounded-xl border px-3 py-2 text-left text-[11px] text-slate-500 dark:border-zinc-700">{{ outputDir || "选择 DNG 输出目录" }}</button>
-          <button v-if="!isRunning" @click="exportDng" :disabled="!files.length" class="mt-3 w-full rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-semibold text-white disabled:opacity-40">导出 DNG</button>
-          <button v-else @click="cancelExport" class="mt-3 w-full rounded-xl bg-rose-600 px-3 py-2.5 text-xs font-semibold text-white">停止后续处理</button>
-          <p class="mt-2 text-[11px] text-slate-500">DNG 会渲染所选风格；选“无”时仅应用基础调整。</p>
-        </section>
-        <p v-if="job" class="text-xs">DNG 进度：{{ job.processed }}/{{ job.total }} · 成功 {{ job.success }} · 失败 {{ job.failed }}</p>
-        <p v-if="summary" class="text-xs">XMP：写入 {{ summary.written }} · 跳过 {{ summary.skipped }} · 失败 {{ summary.failed }}</p>
+        <p v-if="autoSaveError" class="text-[11px] text-rose-600">{{ autoSaveError }}</p>
         <p v-if="message" class="text-xs text-slate-500">{{ message }}</p>
         <p v-if="error" class="rounded-xl bg-rose-50 p-3 text-xs text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">{{ error }}</p>
       </aside>
@@ -673,7 +677,6 @@ onBeforeUnmount(() => {
 
 .preview-stage {
   transform-origin: center center;
-  will-change: transform;
 }
 
 .compare-split {

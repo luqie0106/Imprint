@@ -7,7 +7,7 @@
 #define MyAppExeName "Imprint.exe"
 
 #ifndef MyAppVersion
-#define MyAppVersion "3.0.2"
+#define MyAppVersion "3.0.3"
 #endif
 
 

@@ -11,11 +11,14 @@ export interface DehazeParams {
   highlight_protection: number; shadow_protection: number; brightness_protection: number;
 }
 export type DehazeAlgorithm = "physical";
+export type NonlocalMode = "off" | "conservative" | "strong";
 export interface SessionPhoto {
   photo_id: string; name: string; extension: string;
   dehaze_params?: Partial<DehazeParams> | null;
   dehaze_algorithm?: DehazeAlgorithm;
   dehaze_auto_mode?: boolean;
+  dehaze_auto_exposure?: boolean;
+  dehaze_nonlocal_mode?: NonlocalMode;
   ricoh_preset_id?: string | null;
   basic_params?: Partial<BasicParams> | null;
 }
@@ -42,6 +45,8 @@ export const sharedSelectedPhotoId = ref("");
 export const sharedDehazeByPhoto = ref<Record<string, DehazeParams>>({});
 export const sharedDehazeAlgorithmByPhoto = ref<Record<string, DehazeAlgorithm>>({});
 export const sharedDehazeAutoByPhoto = ref<Record<string, boolean>>({});
+export const sharedDehazeAutoExposureByPhoto = ref<Record<string, boolean>>({});
+export const sharedDehazeNonlocalByPhoto = ref<Record<string, NonlocalMode>>({});
 export const sharedBasicByPhoto = ref<Record<string, BasicParams>>({});
 export const sharedPresetByPhoto = ref<Record<string, string | null>>({});
 export const autoSaveError = ref("");
@@ -59,6 +64,8 @@ function snapshot(photoId: string) {
     dehaze_params: { ...sharedDehazeByPhoto.value[photoId] },
     dehaze_algorithm: sharedDehazeAlgorithmByPhoto.value[photoId] ?? "physical",
     auto_mode: sharedDehazeAutoByPhoto.value[photoId] ?? false,
+    auto_exposure: sharedDehazeAutoExposureByPhoto.value[photoId] ?? false,
+    nonlocal_mode: sharedDehazeNonlocalByPhoto.value[photoId] ?? "off",
     basic_params: { ...sharedBasicByPhoto.value[photoId] },
     ricoh_preset_id: sharedPresetByPhoto.value[photoId] ?? null,
   };
@@ -122,6 +129,12 @@ export async function sharePhotoSource(
   sharedDehazeAutoByPhoto.value = Object.fromEntries(session.files.map(file => [
     file.photo_id, typeof file.dehaze_auto_mode === "boolean" ? file.dehaze_auto_mode : false,
   ]));
+  sharedDehazeAutoExposureByPhoto.value = Object.fromEntries(session.files.map(file => [
+    file.photo_id, typeof file.dehaze_auto_exposure === "boolean" ? file.dehaze_auto_exposure : false,
+  ]));
+  sharedDehazeNonlocalByPhoto.value = Object.fromEntries(session.files.map(file => [
+    file.photo_id, file.dehaze_nonlocal_mode ?? "off",
+  ]));
   sharedBasicByPhoto.value = Object.fromEntries(session.files.map(file => [
     file.photo_id, { ...basicDefaults, ...file.basic_params },
   ]));
@@ -139,7 +152,9 @@ export async function sharePhotoSource(
 }
 
 export async function flushPendingSaves() {
-  const pending = [...saveTimers.keys()];
+  const source = sharedPhotoSource.value;
+  const failed = source?.files.filter(file => saveErrors.has(`${source.session_id}:${file.photo_id}`)).map(file => file.photo_id) ?? [];
+  const pending = [...new Set([...saveTimers.keys(), ...failed])];
   for (const photoId of pending) {
     window.clearTimeout(saveTimers.get(photoId));
     saveTimers.delete(photoId);

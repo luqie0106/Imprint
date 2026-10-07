@@ -563,6 +563,29 @@ def _quantize_samples(image_rgb16: np.ndarray, bits_per_sample: int) -> np.ndarr
     return scaled.astype(np.uint16)
 
 
+_DNG_COMPRESSION = {
+    "none": 1,
+    "lossless_jpeg": 7,
+    "jpegxl": 52546,
+}
+_DNG_SAMPLE_BITS = {8, 10, 12, 14, 16}
+
+
+def _validate_sample_bits(value: int, name: str) -> None:
+    if (
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (int, np.integer))
+        or int(value) not in _DNG_SAMPLE_BITS
+    ):
+        raise ValueError(f"{name} must be 8, 10, 12, 14, or 16")
+
+
+def _compression_tag(compression: str) -> int:
+    if not isinstance(compression, str) or compression not in _DNG_COMPRESSION:
+        raise ValueError("DNG compression must be 'none', 'lossless_jpeg', or 'jpegxl'")
+    return _DNG_COMPRESSION[compression]
+
+
 def _packed_strip_bytes(strip: np.ndarray, bits_per_sample: int) -> bytes:
     """Return a TIFF strip with MSB-first packed 10/12/14-bit samples.
 
@@ -606,13 +629,16 @@ def write_linear_dng(
     metadata: dict[str, Any] | None = None,
     *,
     bits_per_sample: int = 16,
+    compression: str = "none",
     name_suffix: str = "_dehaze",
 ) -> Path:
-    """Atomically create a lossless RGB Linear DNG and return its path."""
+    """Atomically create an RGB Linear DNG with explicit sample encoding."""
     if image_rgb16.dtype != np.uint16 or image_rgb16.ndim != 3 or image_rgb16.shape[2] != 3:
         raise ValueError("Linear DNG input must be a uint16 RGB array")
-    if bits_per_sample not in {8, 10, 12, 14, 16}:
-        raise ValueError("Linear DNG bit depth must be 8, 10, 12, 14, or 16")
+    _validate_sample_bits(bits_per_sample, "Linear DNG bit depth")
+    compression_value = _compression_tag(compression)
+    if compression == "jpegxl" and bits_per_sample != 16:
+        raise ValueError("JPEG XL DNG encoding requires 16-bit samples")
     source = Path(source_path)
     destination_dir = Path(output_dir).expanduser().resolve()
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -624,10 +650,25 @@ def write_linear_dng(
         (row, min(height, row + rows_per_strip))
         for row in range(0, height, rows_per_strip)
     ]
-    strip_byte_counts = [
-        ((end - start) * width * 3 * bits_per_sample + 7) // 8
-        for start, end in strip_rows
-    ]
+    compressed_spool = None
+    if compression == "none":
+        strip_byte_counts = [
+            ((end - start) * width * 3 * bits_per_sample + 7) // 8
+            for start, end in strip_rows
+        ]
+    else:
+        compressed_spool = tempfile.TemporaryFile(mode="w+b")
+        encoder = _encode_lossless_jpeg if compression == "lossless_jpeg" else _encode_jpeg_xl
+
+        def encode_strip(strip: np.ndarray) -> bytes:
+            quantized = _quantize_samples(strip, bits_per_sample)
+            if compression == "lossless_jpeg":
+                return encoder(quantized, bits_per_sample)
+            return encoder(quantized)
+
+        strip_byte_counts = _compress_strips(
+            image_rgb16, strip_rows, encode_strip, compressed_spool
+        )
     preview, preview_width, preview_height = _jpeg_preview(image_rgb16)
     info = metadata or {}
     native_color_profile = _native_color_profile(info)
@@ -676,10 +717,7 @@ def write_linear_dng(
         _tag(254, LONG, _longs([0])), _tag(256, LONG, _longs([width])),
         _tag(257, LONG, _longs([height])),
         _tag(258, SHORT, _shorts([bits_per_sample] * 3)),
-        # Integer LinearRaw with arbitrary 8..16 bit samples is stored
-        # uncompressed. DNG Deflate is not permitted for 10/12/14-bit integer
-        # raw data and Camera Raw rejects that otherwise TIFF-readable pairing.
-        _tag(259, SHORT, _shorts([1])), _tag(262, SHORT, _shorts([34892])),
+        _tag(259, SHORT, _shorts([compression_value])), _tag(262, SHORT, _shorts([34892])),
         _tag(271, ASCII, _ascii(make)), _tag(272, ASCII, _ascii(model)),
         _tag(273, LONG, _longs([0] * len(strip_rows))), _tag(274, SHORT, _shorts([1])),
         _tag(277, SHORT, _shorts([3])), _tag(278, LONG, _longs([rows_per_strip])),
@@ -690,7 +728,8 @@ def write_linear_dng(
         # after all variable-size IFD data has been laid out.
         _tag(34665, LONG, _longs([0])),
         _tag(339, SHORT, _shorts([1, 1, 1])),
-        _tag(50706, BYTE, bytes([1, 4, 0, 0]), 4), _tag(50707, BYTE, bytes([1, 4, 0, 0]), 4),
+        _tag(50706, BYTE, bytes([1, 7 if compression == "jpegxl" else 4, 0, 0]), 4),
+        _tag(50707, BYTE, bytes([1, 7 if compression == "jpegxl" else 4, 0, 0]), 4),
         _tag(50708, ASCII, unique_camera_model),
         _tag(50717, LONG, _longs([(1 << bits_per_sample) - 1] * 3)),
         _tag(50719, LONG, _longs([0, 0])), _tag(50720, LONG, _longs([width, height])),
@@ -759,15 +798,20 @@ def write_linear_dng(
         with os.fdopen(fd, "wb") as handle:
             handle.write(b"II*\x00" + struct.pack("<I", 8))
             handle.write(primary_ifd)
-            for (start, end), expected_size in zip(strip_rows, strip_byte_counts):
-                quantized_strip = _quantize_samples(
-                    image_rgb16[start:end],
-                    bits_per_sample,
-                )
-                packed_strip = _packed_strip_bytes(quantized_strip, bits_per_sample)
-                if len(packed_strip) != expected_size:
-                    raise OSError("DNG strip packing produced an invalid byte count")
-                handle.write(packed_strip)
+            if compression == "none":
+                for (start, end), expected_size in zip(strip_rows, strip_byte_counts):
+                    quantized_strip = _quantize_samples(
+                        image_rgb16[start:end],
+                        bits_per_sample,
+                    )
+                    packed_strip = _packed_strip_bytes(quantized_strip, bits_per_sample)
+                    if len(packed_strip) != expected_size:
+                        raise OSError("DNG strip packing produced an invalid byte count")
+                    handle.write(packed_strip)
+            else:
+                assert compressed_spool is not None
+                compressed_spool.seek(0)
+                shutil.copyfileobj(compressed_spool, handle, length=1024 * 1024)
             handle.write(exif_ifd)
             if gps_ifd:
                 handle.write(gps_ifd)
@@ -784,9 +828,13 @@ def write_linear_dng(
             # never replace one another's output.
             final_path = _unique_output_path(destination_dir, source, name_suffix)
             os.replace(temporary, final_path)
+        if compressed_spool is not None:
+            compressed_spool.close()
         return final_path
     except Exception:
         temporary.unlink(missing_ok=True)
+        if compressed_spool is not None:
+            compressed_spool.close()
         raise
 
 
@@ -836,28 +884,62 @@ def _pnm16_bytes(samples: np.ndarray) -> bytes:
     return header + np.ascontiguousarray(samples.astype(">u2", copy=False)).tobytes(order="C")
 
 
-def _encode_lossless_jpeg(strip: np.ndarray) -> bytes:
+def _pnm_bytes(samples: np.ndarray, bits_per_sample: int) -> bytes:
+    """Serialize integer grayscale/RGB samples using their declared precision."""
+    if samples.dtype != np.uint16 or samples.ndim not in {2, 3}:
+        raise ValueError("codec input must be a uint16 grayscale or RGB strip")
+    if samples.ndim == 3 and samples.shape[2] != 3:
+        raise ValueError("codec RGB strip must have three channels")
+    _validate_sample_bits(bits_per_sample, "JPEG bit depth")
+    maximum = (1 << bits_per_sample) - 1
+    if np.any(samples > maximum):
+        raise ValueError("JPEG samples exceed their declared bit depth")
+    height, width = samples.shape[:2]
+    magic = b"P5" if samples.ndim == 2 else b"P6"
+    header = magic + f"\n{width} {height}\n{maximum}\n".encode("ascii")
+    if bits_per_sample <= 8:
+        data = samples.astype(np.uint8, copy=False).tobytes(order="C")
+    else:
+        data = np.ascontiguousarray(samples.astype(">u2", copy=False)).tobytes(order="C")
+    return header + data
+
+
+def _encode_lossless_jpeg(strip: np.ndarray, bits_per_sample: int = 16) -> bytes:
+    """Encode a 2D CFA or RGB strip as precision-matched lossless JPEG."""
+    if strip.dtype != np.uint16 or strip.ndim not in {2, 3}:
+        raise ValueError("lossless JPEG input must be a uint16 grayscale or RGB strip")
+    if strip.ndim == 3 and strip.shape[2] != 3:
+        raise ValueError("lossless JPEG RGB strip must have three channels")
+    _validate_sample_bits(bits_per_sample, "JPEG bit depth")
+    if np.any(strip > (1 << bits_per_sample) - 1):
+        raise ValueError("lossless JPEG samples exceed their declared bit depth")
     encoder = _imagecodecs_encoder("ljpeg_encode")
     encoded = None
+    encoder_error = None
     if encoder is not None:
         try:
-            encoded = bytes(encoder(strip, bitspersample=16))
-        except ImportError:
-            # imagecodecs exposes delayed-import stubs for optional codecs.
-            encoded = None
+            encoded = bytes(encoder(strip, bitspersample=bits_per_sample))
+        except Exception as error:
+            # imagecodecs exposes delayed-import stubs for optional codecs, and
+            # some builds do not support every component count or precision.
+            encoder_error = error
     if encoded is None:
         cjpeg = _codec_executable("cjpeg")
         if cjpeg is None:
-            raise RuntimeError(
-                "lossless CFA JPEG encoding requires imagecodecs.ljpeg_encode or cjpeg"
+            error = RuntimeError(
+                "lossless JPEG encoding requires imagecodecs.ljpeg_encode or cjpeg"
             )
+            if encoder_error is not None:
+                raise error from encoder_error
+            raise error
         with tempfile.TemporaryDirectory(prefix="imprint-ljpeg-") as work_dir:
-            input_path = Path(work_dir) / "strip.pgm"
+            input_path = Path(work_dir) / ("strip.pgm" if strip.ndim == 2 else "strip.ppm")
             output_path = Path(work_dir) / "strip.jpg"
-            input_path.write_bytes(_pnm16_bytes(strip))
+            input_path.write_bytes(_pnm_bytes(strip, bits_per_sample))
             subprocess.run(
                 [
-                    cjpeg, "-precision", "16", "-lossless", "1", "-grayscale",
+                    cjpeg, "-precision", str(bits_per_sample), "-lossless", "1",
+                    "-grayscale" if strip.ndim == 2 else "-rgb",
                     "-outfile", str(output_path), str(input_path),
                 ],
                 check=True,
@@ -1028,6 +1110,9 @@ def write_enhanced_dng(
     *,
     orientation: int = 1,
     preview_rgb16: np.ndarray | None = None,
+    bits_per_sample: int = 16,
+    raw_bits_per_sample: int = 16,
+    compression: str = "jpegxl",
 ) -> Path:
     """Atomically write a DNG containing original CFA and enhanced RGB data.
 
@@ -1051,6 +1136,11 @@ def write_enhanced_dng(
     ):
         raise ValueError("Enhanced DNG CFA input must be a uint16 HxW array")
     height, width = enhanced_rgb16.shape[:2]
+    _validate_sample_bits(bits_per_sample, "Enhanced RGB bit depth")
+    _validate_sample_bits(raw_bits_per_sample, "CFA bit depth")
+    compression_value = _compression_tag(compression)
+    if compression == "jpegxl" and bits_per_sample != 16:
+        raise ValueError("JPEG XL DNG encoding requires 16-bit enhanced RGB samples")
     if height < 1 or width < 1 or raw_cfa16.shape != (height, width):
         raise ValueError("Enhanced RGB and CFA inputs must have matching non-empty dimensions")
     if orientation not in {1, 3, 6, 8}:
@@ -1103,6 +1193,13 @@ def write_enhanced_dng(
     black_level_values = [int(value) for value in black_levels if value is not None]
     if any(value >= white_level for value in black_level_values):
         raise ValueError("DNGWhiteLevel must be greater than every CFA black level")
+    raw_maximum = (1 << raw_bits_per_sample) - 1
+    if white_level > raw_maximum:
+        raise ValueError("DNGWhiteLevel exceeds the selected CFA bit depth")
+    if any(value > raw_maximum for value in black_level_values):
+        raise ValueError("DNGBlackLevel exceeds the selected CFA bit depth")
+    if np.any(raw_cfa16 > raw_maximum):
+        raise ValueError("CFA samples exceed the selected CFA bit depth")
     crop_origin = info.get("DNGDefaultCropOrigin", (0, 0))
     crop_size = info.get("DNGDefaultCropSize", (width, height))
     if (
@@ -1147,11 +1244,29 @@ def write_enhanced_dng(
     try:
         raw_rows_per_strip, raw_strips = _dng_strip_layout(width, height, 1)
         rgb_rows_per_strip, rgb_strips = _dng_strip_layout(width, height, 3)
+
+        def encode_cfa_strip(strip: np.ndarray) -> bytes:
+            if compression == "none":
+                return _packed_strip_bytes(strip, raw_bits_per_sample)
+            return _encode_lossless_jpeg(strip, raw_bits_per_sample)
+
         raw_byte_counts = _compress_strips(
-            raw_cfa16, raw_strips, lambda strip: _packed_strip_bytes(strip, 16), compressed_spool
+            raw_cfa16,
+            raw_strips,
+            encode_cfa_strip,
+            compressed_spool,
         )
+
+        def encode_enhanced_strip(strip: np.ndarray) -> bytes:
+            quantized = _quantize_samples(strip, bits_per_sample)
+            if compression == "none":
+                return _packed_strip_bytes(quantized, bits_per_sample)
+            if compression == "lossless_jpeg":
+                return _encode_lossless_jpeg(quantized, bits_per_sample)
+            return _encode_jpeg_xl(quantized)
+
         rgb_byte_counts = _compress_strips(
-            enhanced_rgb16, rgb_strips, _encode_jpeg_xl, compressed_spool
+            enhanced_rgb16, rgb_strips, encode_enhanced_strip, compressed_spool
         )
         compressed_size = sum(raw_byte_counts) + sum(rgb_byte_counts)
         if compressed_spool.tell() != compressed_size:
@@ -1211,8 +1326,8 @@ def write_enhanced_dng(
             _tag(254, LONG, _longs([0])),
             _tag(256, LONG, _longs([width])),
             _tag(257, LONG, _longs([height])),
-            _tag(258, SHORT, _shorts([16])),
-            _tag(259, SHORT, _shorts([1])),
+            _tag(258, SHORT, _shorts([raw_bits_per_sample])),
+            _tag(259, SHORT, _shorts([1 if compression == "none" else 7])),
             _tag(262, SHORT, _shorts([32803])),
             _tag(273, LONG, _longs([0] * len(raw_strips))),
             _tag(274, SHORT, _shorts([orientation])),
@@ -1235,8 +1350,8 @@ def write_enhanced_dng(
             _tag(254, LONG, _longs([16])),
             _tag(256, LONG, _longs([width])),
             _tag(257, LONG, _longs([height])),
-            _tag(258, SHORT, _shorts([16, 16, 16])),
-            _tag(259, SHORT, _shorts([52546])),
+            _tag(258, SHORT, _shorts([bits_per_sample, bits_per_sample, bits_per_sample])),
+            _tag(259, SHORT, _shorts([compression_value])),
             _tag(262, SHORT, _shorts([34892])),
             _tag(273, LONG, _longs([0] * len(rgb_strips))),
             _tag(274, SHORT, _shorts([orientation])),
@@ -1246,7 +1361,7 @@ def write_enhanced_dng(
             _tag(284, SHORT, _shorts([1])),
             _tag(339, SHORT, _shorts([1, 1, 1])),
         _tag(50714, RATIONAL, _rationals([(0, 1), (0, 1), (0, 1)])),
-        _tag(50717, LONG, _longs([65535, 65535, 65535])),
+        _tag(50717, LONG, _longs([(1 << bits_per_sample) - 1] * 3)),
         _tag(51182, ASCII, _ascii("Imprint Dehaze")),
     ]
 

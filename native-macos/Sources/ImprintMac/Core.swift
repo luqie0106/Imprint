@@ -163,10 +163,19 @@ enum PreviewImageDecoder {
     }
 }
 
+private final class CachedPreview: NSObject {
+    let image: NSImage
+    let headers: [String: String]
+    init(image: NSImage, headers: [String: String]) {
+        self.image = image
+        self.headers = headers
+    }
+}
+
 @MainActor final class APIClient {
     var baseURL: URL?
-    private let previewCache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
+    private let previewCache: NSCache<NSString, CachedPreview> = {
+        let cache = NSCache<NSString, CachedPreview>()
         cache.totalCostLimit = 128 * 1024 * 1024
         return cache
     }()
@@ -194,9 +203,14 @@ enum PreviewImageDecoder {
     }
 
     func image(_ path: String, body: [String: Any]) async throws -> NSImage {
+        try await imageWithResponseMetadata(path, body: body).image
+    }
+
+    func imageWithResponseMetadata(_ path: String, body: [String: Any]) async throws
+        -> (image: NSImage, headers: [String: String]) {
         let bodyData = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         let cacheKey = NSString(string: "\(path):\(bodyData.base64EncodedString())")
-        if let cached = previewCache.object(forKey: cacheKey) { return cached }
+        if let cached = previewCache.object(forKey: cacheKey) { return (cached.image, cached.headers) }
         var request = URLRequest(url: try url(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -208,9 +222,13 @@ enum PreviewImageDecoder {
             throw APIError.server(object?["error"] as? String ?? "预览失败")
         }
         let image = try await PreviewImageDecoder.image(from: data)
-        previewCache.setObject(image, forKey: cacheKey,
+        var headers: [String: String] = [:]
+        for (key, value) in response.allHeaderFields {
+            headers[String(describing: key).lowercased()] = String(describing: value)
+        }
+        previewCache.setObject(CachedPreview(image: image, headers: headers), forKey: cacheKey,
                                cost: Int(image.size.width * image.size.height * 4))
-        return image
+        return (image, headers)
     }
 
     func events(_ path: String, body: [String: Any], onEvent: @escaping @MainActor ([String: Any]) -> Void) async throws {
@@ -263,6 +281,8 @@ struct Photo: Identifiable {
     let name: String
     let dehaze: [String: Any]
     let dehazeAutoMode: Bool
+    let dehazeAutoExposure: Bool
+    let dehazeNonlocalMode: String
     let basic: [String: Any]
     let preset: String?
 
@@ -272,6 +292,9 @@ struct Photo: Identifiable {
         name = string(object, "name")
         dehaze = object["dehaze_params"] as? [String: Any] ?? [:]
         dehazeAutoMode = object["dehaze_auto_mode"] as? Bool ?? false
+        dehazeAutoExposure = object["dehaze_auto_exposure"] as? Bool ?? false
+        let nonlocalMode = object["dehaze_nonlocal_mode"] as? String ?? "off"
+        dehazeNonlocalMode = ["off", "conservative", "strong"].contains(nonlocalMode) ? nonlocalMode : "off"
         basic = object["basic_params"] as? [String: Any] ?? [:]
         preset = object["ricoh_preset_id"] as? String
     }
@@ -287,6 +310,8 @@ struct Photo: Identifiable {
     @Published var dehazeDefaults: [String: Any] = [:]
     @Published var dehazeByPhoto: [String: [String: Any]] = [:]
     @Published var dehazeAutoModeByPhoto: [String: Bool] = [:]
+    @Published var dehazeAutoExposureByPhoto: [String: Bool] = [:]
+    @Published var dehazeNonlocalModeByPhoto: [String: String] = [:]
     @Published var basicByPhoto: [String: [String: Any]] = [:]
     @Published var presetByPhoto: [String: String] = [:]
     @Published var enhanceJob: [String: Any] = [:]
@@ -319,6 +344,12 @@ struct Photo: Identifiable {
             dehazeAutoModeByPhoto = Dictionary(uniqueKeysWithValues: photos.map {
                 ($0.id, $0.dehazeAutoMode)
             })
+            dehazeAutoExposureByPhoto = Dictionary(uniqueKeysWithValues: photos.map {
+                ($0.id, $0.dehazeAutoExposure)
+            })
+            dehazeNonlocalModeByPhoto = Dictionary(uniqueKeysWithValues: photos.map {
+                ($0.id, $0.dehazeNonlocalMode)
+            })
             basicByPhoto = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, $0.basic) })
             presetByPhoto = Dictionary(uniqueKeysWithValues: photos.compactMap { photo in photo.preset.map { (photo.id, $0) } })
             enhanceJob = [:]
@@ -333,6 +364,8 @@ struct Photo: Identifiable {
             "photo_id": photoID,
             "dehaze_params": dehazeByPhoto[photoID] ?? [:],
             "auto_mode": dehazeAutoModeByPhoto[photoID] ?? false,
+            "auto_exposure": dehazeAutoExposureByPhoto[photoID] ?? false,
+            "nonlocal_mode": dehazeNonlocalModeByPhoto[photoID] ?? "off",
             "basic_params": basicByPhoto[photoID] ?? [:],
             "ricoh_preset_id": presetByPhoto[photoID] as Any? ?? NSNull(),
         ])
