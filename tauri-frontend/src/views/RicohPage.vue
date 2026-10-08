@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { photoExportRunning } from "../stores/photoExport";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import PreviewCanvas from "../components/PreviewCanvas.vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
 import { BASE_URL, isServerReady } from "../stores/api";
@@ -101,17 +102,23 @@ let resizeObserver: ResizeObserver | undefined;
 let pointerDownX = 0;
 let pointerDownY = 0;
 let pointerDownZoom = 1;
+let pointerDownPanX = 0;
+let pointerDownPanY = 0;
 let pointerMoved = false;
 
 const fitWidth = computed(() => {
-  if (!imageWidth.value || !imageHeight.value || !viewportWidth.value || !viewportHeight.value) return Math.max(1, viewportWidth.value);
-  const scale = Math.min(viewportWidth.value / imageWidth.value, viewportHeight.value / imageHeight.value);
-  return Math.max(1, imageWidth.value * scale);
+  const width = sourceImageWidth.value || imageWidth.value;
+  const height = sourceImageHeight.value || imageHeight.value;
+  if (!width || !height || !viewportWidth.value || !viewportHeight.value) return Math.max(1, viewportWidth.value);
+  const scale = Math.min(viewportWidth.value / width, viewportHeight.value / height);
+  return Math.max(1, width * scale);
 });
 const fitHeight = computed(() => {
-  if (!imageWidth.value || !imageHeight.value || !viewportWidth.value || !viewportHeight.value) return Math.max(520, viewportHeight.value);
-  const scale = Math.min(viewportWidth.value / imageWidth.value, viewportHeight.value / imageHeight.value);
-  return Math.max(1, imageHeight.value * scale);
+  const width = sourceImageWidth.value || imageWidth.value;
+  const height = sourceImageHeight.value || imageHeight.value;
+  if (!width || !height || !viewportWidth.value || !viewportHeight.value) return Math.max(520, viewportHeight.value);
+  const scale = Math.min(viewportWidth.value / width, viewportHeight.value / height);
+  return Math.max(1, height * scale);
 });
 const pixelScale = computed(() => sourceImageWidth.value > 0
   ? fitWidth.value * devicePixelRatio.value / sourceImageWidth.value
@@ -123,12 +130,6 @@ const zoomDisplayText = computed(() => {
   const percent = Math.round(zoom.value * pixelScale.value * 100);
   return zoom.value <= 1.001 ? `适合（${percent}%）` : `${percent}%`;
 });
-const imageStageStyle = computed(() => ({
-  width: `${fitWidth.value * zoom.value}px`,
-  height: `${fitHeight.value * zoom.value}px`,
-  transform: `translate(${panX.value}px, ${panY.value}px)`,
-}));
-
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -169,7 +170,7 @@ function resetView(rememberCurrent = true) {
   panY.value = 0;
 }
 
-function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
+function setZoom(nextZoom: number, clientX?: number, clientY?: number, fromScrub = false) {
   if (!canZoom.value) return;
   const previousZoom = zoom.value;
   const targetZoom = clamp(nextZoom, 1, maxZoom.value);
@@ -181,9 +182,14 @@ function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
     offsetX = clientX - (rect.left + rect.width / 2);
     offsetY = clientY - (rect.top + rect.height / 2);
   }
-  const ratio = targetZoom / previousZoom;
-  panX.value = offsetX - (offsetX - panX.value) * ratio;
-  panY.value = offsetY - (offsetY - panY.value) * ratio;
+  // Scrubbing uses the press-time view, so clamping at a boundary cannot
+  // accumulate pan drift when the pointer reverses direction.
+  const anchorZoom = fromScrub ? pointerDownZoom : previousZoom;
+  const anchorPanX = fromScrub ? pointerDownPanX : panX.value;
+  const anchorPanY = fromScrub ? pointerDownPanY : panY.value;
+  const ratio = targetZoom / anchorZoom;
+  panX.value = offsetX - (offsetX - anchorPanX) * ratio;
+  panY.value = offsetY - (offsetY - anchorPanY) * ratio;
   zoom.value = targetZoom;
   if (targetZoom > 1.001) lastZoom.value = targetZoom;
   else if (previousZoom > 1.001) lastZoom.value = previousZoom;
@@ -202,6 +208,8 @@ function onPreviewPointerDown(event: PointerEvent) {
   pointerDownX = event.clientX;
   pointerDownY = event.clientY;
   pointerDownZoom = zoom.value;
+  pointerDownPanX = panX.value;
+  pointerDownPanY = panY.value;
   (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   event.preventDefault();
 }
@@ -210,7 +218,7 @@ function onPreviewPointerMove(event: PointerEvent) {
   if (!isScrubbing.value) return;
   const deltaX = event.clientX - pointerDownX;
   if (Math.abs(deltaX) > 4) pointerMoved = true;
-  if (pointerMoved) setZoom(pointerDownZoom * Math.exp(deltaX * 0.005), pointerDownX, pointerDownY);
+  if (pointerMoved) setZoom(pointerDownZoom * Math.exp(deltaX * 0.005), pointerDownX, pointerDownY, true);
 }
 
 function finishPreviewPointer(event: PointerEvent, cancelled = false) {
@@ -236,15 +244,15 @@ function onPreviewPointerCancel(event: PointerEvent) { finishPreviewPointer(even
 function updateViewportSize() {
   devicePixelRatio.value = window.devicePixelRatio || 1;
   if (!previewViewport.value) return;
-  viewportWidth.value = previewViewport.value.clientWidth;
-  viewportHeight.value = previewViewport.value.clientHeight;
+  const rect = previewViewport.value.getBoundingClientRect();
+  viewportWidth.value = rect.width;
+  viewportHeight.value = rect.height;
 }
 
-function onPreviewImageLoad(event: Event) {
-  const image = event.currentTarget as HTMLImageElement;
-  if (!image.naturalWidth || !image.naturalHeight) return;
-  imageWidth.value = image.naturalWidth;
-  imageHeight.value = image.naturalHeight;
+function onPreviewImageLoad(image: { width: number; height: number }) {
+  if (!image.width || !image.height) return;
+  imageWidth.value = image.width;
+  imageHeight.value = image.height;
   void nextTick(updateViewportSize);
 }
 
@@ -441,7 +449,7 @@ function schedulePreview(includeOriginal = false, immediate = false) {
       await scheduledPreviewTask;
       if (token === generation) await refreshPreview(true, true, token);
     })();
-  }, 900);
+  }, 500);
 }
 
 watch([isServerReady, BASE_URL], () => { void loadPresets(); }, { immediate: true });
@@ -566,17 +574,16 @@ onBeforeUnmount(() => {
           </div>
           <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (!canZoom ? 'cursor-default' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'))) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel">
             <template v-if="originalUrl">
-              <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
-                <div class="preview-stage relative shrink-0" :style="imageStageStyle">
-                  <img :src="previewImageUrl" :alt="mode === 'effect' && effectReady ? '综合效果' : '原图'" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
-                </div>
-              </div>
+              <PreviewCanvas :src="previewImageUrl" :alt="mode === 'effect' && effectReady ? '综合效果' : '原图'"
+                :viewport-width="viewportWidth" :viewport-height="viewportHeight"
+                :stage-width="fitWidth * zoom" :stage-height="fitHeight * zoom"
+                :pan-x="panX" :pan-y="panY" :pixel-ratio="devicePixelRatio"
+                @loaded="onPreviewImageLoad" @error="error = '预览图片解码失败'" />
               <div v-if="showComparePreview" class="absolute inset-0 overflow-hidden" :style="{ clipPath: `inset(0 ${100 - split}% 0 0)` }">
-                <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
-                  <div class="preview-stage relative shrink-0" :style="imageStageStyle">
-                    <img :src="originalUrl" alt="原图" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
-                  </div>
-                </div>
+                <PreviewCanvas :src="originalUrl" alt="原图"
+                  :viewport-width="viewportWidth" :viewport-height="viewportHeight"
+                  :stage-width="fitWidth * zoom" :stage-height="fitHeight * zoom"
+                  :pan-x="panX" :pan-y="panY" :pixel-ratio="devicePixelRatio" />
               </div>
               <div v-if="showComparePreview" class="pointer-events-none absolute inset-y-0 z-10 w-px bg-white shadow" :style="{ left: `${split}%`, transform: 'translateX(-50%)' }"></div>
               <template v-if="showComparePreview">
@@ -673,10 +680,6 @@ onBeforeUnmount(() => {
 
 .photo-list-card + .photo-list-card {
   margin-top: 0.25rem;
-}
-
-.preview-stage {
-  transform-origin: center center;
 }
 
 .compare-split {

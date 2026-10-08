@@ -13,6 +13,7 @@ import ctypes.util
 from collections import OrderedDict
 from dataclasses import asdict
 from functools import lru_cache
+import gc
 import json
 import os
 import shutil
@@ -94,7 +95,7 @@ from lens_correction import (
 )
 from dng_gainmap import apply_dng_gain_map
 
-LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-bilinear-v2"
+LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-bilinear-native-v3"
 
 import io
 import cv2
@@ -141,12 +142,23 @@ _MAX_PREVIEW_GROUPS = 40
 # 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
 _ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
 _ENHANCE_PREVIEW_CACHE: dict[tuple, tuple[bytes, int, int, str, str, float, str]] = {}
+_MAX_ENHANCE_PREVIEW_CACHE_BYTES = 16 * 1024 * 1024
 _ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str, int], bytes] = {}
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 _RICOH_PREVIEW_CACHE: dict[tuple, bytes] = {}
+_MAX_RICOH_PREVIEW_CACHE_BYTES = 16 * 1024 * 1024
 _RICOH_JOBS: dict[str, dict[str, Any]] = {}
 _ENHANCE_LOCK = threading.RLock()
 _FULL_RESOLUTION_PREVIEW_LOCK = threading.Lock()
+# One decoded source and one display RGB8 base. The source lets repeated full
+# preview edits skip RAW decoding; both are cleared together on photo changes.
+_FULL_RESOLUTION_DECODED_CACHE: dict[tuple, tuple[np.ndarray, Any]] = {}
+_MAX_FULL_RESOLUTION_DECODED_BYTES = 256 * 1024 * 1024
+_FULL_RESOLUTION_BASE_CACHE: dict[tuple, tuple[np.ndarray, tuple]] = {}
+_MAX_FULL_RESOLUTION_BASE_BYTES = 96 * 1024 * 1024
+_FULL_RESOLUTION_CACHE_IDLE_SECONDS = 60.0
+_FULL_RESOLUTION_CACHE_GENERATION = 0
+_FULL_RESOLUTION_CACHE_TIMER: threading.Timer | None = None
 _DISPLAY_PREVIEW_LOCK = threading.RLock()
 _DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DISPLAY_PREVIEW_BYTES = 64 * 1024 * 1024
@@ -169,7 +181,8 @@ app.add_middleware(
     expose_headers=[
         "X-Image-Width", "X-Image-Height", "X-Dehaze-Nonlocal-Status",
         "X-Dehaze-Nonlocal-Reason", "X-Auto-Exposure-EV",
-        "X-Auto-Exposure-Reason",
+        "X-Auto-Exposure-Reason", "Server-Timing", "X-Preview-Base-Cache",
+        "X-Preview-Decode-Cache",
     ],
 )
 
@@ -179,6 +192,27 @@ def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _insert_bounded_jpeg_preview(
+    cache: dict[tuple, Any], key: tuple, entry: Any, *,
+    max_entries: int, max_bytes: int, payload_index: int | None = None,
+) -> None:
+    """Insert a JPEG cache entry under its owning lock with entry and byte caps."""
+    def payload_size(value: Any) -> int:
+        payload = value if payload_index is None else value[payload_index]
+        return len(payload)
+
+    size = payload_size(entry)
+    if size > max_bytes:
+        return
+    cache.pop(key, None)
+    retained_bytes = sum(payload_size(value) for value in cache.values())
+    while cache and (len(cache) >= max_entries or retained_bytes + size > max_bytes):
+        oldest_key = next(iter(cache))
+        oldest = cache.pop(oldest_key)
+        retained_bytes -= payload_size(oldest)
+    cache[key] = entry
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -849,6 +883,159 @@ def _render_basic(image: np.ndarray, basic: dict[str, float], mode: str) -> np.n
     return apply_basic_preview_effect(image, basic)
 
 
+def _clear_full_resolution_preview_caches() -> None:
+    """Clear full-resolution caches. The caller must hold the full-preview lock."""
+    _FULL_RESOLUTION_DECODED_CACHE.clear()
+    _FULL_RESOLUTION_BASE_CACHE.clear()
+
+
+def _release_unused_preview_memory() -> None:
+    """Best-effort return of freed preview pages to the platform allocator."""
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+    try:
+        if sys.platform == "darwin":
+            allocator = ctypes.CDLL(None)
+            release = getattr(allocator, "malloc_zone_pressure_relief", None)
+            if release is None:
+                return
+            release.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            release.restype = ctypes.c_size_t
+            # The return value describes allocator behavior and is not a byte
+            # count suitable for reporting as reclaimed process RSS.
+            release(None, 0)
+        elif sys.platform.startswith("linux"):
+            allocator = ctypes.CDLL(None)
+            trim = getattr(allocator, "malloc_trim", None)
+            if trim is None:
+                return
+            trim.argtypes = [ctypes.c_size_t]
+            trim.restype = ctypes.c_int
+            trim(0)
+    except Exception:
+        # Allocator symbols vary by libc and OS release; cache cleanup remains
+        # correct even when the platform does not expose a release hook.
+        pass
+
+
+def _expire_full_resolution_preview_caches(generation: int) -> None:
+    """Expire idle full-resolution arrays without retaining them in the timer."""
+    global _FULL_RESOLUTION_CACHE_TIMER
+    with _FULL_RESOLUTION_PREVIEW_LOCK:
+        if generation != _FULL_RESOLUTION_CACHE_GENERATION:
+            return
+        _clear_full_resolution_preview_caches()
+        _FULL_RESOLUTION_CACHE_TIMER = None
+        _release_unused_preview_memory()
+
+
+def _touch_full_resolution_preview_cache() -> None:
+    """Reset the idle timer. Called with the full-preview lock held."""
+    global _FULL_RESOLUTION_CACHE_GENERATION, _FULL_RESOLUTION_CACHE_TIMER
+    old_timer = _FULL_RESOLUTION_CACHE_TIMER
+    if old_timer is not None:
+        old_timer.cancel()
+    _FULL_RESOLUTION_CACHE_GENERATION += 1
+    timer = threading.Timer(
+        _FULL_RESOLUTION_CACHE_IDLE_SECONDS,
+        _expire_full_resolution_preview_caches,
+        args=(_FULL_RESOLUTION_CACHE_GENERATION,),
+    )
+    timer.daemon = True
+    _FULL_RESOLUTION_CACHE_TIMER = timer
+    timer.start()
+
+
+def _shutdown_full_resolution_preview_cache() -> None:
+    """Cancel the idle callback and release full-resolution arrays on shutdown."""
+    global _FULL_RESOLUTION_CACHE_GENERATION, _FULL_RESOLUTION_CACHE_TIMER
+    with _FULL_RESOLUTION_PREVIEW_LOCK:
+        _FULL_RESOLUTION_CACHE_GENERATION += 1
+        timer = _FULL_RESOLUTION_CACHE_TIMER
+        _FULL_RESOLUTION_CACHE_TIMER = None
+        if timer is not None:
+            timer.cancel()
+        _clear_full_resolution_preview_caches()
+        _release_unused_preview_memory()
+
+
+app.router.add_event_handler("shutdown", _shutdown_full_resolution_preview_cache)
+
+
+def _full_resolution_decoded_image(
+    req: EnhancePreviewRequest, path: Path,
+) -> tuple[np.ndarray, Any, bool]:
+    """Return one immutable full-resolution decode, called under its cache lock."""
+    stat = path.stat()
+    key = (req.session_id, req.photo_id, str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _FULL_RESOLUTION_DECODED_CACHE.get(key)
+    if cached is not None:
+        _touch_full_resolution_preview_cache()
+        return cached[0], cached[1], True
+
+    # Photo switches and source changes release both retained full-size arrays
+    # before another decode allocates memory.
+    if _FULL_RESOLUTION_DECODED_CACHE:
+        _clear_full_resolution_preview_caches()
+    elif any(base_key[:5] != key for base_key in _FULL_RESOLUTION_BASE_CACHE):
+        _FULL_RESOLUTION_BASE_CACHE.clear()
+
+    image, metadata = read_image(path, preview=False)
+    image.setflags(write=False)
+    if image.nbytes <= _MAX_FULL_RESOLUTION_DECODED_BYTES:
+        _FULL_RESOLUTION_DECODED_CACHE[key] = (image, metadata)
+    _touch_full_resolution_preview_cache()
+    return image, metadata, False
+
+
+def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
+                                  params: DehazeParams, backend: str
+                                  ) -> tuple[np.ndarray, tuple, bool, str]:
+    """Called under the full-preview lock; cache a single immutable RGB8 base."""
+    stat = path.stat()
+    key = (req.session_id, req.photo_id, str(path), stat.st_mtime_ns, stat.st_size,
+           DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
+           LENS_PREVIEW_VERSION, tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
+           req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb, backend)
+    cached = _FULL_RESOLUTION_BASE_CACHE.get(key)
+    if cached is not None:
+        decoded_key = key[:5]
+        decode_cache = "hit" if decoded_key in _FULL_RESOLUTION_DECODED_CACHE else "not-needed"
+        _touch_full_resolution_preview_cache()
+        return cached[0], cached[1], True, decode_cache
+    # Keep the same decoded source for parameter edits, but release its previous
+    # rendered base before allocating another full-size working set.
+    _FULL_RESOLUTION_BASE_CACHE.clear()
+    image, metadata, decode_hit = _full_resolution_decoded_image(req, path)
+    linear_input = _prepare_dehaze_input(image, metadata, path,
+                                        color_manage_srgb=req.color_manage_srgb)
+    # A float32 linear decode can be returned directly by the preparation helper.
+    # Give renderers a writable working array while retaining an immutable source.
+    if not linear_input.flags.writeable or np.shares_memory(linear_input, image):
+        linear_input = np.array(linear_input, dtype=np.float32, order="C", copy=True)
+    diagnostics: dict[str, Any] = {}
+    enhanced = _render_dehaze(
+        linear_input, params, backend, auto_mode=req.auto_mode,
+        nonlocal_mode=req.nonlocal_mode, diagnostics=diagnostics,
+        **({"auto_exposure": True} if req.auto_exposure else {}))
+    del linear_input
+    status, reason = _nonlocal_preview_status(req.nonlocal_mode, diagnostics)
+    preview_status = (status, reason, float(diagnostics.get("auto_exposure_ev", 0.0)),
+                      str(diagnostics.get("auto_exposure_reason", "off")))
+    enhanced16 = _linear_float_to_uint16(enhanced)
+    del enhanced
+    enhanced16, _, _ = _correct_enhanced_raw(enhanced16, metadata, path, preview=True)
+    display = _display_rgb8(enhanced16, linear=True)
+    del enhanced16
+    display.setflags(write=False)
+    if display.nbytes <= _MAX_FULL_RESOLUTION_BASE_BYTES:
+        _FULL_RESOLUTION_BASE_CACHE[key] = (display, preview_status)
+    return display, preview_status, False, "hit" if decode_hit else "miss"
+
+
 def _build_dehaze_xmp_curves(session_id: str, photo_id: str, path: Path,
                              params: DehazeParams, auto_mode: bool,
                              nonlocal_mode: str | None = None,
@@ -1070,9 +1257,10 @@ def create_ricoh_preview(req: RicohPreviewRequest):
                                  req.ricoh_backend, use_measured_color=True)
         payload = _encode_preview(effected)
         with _ENHANCE_LOCK:
-            if len(_RICOH_PREVIEW_CACHE) >= 128:
-                _RICOH_PREVIEW_CACHE.pop(next(iter(_RICOH_PREVIEW_CACHE)), None)
-            _RICOH_PREVIEW_CACHE[cache_key] = payload
+            _insert_bounded_jpeg_preview(
+                _RICOH_PREVIEW_CACHE, cache_key, payload,
+                max_entries=128, max_bytes=_MAX_RICOH_PREVIEW_CACHE_BYTES,
+            )
         return Response(
             content=payload,
             media_type="image/jpeg",
@@ -1474,6 +1662,11 @@ def create_enhance_session(req: EnhanceSessionRequest):
                     _ENHANCE_THUMBNAIL_CACHE.pop(key, None)
                 for key in [key for key in _RICOH_PREVIEW_CACHE if key[0] == expired]:
                     _RICOH_PREVIEW_CACHE.pop(key, None)
+                with _FULL_RESOLUTION_PREVIEW_LOCK:
+                    for key in [key for key in _FULL_RESOLUTION_DECODED_CACHE if key[0] == expired]:
+                        _FULL_RESOLUTION_DECODED_CACHE.pop(key, None)
+                    for key in [key for key in _FULL_RESOLUTION_BASE_CACHE if key[0] == expired]:
+                        _FULL_RESOLUTION_BASE_CACHE.pop(key, None)
                 with _DISPLAY_PREVIEW_LOCK:
                     for key in [key for key in _DISPLAY_PREVIEW_CACHE if key[0] == expired]:
                         _DISPLAY_PREVIEW_CACHE.pop(key, None)
@@ -1667,49 +1860,52 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         nonlocal_reason = ""
         auto_exposure_ev = 0.0
         auto_exposure_reason = "off"
+        preview_headers: dict[str, str] = {}
         if req.full_resolution:
-            # Full-size previews intentionally skip every in-memory image/JPEG
-            # cache: camera RAWs can decode to very large arrays, and parameter
-            # edits should not retain those arrays across requests.
+            started = time.perf_counter()
+            waiting = started
             with _FULL_RESOLUTION_PREVIEW_LOCK:
-                image, metadata = read_image(path, preview=False)
-                width, height = int(image.shape[1]), int(image.shape[0])
-                linear = getattr(metadata, "color_space", "") == "Linear sRGB"
+                lock_wait = time.perf_counter() - waiting
+                base_started = time.perf_counter()
                 if req.mode == "original":
-                    display = _display_rgb8(image, linear=linear)
+                    image, metadata, decode_hit = _full_resolution_decoded_image(req, Path(path))
+                    display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
                     if req.color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
                         display = standard_preview_to_srgb(display, path)
-                    payload = _encode_preview(display)
+                    base_cache = "bypass"
+                    decode_cache = "hit" if decode_hit else "miss"
                 else:
-                    linear_input = _prepare_dehaze_input(
-                        image, metadata, path,
-                        color_manage_srgb=req.color_manage_srgb,
+                    display, preview_status, hit, decode_hit = _full_resolution_display_base(
+                        req, Path(path), params, render_mode,
                     )
-                    diagnostics: dict[str, Any] = {}
-                    enhanced = _render_dehaze(
-                        linear_input, params, render_mode, auto_mode=req.auto_mode,
-                        nonlocal_mode=req.nonlocal_mode,
-                        diagnostics=diagnostics,
-                        **({"auto_exposure": True} if req.auto_exposure else {}),
-                    )
-                    auto_exposure_ev = float(diagnostics.get("auto_exposure_ev", 0.0))
-                    auto_exposure_reason = str(diagnostics.get("auto_exposure_reason", "off"))
-                    nonlocal_status, nonlocal_reason = _nonlocal_preview_status(
-                        req.nonlocal_mode, diagnostics,
-                    )
-                    enhanced16 = _linear_float_to_uint16(enhanced)
-                    enhanced16, _, _ = _correct_enhanced_raw(
-                        enhanced16, metadata, Path(path), preview=True,
-                    )
-                    display = _display_rgb8(enhanced16, linear=True)
-                    if effective_preset_id is not None:
-                        effected = _render_ricoh(
-                            display, effective_preset_id, basic, req.ricoh_backend,
-                            use_measured_color=True,
-                        )
-                    else:
-                        effected = _render_basic(display, basic, basic_mode)
-                    payload = _encode_preview(effected)
+                    nonlocal_status, nonlocal_reason, auto_exposure_ev, auto_exposure_reason = preview_status
+                    base_cache = "hit" if hit else "miss"
+                    decode_cache = decode_hit
+                width, height = int(display.shape[1]), int(display.shape[0])
+                base_time = time.perf_counter() - base_started
+                adjustments_started = time.perf_counter()
+                if req.mode == "original":
+                    effected = display
+                elif effective_preset_id is not None:
+                    effected = _render_ricoh(display, effective_preset_id, basic,
+                                             req.ricoh_backend, use_measured_color=True)
+                else:
+                    effected = _render_basic(display, basic, basic_mode)
+                adjustments_time = time.perf_counter() - adjustments_started
+                encoding_started = time.perf_counter()
+                payload = _encode_preview(effected)
+                encoding_time = time.perf_counter() - encoding_started
+                total_time = time.perf_counter() - started
+                preview_headers = {
+                    "X-Preview-Base-Cache": base_cache,
+                    "X-Preview-Decode-Cache": decode_cache,
+                    "Server-Timing": ", ".join(f"{name};dur={duration * 1000:.2f}" for name, duration in (
+                        ("wait", lock_wait), ("base", base_time), ("adjustments", adjustments_time),
+                        ("encode", encoding_time), ("total", total_time))),
+                }
+                # Cold decodes may take longer than the idle window. Start the
+                # complete idle interval after rendering/encoding finishes.
+                _touch_full_resolution_preview_cache()
         elif req.mode == "original" and req.color_manage_srgb:
             display = _cached_display_preview(req.session_id, req.photo_id, Path(path), req.max_edge)
             payload = _encode_preview(display)
@@ -1745,17 +1941,19 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
         if not req.full_resolution:
             with _ENHANCE_LOCK:
-                if len(_ENHANCE_PREVIEW_CACHE) >= 128:
-                    _ENHANCE_PREVIEW_CACHE.pop(next(iter(_ENHANCE_PREVIEW_CACHE)), None)
-                _ENHANCE_PREVIEW_CACHE[cache_key] = (
-                    payload, width, height, nonlocal_status, nonlocal_reason,
-                    auto_exposure_ev, auto_exposure_reason,
+                _insert_bounded_jpeg_preview(
+                    _ENHANCE_PREVIEW_CACHE, cache_key,
+                    (payload, width, height, nonlocal_status, nonlocal_reason,
+                     auto_exposure_ev, auto_exposure_reason),
+                    max_entries=128, max_bytes=_MAX_ENHANCE_PREVIEW_CACHE_BYTES,
+                    payload_index=0,
                 )
         return Response(
             content=payload,
             media_type="image/jpeg",
             headers={
                 "Cache-Control": "private, no-store" if req.full_resolution else "private, max-age=3600",
+                **preview_headers,
                 "X-Image-Width": str(width),
                 "X-Image-Height": str(height),
                 "X-Dehaze-Nonlocal-Status": nonlocal_status,

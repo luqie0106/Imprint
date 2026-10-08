@@ -20,6 +20,9 @@ from time import perf_counter
 import cv2
 import numpy as np
 
+import native_dense
+from native_renderer import NativeRendererError
+
 
 _LUT_EDGE = 33
 _AZIMUTH_BINS = 24
@@ -534,24 +537,27 @@ def _project_optical_depth_lut(
             "field_lut_prior_mass": _FIELD_LUT_PRIOR_MASS,
         }
 
-    colors = np.clip(image[valid], 0.0, 1.0) * (_FIELD_LUT_EDGE - 1)
-    lower = np.floor(colors).astype(np.int16)
-    fraction = colors - lower
-    depths = np.clip(optical_depth[valid], depth_min, depth_max).astype(np.float64)
-    confidences = confidence[valid].astype(np.float64)
-    for red_bit in (0, 1):
-        red_weight = fraction[:, 0] if red_bit else 1.0 - fraction[:, 0]
-        red_index = np.minimum(lower[:, 0] + red_bit, _FIELD_LUT_EDGE - 1)
-        for green_bit in (0, 1):
-            green_weight = fraction[:, 1] if green_bit else 1.0 - fraction[:, 1]
-            green_index = np.minimum(lower[:, 1] + green_bit, _FIELD_LUT_EDGE - 1)
-            for blue_bit in (0, 1):
-                blue_weight = fraction[:, 2] if blue_bit else 1.0 - fraction[:, 2]
-                blue_index = np.minimum(lower[:, 2] + blue_bit, _FIELD_LUT_EDGE - 1)
-                weights = confidences * red_weight * green_weight * blue_weight
-                np.add.at(total, (red_index, green_index, blue_index), weights * depths)
-                np.add.at(mass, (red_index, green_index, blue_index), weights)
-
+    try:
+        total, mass = native_dense.lut_splat(
+            image, optical_depth, confidence, _FIELD_LUT_EDGE, depth_min, depth_max)
+    except NativeRendererError:
+        colors = np.clip(image[valid], 0.0, 1.0) * (_FIELD_LUT_EDGE - 1)
+        lower = np.floor(colors).astype(np.int16)
+        fraction = colors - lower
+        depths = np.clip(optical_depth[valid], depth_min, depth_max).astype(np.float64)
+        confidences = confidence[valid].astype(np.float64)
+        for red_bit in (0, 1):
+            red_weight = fraction[:, 0] if red_bit else 1.0 - fraction[:, 0]
+            red_index = np.minimum(lower[:, 0] + red_bit, _FIELD_LUT_EDGE - 1)
+            for green_bit in (0, 1):
+                green_weight = fraction[:, 1] if green_bit else 1.0 - fraction[:, 1]
+                green_index = np.minimum(lower[:, 1] + green_bit, _FIELD_LUT_EDGE - 1)
+                for blue_bit in (0, 1):
+                    blue_weight = fraction[:, 2] if blue_bit else 1.0 - fraction[:, 2]
+                    blue_index = np.minimum(lower[:, 2] + blue_bit, _FIELD_LUT_EDGE - 1)
+                    weights = confidences * red_weight * green_weight * blue_weight
+                    np.add.at(total, (red_index, green_index, blue_index), weights * depths)
+                    np.add.at(mass, (red_index, green_index, blue_index), weights)
     smooth_total = _separable_gaussian_cube(total, _FIELD_LUT_GAUSSIAN_SIGMA)
     smooth_mass = _separable_gaussian_cube(mass, _FIELD_LUT_GAUSSIAN_SIGMA)
     prior_mass = _FIELD_LUT_PRIOR_MASS
@@ -569,6 +575,10 @@ def _project_optical_depth_lut(
 
 def _trilinear_lookup_block(source: np.ndarray, lut: np.ndarray) -> np.ndarray:
     """Query one source block against a cubic LUT with matching edge length."""
+    try:
+        return native_dense.scalar_lut(source, lut)
+    except NativeRendererError:
+        pass
     edge = lut.shape[0]
     finite = np.isfinite(source).all(axis=2)
     safe_source = np.where(finite[:, :, None], source, 0.0)
@@ -779,6 +789,10 @@ def lookup_transmission_relief(source: np.ndarray, lut: np.ndarray) -> np.ndarra
     result = np.zeros((height, width), dtype=np.float32)
     if height == 0 or width == 0:
         return result
+    try:
+        return np.clip(native_dense.scalar_lut(image, table), 0.0, 1.0)
+    except NativeRendererError:
+        pass
     for row_start in range(0, height, 256):
         row_end = min(height, row_start + 256)
         block = image[row_start:row_end]

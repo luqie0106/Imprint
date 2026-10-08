@@ -12,7 +12,7 @@ import numpy as np
 from auto_exposure import ALGORITHM_VERSION as AUTO_EXPOSURE_ALGORITHM_VERSION
 
 
-ALGORITHM_VERSION = "linear-v27-calibrated-nonlocal-auto-exposure"
+ALGORITHM_VERSION = "linear-v28-native-dense-kernels"
 
 NONLOCAL_MODES = ("off", "conservative", "strong")
 

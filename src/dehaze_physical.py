@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import native_dense
+from native_renderer import NativeRendererError
+
 import cv2
 import numpy as np
 
@@ -484,25 +487,40 @@ def apply_physical_dehaze(image: np.ndarray, params: DehazeParams | None = None,
         try:
             from native_renderer import native_physical_dehaze, get_last_native_physical_backend
             result = native_physical_dehaze(source, p, transmission, atmosphere)
-            _last_backend = f"{get_last_native_physical_backend()} GPU（线性浮点）"
+            actual_backend = f"{get_last_native_physical_backend()} GPU（线性浮点）"
         except Exception:
             # Never fall back to the old integer operator: same mathematics on
             # CPU also handles older installations without the new optional ABI.
+            pass
+    if result is None:
+        try:
+            result = native_dense.physical_pixels(source, transmission, atmosphere, p)
+            actual_backend = "C++ CPU（线性浮点）"
+        except NativeRendererError:
             pass
     if result is None:
         result = np.empty_like(source)
         for start in range(0, source.shape[0], 256):
             stop = min(source.shape[0], start + 256)
             result[start:stop] = _physical_pixels(source[start:stop], transmission[start:stop], atmosphere, p)
-        _last_backend = "Python CPU（线性浮点）"
+        actual_backend = "Python CPU（线性浮点）"
     # The shared dark-background guard leaves recovered smoke and lights
     # unchanged; it never applies an exposure gain to the complete image.
     floor_level = _dark_background_floor(source, atmosphere, p)
+    dark_backend = "inactive"
     if floor_level > 1e-8:
-        for start in range(0, source.shape[0], 256):
-            stop = min(source.shape[0], start + 256)
-            result[start:stop] = _protect_dark_background(
-                source[start:stop], result[start:stop], floor_level)
+        try:
+            result = native_dense.dark_guard(source, result, floor_level)
+            dark_backend = "cpp_cpu"
+        except NativeRendererError:
+            for start in range(0, source.shape[0], 256):
+                stop = min(source.shape[0], start + 256)
+                result[start:stop] = _protect_dark_background(
+                    source[start:stop], result[start:stop], floor_level)
+            dark_backend = "python_cpu"
+    _last_backend = actual_backend
+    if diagnostics is not None:
+        diagnostics.update(pixel_backend=actual_backend, dark_guard_backend=dark_backend)
     if image.dtype == np.float32:
         return result
     peak = np.iinfo(image.dtype).max

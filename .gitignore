@@ -80,8 +80,18 @@ htmlcov/
 .pyre/
 .pytype/
 
-# Keep Python test files local; do not add them to the cloud repository.
-/tests/*.py
+# Keep tests and test fixtures local; do not add them to the repository.
+**/test/
+**/tests/
+**/__tests__/
+**/test_*
+**/Test*.*
+**/*_test.*
+**/*_tests.*
+**/*Test.*
+**/*Tests.*
+**/*.test.*
+**/*.spec.*
 
 # Local ACR black-box test fixtures and analysis artifacts (including TIFFs)
 /artifacts/acr_blackbox_fixtures/

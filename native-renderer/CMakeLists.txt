@@ -4,12 +4,14 @@ project(imprint_native_renderer VERSION 0.1.0 LANGUAGES CXX)
 include(CheckLanguage)
 include(GNUInstallDirs)
 include(CTest)
+find_package(Threads REQUIRED)
 
 option(IMPRINT_ENABLE_CUDA "Build the CUDA GPU backend when a CUDA compiler is available" ON)
 
 set(IMPRINT_RENDERER_SOURCES
     src/renderer.cpp
     src/dehaze_reference.cpp
+    src/dense_kernels.cpp
     src/backend_factory.cpp
 )
 set(IMPRINT_BACKEND_DEFINITIONS "")
@@ -62,6 +64,15 @@ endif()
 add_library(imprint_renderer SHARED ${IMPRINT_RENDERER_SOURCES})
 target_compile_features(imprint_renderer PUBLIC cxx_std_17)
 target_compile_definitions(imprint_renderer PRIVATE IMPRINT_RENDERER_BUILD ${IMPRINT_BACKEND_DEFINITIONS})
+target_link_libraries(imprint_renderer PRIVATE Threads::Threads)
+# Keep the dense CPU operators' float32 evaluation order aligned with NumPy.
+if(MSVC)
+    set_source_files_properties(src/dense_kernels.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+else()
+    set_source_files_properties(src/dense_kernels.cpp PROPERTIES
+        COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+    )
+endif()
 target_include_directories(imprint_renderer
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>

@@ -52,10 +52,10 @@ onMounted(() => {
     <!-- 原生标题栏 / 顶部导航区域 (支持拖拽窗口) -->
     <header
       data-tauri-drag-region
-      class="h-14 shrink-0 px-6 flex items-center justify-between border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 transition-colors duration-200"
+      class="h-14 shrink-0 px-6 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 transition-colors duration-200"
     >
       <!-- Logo 与应用标题 -->
-      <div class="flex items-center gap-3" data-tauri-drag-region>
+      <div class="flex min-w-0 items-center gap-3 justify-self-start" data-tauri-drag-region>
         <img
           :src="appLogo"
           alt="Imprint"
@@ -69,10 +69,10 @@ onMounted(() => {
       </div>
 
       <!-- 居中 Tab 导航切换栏 -->
-      <nav class="flex h-full items-center gap-1">
+      <nav class="flex h-full items-center gap-1 justify-self-center whitespace-nowrap">
         <button
           @click="activeTab = 'burst'"
-          class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full"
+          class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full"
           :class="
             activeTab === 'burst'
               ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600'
@@ -85,7 +85,7 @@ onMounted(() => {
 
         <button
           @click="activeTab = 'enhance'"
-          class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full"
+          class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full"
           :class="activeTab === 'enhance' ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 after:bg-transparent'"
         >
           <WandSparkles class="w-3.5 h-3.5" />
@@ -94,7 +94,7 @@ onMounted(() => {
 
         <button
           @click="activeTab = 'ricoh'"
-          class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full"
+          class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full"
           :class="activeTab === 'ricoh' ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 after:bg-transparent'"
         >
           <Camera class="w-3.5 h-3.5" />
@@ -103,7 +103,7 @@ onMounted(() => {
 
         <button
           @click="activeTab = 'models'"
-          class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full"
+          class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full"
           :class="
             activeTab === 'models'
               ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600'
@@ -116,7 +116,7 @@ onMounted(() => {
 
         <button
           @click="activeTab = 'trainer'"
-          class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full"
+          class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full"
           :class="
             activeTab === 'trainer'
               ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600'
@@ -126,11 +126,11 @@ onMounted(() => {
           <BrainCircuit class="w-3.5 h-3.5" />
           偏好训练
         </button>
-        <button @click="activeTab = 'settings'" class="relative h-full px-5 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-5 after:right-5 after:h-0.5 after:rounded-full" :class="activeTab === 'settings' ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 after:bg-transparent'"><Settings class="w-3.5 h-3.5" />设置</button>
+        <button @click="activeTab = 'settings'" class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full" :class="activeTab === 'settings' ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 after:bg-transparent'"><Settings class="w-3.5 h-3.5" />设置</button>
       </nav>
 
       <!-- 右侧控制区: 后端状态指标 + 主题切换按钮 -->
-      <div class="flex items-center gap-3 text-[13px]" data-tauri-drag-region>
+      <div class="flex flex-nowrap items-center gap-3 justify-self-end whitespace-nowrap text-[13px]" data-tauri-drag-region>
         <PhotoExport :visible="activeTab === 'enhance' || activeTab === 'ricoh'" />
         <!-- 主题切换按钮 -->
         <button

@@ -15,8 +15,8 @@ const loading = ref(false);
 const options: { value: RenderBackend; label: string; detail: string }[] = [
   { value: "auto", label: "自动", detail: "自动空间去雾优先 Metal / D3D12，失败时回退到 C++ CPU" },
   { value: "native", label: "原生渲染", detail: "自动空间去雾优先 Metal / D3D12，失败时回退到 C++ CPU" },
-  { value: "pytorch", label: "PyTorch", detail: "仅在已安装并可用时用于去朦胧；基础调整使用 Python" },
-  { value: "cpu", label: "Python CPU", detail: "使用现有 Python 计算" },
+  { value: "pytorch", label: "PyTorch", detail: "仅在已安装并可用时用于去朦胧；基础调整优先 C++ CPU" },
+  { value: "cpu", label: "CPU", detail: "去朦胧与基础调整优先 C++ CPU，不可用时回退 Python" },
 ];
 
 async function refreshStatus() {
@@ -74,7 +74,8 @@ watch(BASE_URL, refreshStatus, { immediate: true });
       </section>
       <section class="rounded-2xl border border-slate-200 bg-white p-5 text-sm dark:border-zinc-800 dark:bg-zinc-900">
         <h3 class="mb-3 font-semibold">基础调整</h3>
-        <div class="flex gap-5"><label class="flex items-center gap-2"><input v-model="basicBackend" type="radio" value="python" name="basic-backend" />Python</label><label class="flex items-center gap-2"><input v-model="basicBackend" type="radio" value="native" name="basic-backend" />原生</label></div>
+        <div class="flex gap-5"><label class="flex items-center gap-2"><input v-model="basicBackend" type="radio" value="python" name="basic-backend" />CPU</label><label class="flex items-center gap-2"><input v-model="basicBackend" type="radio" value="native" name="basic-backend" />GPU</label></div>
+        <p class="mt-2 text-xs text-slate-500 dark:text-zinc-400">CPU 优先使用 C++；GPU 不可用时自动回退。</p>
       </section>
       <section class="rounded-2xl border border-slate-200 bg-white p-5 text-sm dark:border-zinc-800 dark:bg-zinc-900">
         <h3 class="mb-3 font-semibold">理光滤镜</h3>

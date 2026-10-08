@@ -832,7 +832,18 @@ def validate_basic_params(params: dict[str, float]) -> dict[str, float]:
 
 
 def apply_basic_preview_effect(image: "object", params: dict[str, float]):
-    """Approximate Camera Raw's basic controls on an RGB display preview."""
+    """Apply basic controls with the C++ CPU operator, retaining the Python fallback."""
+    import native_dense
+    from native_renderer import NativeRendererError
+    values = validate_basic_params(params)
+    try:
+        return native_dense.basic_pixels(image, values)
+    except NativeRendererError:
+        return _apply_basic_preview_effect_python(image, values)
+
+
+def _apply_basic_preview_effect_python(image: "object", params: dict[str, float]):
+    """Unchanged NumPy reference for basic controls and older-library fallback."""
     import numpy as np
     values = validate_basic_params(params)
     maximum = float(np.iinfo(image.dtype).max)

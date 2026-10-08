@@ -2,21 +2,26 @@
 
 The public entry point in this module deliberately works on already decoded
 pixels.  It does not move or rewrite the source photograph.  Lensfun supplies
-the calibration and coordinate maps, while OpenCV performs the interpolation
-needed to bake the correction into the output pixels.
+the calibration and coordinate maps. A C++ CPU operator performs bilinear
+interpolation, with an OpenCV fallback when that operator is unavailable.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import OrderedDict
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import re
 import sys
+import threading
 from typing import Any, Iterable, Mapping
 
 import cv2
 import numpy as np
+
+import native_dense
+from native_renderer import NativeRendererError
 
 
 STRIP_HEIGHT = 128
@@ -64,6 +69,71 @@ class LensCorrectionResult:
     @property
     def geometry_applied(self) -> bool:
         return self.distortion_applied or self.tca_applied
+
+
+@dataclass
+class _LensPlan:
+    binding: Any
+    database: Any
+    camera: Any
+    lens: Any
+    modifier: Any
+    flags: dict[str, int]
+    enabled: int
+    scale: float
+    lock: Any = field(default_factory=threading.RLock)
+
+
+_PLAN_CACHE: OrderedDict[tuple, _LensPlan] = OrderedDict()
+_PLAN_CACHE_LOCK = threading.RLock()
+_MAX_LENS_PLANS = 4
+_DATABASE_CACHE: dict[tuple, tuple[Any, Any]] = {}
+
+
+def _calibration_signature() -> tuple:
+    return tuple((name, Path(name).stat().st_mtime_ns, Path(name).stat().st_size)
+                 for name in _database_xml_files())
+
+
+def _lens_plan(binding: Any, make: str, model: str, lens_make: str, lens_model: str,
+               focal: float, aperture: float, distance: float, width: int, height: int) -> _LensPlan:
+    signature = _calibration_signature()
+    database_key = (id(binding), id(binding.Database), signature)
+    key = (database_key, id(binding.Modifier), make, model, lens_make, lens_model,
+           focal, aperture, distance, width, height)
+    with _PLAN_CACHE_LOCK:
+        cached = _PLAN_CACHE.get(key)
+        if cached is not None:
+            _PLAN_CACHE.move_to_end(key)
+            return cached
+        database_entry = _DATABASE_CACHE.get(database_key)
+        if database_entry is None:
+            database = _load_database(binding)
+            _DATABASE_CACHE.clear()
+            _DATABASE_CACHE[database_key] = (binding, database)
+        else:
+            database = database_entry[1]
+        camera = _find_camera(database, make, model)
+        fixed = _fixed_lens_profile_for_camera(camera, make, model, focal)
+        if fixed is not None:
+            lens_make, lens_model = fixed
+        lens = _find_lens(database, camera, lens_make, lens_model)
+        crop = _number(getattr(camera, "crop_factor", 1.0)) or 1.0
+        crop = crop if crop > 0 else 1.0
+        flags = {name: _flag(binding, name) for name in ("TCA", "DISTORTION", "SCALE", "VIGNETTING")}
+        requested = 0
+        for value in flags.values():
+            requested |= value
+        modifier = binding.Modifier(lens, float(crop), width, height)
+        initialized = _initialize_modifier(modifier, focal, aperture, distance, np.float32, requested, 0.0)
+        enabled = _enabled_flags(modifier, initialized, requested)
+        scale = _number(getattr(modifier, "scale", None))
+        plan = _LensPlan(binding, database, camera, lens, modifier, flags, enabled,
+                         float(scale) if scale is not None else 0.0)
+        _PLAN_CACHE[key] = plan
+        while len(_PLAN_CACHE) > _MAX_LENS_PLANS:
+            _PLAN_CACHE.popitem(last=False)
+        return plan
 
 
 def _result_unapplied() -> LensCorrectionResult:
@@ -505,6 +575,13 @@ def _apply_geometry(
         if callable(combined_method):
             maps = _combined_map(_call_map(combined_method, y, width, strip_height), strip_height, width)
         if maps is not None:
+            try:
+                corrected[y:y + strip_height] = native_dense.lens_remap(source, maps)
+                combined_applied = True
+                geometry_applied = True
+                continue
+            except NativeRendererError:
+                pass
             for channel in range(3):
                 remapped = cv2.remap(
                     source[..., channel],
@@ -525,6 +602,12 @@ def _apply_geometry(
         )
         if coordinate_map is None:
             continue
+        try:
+            corrected[y:y + strip_height] = native_dense.lens_remap(source, coordinate_map)
+            geometry_applied = True
+            continue
+        except NativeRendererError:
+            pass
         for channel in range(3):
             remapped = cv2.remap(
                 source[..., channel],
@@ -625,72 +708,41 @@ def apply_lens_correction(
         return _failure(LensfunUnavailableError("未安装或无法导入 lensfunpy"), image_rgb16, require_correction)
 
     try:
-        database = _load_database(lensfunpy)
-        camera = _find_camera(database, make, model)
-        fixed_lens_profile = _fixed_lens_profile_for_camera(
-            camera, make, model, float(focal_length)
-        )
-        if fixed_lens_profile is not None:
-            lens_make, lens_model = fixed_lens_profile
-        lens = _find_lens(database, camera, lens_make, lens_model)
-        crop_factor = _number(getattr(camera, "crop_factor", 1.0)) or 1.0
-        if crop_factor <= 0.0:
-            crop_factor = 1.0
-        # lensfunpy 1.18's color-modification binding needs a full-frame
-        # float32 RGB buffer. Initialize with that format and request its
-        # vignetting stage alongside the coordinate stages.
-        flags_by_name = {
-            name: _flag(lensfunpy, name)
-            for name in ("TCA", "DISTORTION", "SCALE", "VIGNETTING")
-        }
-        requested_flags = 0
-        for value in flags_by_name.values():
-            requested_flags |= value
         height, width = int(image_rgb16.shape[0]), int(image_rgb16.shape[1])
-        modifier = lensfunpy.Modifier(lens, float(crop_factor), width, height)
-        initialized = _initialize_modifier(
-            modifier,
-            float(focal_length),
-            float(aperture),
-            float(distance),
-            np.float32,
-            requested_flags,
-            0.0,
-        )
-        enabled = _enabled_flags(modifier, initialized, requested_flags)
-        # lensfunpy uses scale=0 for its built-in automatic scaling/crop.  The
-        # Python binding does not expose Lensfun's C++ GetAutoScale method.
-        scale = _number(getattr(modifier, "scale", None))
-        if scale is None:
-            scale = 0.0
+        plan = _lens_plan(lensfunpy, make, model, lens_make, lens_model,
+                          float(focal_length), float(aperture), float(distance), width, height)
+        camera, lens, modifier = plan.camera, plan.lens, plan.modifier
+        flags_by_name, enabled, scale = plan.flags, plan.enabled, plan.scale
+        # A modifier may be shared by preview/export workers. Its calls remain
+        # serialized, while callers hold only a small optical plan, not maps.
+        with plan.lock:
+            corrected = image_rgb16.copy()
+            vignetting_enabled = bool(enabled & flags_by_name["VIGNETTING"]) and bool(
+                getattr(lens, "calib_vignetting", ())
+            )
+            vignetting_applied = _apply_vignetting(
+                corrected, modifier, enabled=vignetting_enabled
+            )
 
-        corrected = image_rgb16.copy()
-        vignetting_enabled = bool(enabled & flags_by_name["VIGNETTING"]) and bool(
-            getattr(lens, "calib_vignetting", ())
-        )
-        vignetting_applied = _apply_vignetting(
-            corrected, modifier, enabled=vignetting_enabled
-        )
-
-        # lensfunpy 1.18 returns None from initialize, so requested flags alone
-        # cannot prove a calibration exists.  Require the matched profile to
-        # contain the corresponding calibration records before reporting that
-        # correction as applied.
-        distortion_enabled = bool(enabled & flags_by_name["DISTORTION"]) and bool(
-            getattr(lens, "calib_distortion", ())
-        )
-        tca_enabled = bool(enabled & flags_by_name["TCA"]) and bool(
-            getattr(lens, "calib_tca", ())
-        )
-        distortion_applied, tca_applied, geometry_applied = _apply_geometry(
-            corrected,
-            modifier,
-            width=width,
-            height=height,
-            geometry_enabled=distortion_enabled or tca_enabled,
-            tca_enabled=tca_enabled,
-            distortion_enabled=distortion_enabled,
-        )
+            # lensfunpy 1.18 returns None from initialize, so requested flags alone
+            # cannot prove a calibration exists.  Require the matched profile to
+            # contain the corresponding calibration records before reporting that
+            # correction as applied.
+            distortion_enabled = bool(enabled & flags_by_name["DISTORTION"]) and bool(
+                getattr(lens, "calib_distortion", ())
+            )
+            tca_enabled = bool(enabled & flags_by_name["TCA"]) and bool(
+                getattr(lens, "calib_tca", ())
+            )
+            distortion_applied, tca_applied, geometry_applied = _apply_geometry(
+                corrected,
+                modifier,
+                width=width,
+                height=height,
+                geometry_enabled=distortion_enabled or tca_enabled,
+                tca_enabled=tca_enabled,
+                distortion_enabled=distortion_enabled,
+            )
         if not geometry_applied:
             error = LensCorrectionNotAppliedError(
                 "Lensfun 匹配仅提供暗角或未提供可用坐标，未满足像素级 distortion/TCA 校正"

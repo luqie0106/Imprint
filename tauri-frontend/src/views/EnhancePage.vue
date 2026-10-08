@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import PreviewCanvas from "../components/PreviewCanvas.vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { photoExportRunning } from "../stores/photoExport";
@@ -83,6 +84,9 @@ const photoListLayout = ref<PhotoListLayout>("vertical");
 const selectedId = ref("");
 const originalUrl = ref("");
 const enhancedUrl = ref("");
+const originalPhotoId = ref("");
+const originalSessionId = ref("");
+const originalFullResolution = ref(false);
 const nonlocalRenderStatus = ref<"off" | "active" | "fallback">("off");
 const nonlocalRenderReason = ref("");
 const autoExposurePreview = ref<{
@@ -112,6 +116,8 @@ let resizeObserver: ResizeObserver | undefined;
 let pointerDownX = 0;
 let pointerDownY = 0;
 let pointerDownZoom = 1;
+let pointerDownPanX = 0;
+let pointerDownPanY = 0;
 let pointerMoved = false;
 const advancedOpen = ref(false);
 const actionMessage = ref("");
@@ -127,6 +133,15 @@ const displayedSessionId = ref("");
 let sliderAdjusting = false;
 let sliderChanged = false;
 let sliderFinishing = false;
+let draggingPreviewActive = false;
+let draggingPreviewGeneration = 0;
+let draggingPreviewContext: PreviewRequestContext | undefined;
+let draggingPreviewIncludeOriginal = false;
+let draggingPreviewRunning = false;
+let draggingPreviewStarted = false;
+let draggingPreviewQueued = false;
+let draggingPreviewNotBefore = 0;
+let draggingPreviewTimer: number | undefined;
 
 const params = computed<EnhanceParams>(() => paramsByPhoto.value[selectedId.value] ?? emptyParams.value);
 const dehazeAutoMode = computed({
@@ -178,28 +193,39 @@ const autoExposureStatusText = computed(() => {
   return "当前预览未应用自动曝光";
 });
 const enhancedReady = computed(() => Boolean(enhancedUrl.value));
-const showComparePreview = computed(() => previewMode.value === "compare" && enhancedReady.value);
+const hasCurrentOriginal = computed(() => Boolean(originalUrl.value)
+  && originalPhotoId.value === selectedId.value
+  && originalSessionId.value === sessionId.value);
+const hasCurrentEnhanced = computed(() => enhancedReady.value
+  && displayedPhotoId.value === selectedId.value
+  && displayedSessionId.value === sessionId.value);
+const showComparePreview = computed(() => previewMode.value === "compare" && hasCurrentEnhanced.value && hasCurrentOriginal.value);
 const previewImageUrl = computed(() => {
-  if (previewMode.value !== "original" && enhancedReady.value) return enhancedUrl.value;
-  return originalUrl.value;
+  if (previewMode.value === "original") return hasCurrentOriginal.value ? originalUrl.value : enhancedUrl.value || originalUrl.value;
+  if (previewMode.value === "compare" && !hasCurrentEnhanced.value && hasCurrentOriginal.value) return originalUrl.value;
+  return enhancedReady.value ? enhancedUrl.value : originalUrl.value;
 });
-const hasCurrentPreview = computed(() => Boolean(originalUrl.value)
+const hasCurrentPreview = computed(() => Boolean(previewImageUrl.value)
   && displayedPhotoId.value === selectedId.value
   && displayedSessionId.value === sessionId.value);
 
 const fitWidth = computed(() => {
-  if (!imageWidth.value || !imageHeight.value || !viewportWidth.value || !viewportHeight.value) {
+  const width = sourceImageWidth.value || imageWidth.value;
+  const height = sourceImageHeight.value || imageHeight.value;
+  if (!width || !height || !viewportWidth.value || !viewportHeight.value) {
     return Math.max(1, viewportWidth.value);
   }
-  const scale = Math.min(viewportWidth.value / imageWidth.value, viewportHeight.value / imageHeight.value);
-  return Math.max(1, imageWidth.value * scale);
+  const scale = Math.min(viewportWidth.value / width, viewportHeight.value / height);
+  return Math.max(1, width * scale);
 });
 const fitHeight = computed(() => {
-  if (!imageWidth.value || !imageHeight.value || !viewportWidth.value || !viewportHeight.value) {
+  const width = sourceImageWidth.value || imageWidth.value;
+  const height = sourceImageHeight.value || imageHeight.value;
+  if (!width || !height || !viewportWidth.value || !viewportHeight.value) {
     return Math.max(520, viewportHeight.value);
   }
-  const scale = Math.min(viewportWidth.value / imageWidth.value, viewportHeight.value / imageHeight.value);
-  return Math.max(1, imageHeight.value * scale);
+  const scale = Math.min(viewportWidth.value / width, viewportHeight.value / height);
+  return Math.max(1, height * scale);
 });
 const pixelScale = computed(() => sourceImageWidth.value > 0
   ? fitWidth.value * devicePixelRatio.value / sourceImageWidth.value
@@ -211,12 +237,6 @@ const zoomDisplayText = computed(() => {
   const percent = Math.round(zoom.value * pixelScale.value * 100);
   return zoom.value <= 1.001 ? `适合（${percent}%）` : `${percent}%`;
 });
-const imageStageStyle = computed(() => ({
-  width: `${fitWidth.value * zoom.value}px`,
-  height: `${fitHeight.value * zoom.value}px`,
-  transform: `translate(${panX.value}px, ${panY.value}px)`,
-}));
-
 const currentFile = computed(() => files.value.find((file) => file.photo_id === selectedId.value));
 const revealMenuLabel = computed(() => {
   const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`;
@@ -291,7 +311,7 @@ function resetView(rememberCurrent = true) {
   panY.value = 0;
 }
 
-function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
+function setZoom(nextZoom: number, clientX?: number, clientY?: number, fromScrub = false) {
   if (!canZoom.value) return;
   const previousZoom = zoom.value;
   const targetZoom = clamp(nextZoom, 1, maxZoom.value);
@@ -304,10 +324,15 @@ function setZoom(nextZoom: number, clientX?: number, clientY?: number) {
     offsetX = clientX - (rect.left + rect.width / 2);
     offsetY = clientY - (rect.top + rect.height / 2);
   }
-  const ratio = targetZoom / previousZoom;
+  // Scrubbing uses the press-time view, so clamping at a boundary cannot
+  // accumulate pan drift when the pointer reverses direction.
+  const anchorZoom = fromScrub ? pointerDownZoom : previousZoom;
+  const anchorPanX = fromScrub ? pointerDownPanX : panX.value;
+  const anchorPanY = fromScrub ? pointerDownPanY : panY.value;
+  const ratio = targetZoom / anchorZoom;
   // Keep the image point under the pointer stationary while the stage scales.
-  panX.value = offsetX - (offsetX - panX.value) * ratio;
-  panY.value = offsetY - (offsetY - panY.value) * ratio;
+  panX.value = offsetX - (offsetX - anchorPanX) * ratio;
+  panY.value = offsetY - (offsetY - anchorPanY) * ratio;
   zoom.value = targetZoom;
   if (targetZoom > 1.001) lastZoom.value = targetZoom;
   else if (previousZoom > 1.001) lastZoom.value = previousZoom;
@@ -321,12 +346,14 @@ function zoomBy(delta: number) {
 function onPreviewPointerDown(event: PointerEvent) {
   const target = event.target as HTMLElement | null;
   if (target?.closest(".compare-split")) return;
-  if (event.button !== 0 || !originalUrl.value || !canZoom.value) return;
+  if (event.button !== 0 || !previewImageUrl.value || !canZoom.value) return;
   isScrubbing.value = true;
   pointerMoved = false;
   pointerDownX = event.clientX;
   pointerDownY = event.clientY;
   pointerDownZoom = zoom.value;
+  pointerDownPanX = panX.value;
+  pointerDownPanY = panY.value;
   (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   event.preventDefault();
 }
@@ -338,7 +365,7 @@ function onPreviewPointerMove(event: PointerEvent) {
   if (!pointerMoved) return;
   // Adobe-style scrubby zoom: horizontal movement maps smoothly and
   // exponentially to the 100%–400% range, anchored at the press location.
-  setZoom(pointerDownZoom * Math.exp(deltaX * 0.005), pointerDownX, pointerDownY);
+  setZoom(pointerDownZoom * Math.exp(deltaX * 0.005), pointerDownX, pointerDownY, true);
 }
 
 function finishPreviewPointer(event: PointerEvent, cancelled = false) {
@@ -382,7 +409,7 @@ function onPreviewClick(event: MouseEvent) {
 
 function onPreviewContextMenu(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
-  if (!originalUrl.value || !currentFile.value || !sessionId.value || !selectedId.value || target?.closest(".compare-split")) return;
+  if (!previewImageUrl.value || !currentFile.value || !sessionId.value || !selectedId.value || target?.closest(".compare-split")) return;
   event.preventDefault();
   event.stopPropagation();
   const viewport = previewViewport.value;
@@ -427,15 +454,17 @@ function onWindowKeyDown(event: KeyboardEvent) {
 function updateViewportSize() {
   devicePixelRatio.value = window.devicePixelRatio || 1;
   if (!previewViewport.value) return;
-  viewportWidth.value = previewViewport.value.clientWidth;
-  viewportHeight.value = previewViewport.value.clientHeight;
+  const rect = previewViewport.value.getBoundingClientRect();
+  viewportWidth.value = rect.width;
+  viewportHeight.value = rect.height;
 }
 
-function onPreviewImageLoad(event: Event) {
-  const image = event.currentTarget as HTMLImageElement;
-  if (!image.naturalWidth || !image.naturalHeight) return;
-  imageWidth.value = image.naturalWidth;
-  imageHeight.value = image.naturalHeight;
+function onPreviewImageLoad(image: { width: number; height: number }) {
+  if (!image.width || !image.height) return;
+  imageWidth.value = image.width;
+  imageHeight.value = image.height;
+  const fullResolution = image.width === sourceImageWidth.value && image.height === sourceImageHeight.value;
+  imageSize.value = `${fullResolution ? "全分辨率" : "低分辨率预览"} · ${image.width} × ${image.height}`;
   void nextTick(updateViewportSize);
 }
 
@@ -607,6 +636,9 @@ async function refreshPreview(
     if (original) {
       releaseUrl(originalUrl.value);
       originalUrl.value = original.url;
+      originalPhotoId.value = context.photoId;
+      originalSessionId.value = context.sessionId;
+      originalFullResolution.value = fullResolution;
     }
     releaseUrl(enhancedUrl.value);
     enhancedUrl.value = enhanced.url;
@@ -653,8 +685,116 @@ async function refreshPreview(
 }
 
 type PreviewSchedule = "progressive" | "dragging" | "settled";
+const draggingPreviewIntervalMs = 45;
+
+function previewOriginalRequestPlan(context: PreviewRequestContext, includeOriginal: boolean) {
+  const originalNeeded = previewMode.value !== "enhanced";
+  const matchingOriginal = Boolean(originalUrl.value)
+    && originalPhotoId.value === context.photoId
+    && originalSessionId.value === context.sessionId;
+  return {
+    shouldFetchOriginal: originalNeeded && (includeOriginal || !matchingOriginal),
+    shouldUpgradeOriginal: originalNeeded
+      && (includeOriginal || !matchingOriginal || !originalFullResolution.value),
+  };
+}
+
+function clearDraggingPreviewState() {
+  window.clearTimeout(draggingPreviewTimer);
+  draggingPreviewTimer = undefined;
+  draggingPreviewActive = false;
+  draggingPreviewGeneration = 0;
+  draggingPreviewContext = undefined;
+  draggingPreviewIncludeOriginal = false;
+  draggingPreviewRunning = false;
+  draggingPreviewStarted = false;
+  draggingPreviewQueued = false;
+  draggingPreviewNotBefore = 0;
+}
+
+function queueDraggingPreview(generation: number) {
+  if (draggingPreviewTimer !== undefined) return;
+  const waitMs = Math.max(0, draggingPreviewNotBefore - performance.now());
+  draggingPreviewTimer = window.setTimeout(() => {
+    draggingPreviewTimer = undefined;
+    if (!draggingPreviewActive || generation !== previewGeneration
+      || generation !== draggingPreviewGeneration || !sliderAdjusting || sliderFinishing) return;
+    runDraggingPreview(generation);
+  }, waitMs);
+}
+
+function runDraggingPreview(generation: number) {
+  if (!draggingPreviewActive || generation !== previewGeneration
+    || generation !== draggingPreviewGeneration || !sliderAdjusting || sliderFinishing) return;
+  if (draggingPreviewRunning) {
+    draggingPreviewQueued = true;
+    return;
+  }
+  const waitMs = draggingPreviewNotBefore - performance.now();
+  if (waitMs > 0) {
+    draggingPreviewQueued = true;
+    queueDraggingPreview(generation);
+    return;
+  }
+  const context = draggingPreviewContext;
+  if (!context?.sessionId || !context.photoId || !BASE_URL.value) return;
+  const includeOriginal = draggingPreviewIncludeOriginal;
+  const { shouldFetchOriginal } = previewOriginalRequestPlan(context, includeOriginal);
+  draggingPreviewQueued = false;
+  draggingPreviewRunning = true;
+  draggingPreviewStarted = true;
+  void refreshPreview(generation, context, shouldFetchOriginal, 2, false).then(() => {
+    if (!draggingPreviewActive || generation !== previewGeneration
+      || generation !== draggingPreviewGeneration) return;
+    draggingPreviewRunning = false;
+    draggingPreviewNotBefore = performance.now() + draggingPreviewIntervalMs;
+    if (sliderAdjusting && draggingPreviewQueued) queueDraggingPreview(generation);
+  });
+}
+
+function scheduleDraggingPreview(includeOriginal = false) {
+  if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
+  if (!draggingPreviewActive || draggingPreviewGeneration !== previewGeneration) {
+    window.clearTimeout(previewTimer);
+    window.clearTimeout(intermediatePreviewTimer);
+    window.clearTimeout(fullResolutionTimer);
+    window.clearTimeout(draggingPreviewTimer);
+    previewController?.abort();
+    const generation = ++previewGeneration;
+    draggingPreviewActive = true;
+    draggingPreviewGeneration = generation;
+    draggingPreviewRunning = false;
+    draggingPreviewStarted = false;
+    draggingPreviewQueued = false;
+    draggingPreviewNotBefore = 0;
+    draggingPreviewIncludeOriginal = includeOriginal;
+    previewLoading.value = true;
+    previewError.value = "";
+    nonlocalRenderStatus.value = "off";
+    nonlocalRenderReason.value = "";
+  } else {
+    draggingPreviewIncludeOriginal ||= includeOriginal;
+  }
+  draggingPreviewContext = capturePreviewContext();
+  const generation = draggingPreviewGeneration;
+  if (draggingPreviewRunning) {
+    draggingPreviewQueued = true;
+    return;
+  }
+  if (!draggingPreviewStarted) {
+    runDraggingPreview(generation);
+    return;
+  }
+  draggingPreviewQueued = true;
+  queueDraggingPreview(generation);
+}
 
 function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "progressive") {
+  if (schedule === "dragging") {
+    scheduleDraggingPreview(includeOriginal);
+    return;
+  }
+  clearDraggingPreviewState();
   window.clearTimeout(previewTimer);
   window.clearTimeout(intermediatePreviewTimer);
   window.clearTimeout(fullResolutionTimer);
@@ -667,10 +807,7 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
     return;
   }
   const context = capturePreviewContext();
-  const shouldFetchOriginal = includeOriginal
-    || displayedPhotoId.value !== context.photoId
-    || displayedSessionId.value !== context.sessionId
-    || !originalUrl.value;
+  const { shouldFetchOriginal, shouldUpgradeOriginal } = previewOriginalRequestPlan(context, includeOriginal);
   previewError.value = "";
   previewLoading.value = true;
   if (shouldFetchOriginal && originalUrl.value) {
@@ -683,26 +820,44 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
   );
   const ensureIntermediatePreview = () => intermediatePreviewTask ??= (async () => {
     if (schedule === "progressive") await ensureFastPreview();
-    if (generation === previewGeneration)
-      await refreshPreview(generation, context, true, 0, false);
+    if (generation === previewGeneration && !sliderAdjusting)
+      await refreshPreview(generation, context, shouldUpgradeOriginal, 0, false);
   })();
-  if (schedule !== "settled") {
-    previewTimer = window.setTimeout(() => { void ensureFastPreview(); }, 140);
+  if (schedule === "settled") {
+    // The final slider value must become visible immediately after release.
+    void ensureFastPreview();
+  } else {
+    previewTimer = window.setTimeout(() => {
+      if (generation === previewGeneration && !sliderAdjusting) void ensureFastPreview();
+    }, 140);
   }
-  if (schedule === "dragging") return;
-  intermediatePreviewTimer = window.setTimeout(() => {
-    void ensureIntermediatePreview();
-  }, schedule === "settled" ? 140 : 425);
-  fullResolutionTimer = window.setTimeout(() => {
+  if (schedule !== "settled") {
+    intermediatePreviewTimer = window.setTimeout(() => {
+      if (generation !== previewGeneration || sliderAdjusting) return;
+      void ensureIntermediatePreview();
+    }, 425);
+  }
+  const startFullResolutionUpgrade = () => {
+    if (generation !== previewGeneration) return;
+    if (sliderAdjusting) {
+      fullResolutionTimer = window.setTimeout(startFullResolutionUpgrade, 50);
+      return;
+    }
     void (async () => {
-      await ensureIntermediatePreview();
-      if (generation === previewGeneration) await refreshPreview(generation, context, true, 0, true);
+      if (schedule === "settled") await ensureFastPreview();
+      else await ensureIntermediatePreview();
+      if (generation === previewGeneration && !sliderAdjusting)
+        await refreshPreview(generation, context, shouldUpgradeOriginal, 0, true);
     })();
-  }, schedule === "settled" ? 900 : 800);
+  };
+  fullResolutionTimer = window.setTimeout(startFullResolutionUpgrade, 500);
 }
 
 function scheduleParameterPreview() {
-  if (sliderAdjusting) sliderChanged = true;
+  if (sliderAdjusting) {
+    sliderChanged = true;
+    if (sliderFinishing) return;
+  }
   schedulePreview(false, sliderAdjusting ? "dragging" : "progressive");
 }
 
@@ -715,6 +870,11 @@ function beginSliderInteraction() {
 function endSliderInteraction() {
   if (!sliderAdjusting || sliderFinishing) return;
   sliderFinishing = true;
+  if (draggingPreviewActive) {
+    clearDraggingPreviewState();
+    previewGeneration += 1;
+    previewController?.abort();
+  }
   // Let the range input's final value reach v-model before capturing parameters.
   void nextTick(() => {
     sliderAdjusting = false;
@@ -764,6 +924,10 @@ watch(renderBackend, () => {
 watch([basicBackend, ricohBackend], () => {
   if (sessionId.value && selectedId.value) schedulePreview();
 });
+watch(previewMode, (mode) => {
+  if (mode === "enhanced" || !sessionId.value || !selectedId.value) return;
+  if (!hasCurrentOriginal.value || !originalFullResolution.value) schedulePreview(true);
+});
 watch([pixelScale, fitWidth], ([nextScale, nextFitWidth], [previousScale, previousFitWidth]) => {
   preservePixelScale(previousScale, nextScale, previousFitWidth, nextFitWidth);
 });
@@ -796,6 +960,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("pointercancel", endSliderInteraction);
   window.removeEventListener("resize", updateViewportSize);
   releaseUrl(originalUrl.value); releaseUrl(enhancedUrl.value);
+  clearDraggingPreviewState();
   previewGeneration += 1;
   previewController?.abort();
   window.clearTimeout(previewTimer); window.clearTimeout(intermediatePreviewTimer);
@@ -870,19 +1035,18 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (!canZoom ? 'cursor-default' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'))) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel" @click="onPreviewClick" @contextmenu="onPreviewContextMenu">
-            <template v-if="originalUrl">
-              <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
-                <div class="preview-stage relative shrink-0" :style="imageStageStyle">
-                  <img :src="previewImageUrl" :alt="previewMode === 'enhanced' && enhancedReady ? '综合效果' : '原图'" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
-                </div>
-              </div>
+          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="previewImageUrl ? (isScrubbing ? 'cursor-ew-resize' : (!canZoom ? 'cursor-default' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'))) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel" @click="onPreviewClick" @contextmenu="onPreviewContextMenu">
+            <template v-if="previewImageUrl">
+              <PreviewCanvas :src="previewImageUrl" :alt="previewMode === 'enhanced' && enhancedReady ? '综合效果' : '原图'"
+                :viewport-width="viewportWidth" :viewport-height="viewportHeight"
+                :stage-width="fitWidth * zoom" :stage-height="fitHeight * zoom"
+                :pan-x="panX" :pan-y="panY" :pixel-ratio="devicePixelRatio"
+                @loaded="onPreviewImageLoad" @error="previewError = '预览图片解码失败'" />
               <div v-if="showComparePreview" class="absolute inset-0 overflow-hidden" :style="{ clipPath: `inset(0 ${100 - split}% 0 0)` }">
-                <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
-                  <div class="preview-stage relative shrink-0" :style="imageStageStyle">
-                    <img :src="originalUrl" alt="原图" class="block h-full w-full object-contain" draggable="false" @load="onPreviewImageLoad" />
-                  </div>
-                </div>
+                <PreviewCanvas :src="originalUrl" alt="原图"
+                  :viewport-width="viewportWidth" :viewport-height="viewportHeight"
+                  :stage-width="fitWidth * zoom" :stage-height="fitHeight * zoom"
+                  :pan-x="panX" :pan-y="panY" :pixel-ratio="devicePixelRatio" />
               </div>
               <div v-if="showComparePreview" class="pointer-events-none absolute inset-y-0 z-10 w-px bg-white shadow" :style="{ left: `${split}%`, transform: 'translateX(-50%)' }"></div>
               <template v-if="showComparePreview">
@@ -897,7 +1061,7 @@ onBeforeUnmount(() => {
                 <FolderOpen class="h-3.5 w-3.5 shrink-0" />{{ revealMenuLabel }}
               </button>
             </div>
-            <div v-if="!originalUrl" class="text-center text-slate-400"><Images class="mx-auto mb-3 h-10 w-10" /><p class="text-sm">选择照片开始预览</p></div>
+            <div v-if="!previewImageUrl" class="text-center text-slate-400"><Images class="mx-auto mb-3 h-10 w-10" /><p class="text-sm">选择照片开始预览</p></div>
             <div v-if="previewLoading && !hasCurrentPreview" class="absolute inset-0 flex items-center justify-center bg-white/45 backdrop-blur-[1px] dark:bg-black/35"><LoaderCircle class="h-7 w-7 animate-spin text-blue-600" /></div>
           </div>
           <div v-if="previewError" class="flex items-center gap-2 border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs text-rose-600 dark:border-rose-950 dark:bg-rose-950/30 dark:text-rose-300"><AlertCircle class="h-4 w-4" />{{ previewError }}</div>
@@ -1066,10 +1230,6 @@ onBeforeUnmount(() => {
 
 :global(.dark) .photo-card:last-child {
   border-right: 0;
-}
-
-.preview-stage {
-  transform-origin: center center;
 }
 
 .compare-split {

@@ -294,10 +294,13 @@ def get_last_native_physical_backend() -> str | None:
 
 
 def get_native_physical_status() -> dict[str, object]:
-    """Report only native physical-float support, independently of fallbacks."""
-    gpu_available = False
+    """Report GPU physical support and the independent C++ CPU fallback."""
+    gpu_available = cpu_available = False
+    physical_backend = None
     try:
         library, _ = _get_library()
+        cpu_available = (os.environ.get("IMPRINT_NATIVE_DENSE", "1") != "0"
+                         and getattr(library, "im_native_physical_float_run", None) is not None)
         if getattr(library, "im_renderer_render_physical_float", None) is not None:
             renderer = None
             try:
@@ -307,14 +310,12 @@ def get_native_physical_status() -> dict[str, object]:
             finally:
                 if renderer is not None:
                     library.im_renderer_destroy(renderer)
-            return {"available": gpu_available, "backend": physical_backend,
-                    "gpu_available": gpu_available, "cpu_available": False}
     except Exception:
-        # Status queries are advisory. Keep old libraries and failed renderer
-        # creation equivalent to an unavailable optional native capability.
+        # A missing GPU must not hide the independent CPU kernels.
         pass
-    return {"available": False, "backend": None,
-            "gpu_available": False, "cpu_available": False}
+    return {"available": gpu_available or cpu_available,
+            "backend": physical_backend or ("cpp_cpu" if cpu_available else None),
+            "gpu_available": gpu_available, "cpu_available": cpu_available}
 
 
 def native_gpu_spatial_dehaze(
