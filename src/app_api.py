@@ -95,7 +95,7 @@ from lens_correction import (
 )
 from dng_gainmap import apply_dng_gain_map
 
-LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-bilinear-native-v3"
+LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-c1-highlights-v4"
 
 import io
 import cv2
@@ -599,21 +599,24 @@ def save_photo_settings_snapshot(req: PhotoSettingsRequest):
 
 
 def _cached_display_preview(session_id: str, photo_id: str, path: Path,
-                            max_edge: int) -> np.ndarray:
+                            max_edge: int, *, optical_correction: bool = False) -> np.ndarray:
     """Share decoded, color-managed previews across original/effect requests.
 
     A bounded cache avoids decoding the same RAW again for every slider change.
     Decoding happens outside the cache lock so different photos can load in parallel.
     """
     stat = path.stat()
-    key = (session_id, photo_id, max_edge, stat.st_mtime_ns, stat.st_size)
+    key = (session_id, photo_id, max_edge, stat.st_mtime_ns, stat.st_size,
+           optical_correction, LENS_PREVIEW_VERSION)
     with _DISPLAY_PREVIEW_LOCK:
         cached = _DISPLAY_PREVIEW_CACHE.get(key)
         if cached is not None:
             _DISPLAY_PREVIEW_CACHE.move_to_end(key)
             return cached
 
-    image, metadata = read_image(path, preview=True, max_edge=max_edge)
+    image, metadata = _cached_processing_preview(session_id, photo_id, path, max_edge)
+    if optical_correction:
+        image, _, _ = _correct_enhanced_raw(image, metadata, path, preview=True)
     display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
     if getattr(metadata, "source_kind", "") == "rgb":
         display = standard_preview_to_srgb(display, path)
@@ -1122,7 +1125,9 @@ def _correct_enhanced_raw(
     )
     gain_map_applied = False
     if is_raw and path.suffix.lower() == ".dng" and not lens_result.vignetting_applied:
-        corrected, gain_map_applied = apply_dng_gain_map(corrected, path)
+        corrected, gain_map_applied = apply_dng_gain_map(
+            corrected, path, preserve_highlights=True,
+        )
     return corrected, lens_result, gain_map_applied
 
 
@@ -1869,6 +1874,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 base_started = time.perf_counter()
                 if req.mode == "original":
                     image, metadata, decode_hit = _full_resolution_decoded_image(req, Path(path))
+                    image, _, _ = _correct_enhanced_raw(image, metadata, Path(path), preview=True)
                     display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
                     if req.color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
                         display = standard_preview_to_srgb(display, path)
@@ -1907,7 +1913,10 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 # complete idle interval after rendering/encoding finishes.
                 _touch_full_resolution_preview_cache()
         elif req.mode == "original" and req.color_manage_srgb:
-            display = _cached_display_preview(req.session_id, req.photo_id, Path(path), req.max_edge)
+            display = _cached_display_preview(
+                req.session_id, req.photo_id, Path(path), req.max_edge,
+                optical_correction=True,
+            )
             payload = _encode_preview(display)
             width, height = display.shape[1], display.shape[0]
         elif req.mode == "dehazed":
@@ -1937,6 +1946,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             width, height = display.shape[1], display.shape[0]
         else:
             image, metadata = read_image(path, preview=True, max_edge=req.max_edge)
+            if req.mode == "original":
+                image, _, _ = _correct_enhanced_raw(image, metadata, Path(path), preview=True)
             width, height = metadata.width, metadata.height
             payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
         if not req.full_resolution:
@@ -2358,6 +2369,7 @@ def _run_enhance_job(
                 operations.append("vignetting")
             if gain_map_applied:
                 output_metadata["DNGGainMapApplied"] = True
+                output_metadata["DNGGainMapHighlightProtection"] = True
             if correction.applied:
                 output_metadata.update(
                     {

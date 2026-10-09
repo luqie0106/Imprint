@@ -2,7 +2,9 @@
 
 This module intentionally supports only a full active-area, three-channel
 linear RGB gain map. Other opcodes, including WarpRectilinear, are left to the
-caller or ignored here.
+caller or ignored here. Application defaults to standard opcode multiplication;
+the optional highlight-preserving path is intended for display/enhancement
+corrections.
 """
 
 from __future__ import annotations
@@ -412,7 +414,26 @@ def _is_supported_full_frame(gain_map: DNGGainMap, image_height: int, image_widt
     return math.isclose(actual_ratio, expected_ratio, rel_tol=0.005, abs_tol=0.00001)
 
 
-def _apply_gain_map(image_rgb16: np.ndarray, gain_map: DNGGainMap) -> np.ndarray:
+def _validate_highlight_reference(
+    image_rgb16: np.ndarray,
+    highlight_reference: np.ndarray | None,
+) -> None:
+    if highlight_reference is None:
+        return
+    if not isinstance(highlight_reference, np.ndarray):
+        raise TypeError("highlight_reference must be a NumPy array")
+    if highlight_reference.dtype != np.uint16 or highlight_reference.shape != image_rgb16.shape:
+        raise ValueError("highlight_reference must match image_rgb16 shape and dtype uint16")
+
+
+def _apply_gain_map(
+    image_rgb16: np.ndarray,
+    gain_map: DNGGainMap,
+    *,
+    preserve_highlights: bool = False,
+    highlight_reference: np.ndarray | None = None,
+) -> np.ndarray:
+    _validate_highlight_reference(image_rgb16, highlight_reference)
     height, width = image_rgb16.shape[:2]
     output = image_rgb16.copy()
     x_relative = (np.arange(width, dtype=np.float64) + 0.5) / width
@@ -434,7 +455,30 @@ def _apply_gain_map(image_rgb16: np.ndarray, gain_map: DNGGainMap) -> np.ndarray
             borderMode=cv2.BORDER_REPLICATE,
         )
         pixels = image_rgb16[top:bottom].astype(np.float32)
-        np.multiply(pixels, gain_strip, out=pixels)
+        if preserve_highlights:
+            reference_strip = image_rgb16[top:bottom] if highlight_reference is None else highlight_reference[top:bottom]
+            peak = np.max(reference_strip, axis=2).astype(np.float32)
+            # H=0.55 matches the physical dehaze path's linear highlight-protection onset.
+            np.multiply(peak, 1.0 / (65535.0 * 0.55), out=peak)
+            np.clip(peak, 0.0, 1.0, out=peak)
+            # Positive neutral gains stay monotonic and C1 at z=1 (unit slope).
+            # s = z * (2 - z), written as 1 - (1 - z)^2 to reuse one buffer.
+            np.subtract(1.0, peak, out=peak)
+            np.square(peak, out=peak)
+            np.subtract(1.0, peak, out=peak)
+
+            # At gain=0 and s=1 the formula has a removable 0/0 singularity.
+            # Use its positive-gain limit so the protected highlight stays intact.
+            np.copyto(gain_strip, 1.0, where=(gain_strip == 0.0) & (peak[:, :, None] == 1.0))
+            # Divide gains before multiplying pixels, avoiding intermediate
+            # overflow even for unusually large finite opcode gains.
+            np.subtract(gain_strip, 1.0, out=pixels)
+            np.multiply(pixels, peak[:, :, None], out=pixels)
+            np.add(pixels, 1.0, out=pixels)
+            np.divide(gain_strip, pixels, out=gain_strip)
+            np.multiply(image_rgb16[top:bottom], gain_strip, out=pixels)
+        else:
+            np.multiply(pixels, gain_strip, out=pixels)
         np.clip(pixels, 0.0, 65535.0, out=pixels)
         np.rint(pixels, out=pixels)
         output[top:bottom] = pixels.astype(np.uint16)
@@ -444,13 +488,23 @@ def _apply_gain_map(image_rgb16: np.ndarray, gain_map: DNGGainMap) -> np.ndarray
 def apply_dng_gain_map(
     image_rgb16: np.ndarray,
     source_path: str | os.PathLike[str],
+    *,
+    preserve_highlights: bool = False,
+    highlight_reference: np.ndarray | None = None,
 ) -> tuple[np.ndarray, bool]:
     """Apply a compatible OpcodeList3 GainMap to linear uint16 RGB pixels.
 
     The source array is never modified. Reduced preview images are supported
     when they preserve the full active-area aspect ratio. Non-DNG files and
     incompatible opcodes return the original array with ``False``; malformed
-    TIFF/opcode data raises :class:`DNGGainMapError`.
+    TIFF/opcode data raises :class:`DNGGainMapError`. By default, gains use
+    standard opcode multiplication. ``preserve_highlights=True`` applies a
+    smooth display/enhancement correction that leaves reference pixels at or
+    above 55% of uint16 range unchanged. A supplied reference must match the
+    input shape and uint16 dtype; it controls the shared per-pixel protection
+    strength without being modified. For positive neutral gains, the protected
+    response remains monotonic with a continuous first derivative at the
+    highlight boundary.
     """
 
     if not isinstance(image_rgb16, np.ndarray):
@@ -460,8 +514,14 @@ def apply_dng_gain_map(
     height, width = image_rgb16.shape[:2]
     if height == 0 or width == 0:
         raise ValueError("image_rgb16 must not be empty")
+    _validate_highlight_reference(image_rgb16, highlight_reference)
 
     gain_map = parse_dng_gain_map(source_path)
     if gain_map is None or not _is_supported_full_frame(gain_map, height, width):
         return image_rgb16, False
-    return _apply_gain_map(image_rgb16, gain_map), True
+    return _apply_gain_map(
+        image_rgb16,
+        gain_map,
+        preserve_highlights=preserve_highlights,
+        highlight_reference=highlight_reference,
+    ), True

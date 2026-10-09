@@ -780,8 +780,19 @@ def enhanced_dng_source_data(
         try:
             from dng_gainmap import apply_dng_gain_map
 
-            camera_base, camera_gain_applied = apply_dng_gain_map(camera_base, source_path)
-            reference_base, reference_gain_applied = apply_dng_gain_map(reference_base, source_path)
+            gain_options = {}
+            if source_exif.get("DNGGainMapHighlightProtection") is True:
+                # The shoulder is defined in working sRGB. Reuse its source
+                # brightness for the camera layer rather than making a second
+                # exposure decision in a different colour space.
+                gain_options = {"preserve_highlights": True,
+                                "highlight_reference": reference_base}
+            camera_base, camera_gain_applied = apply_dng_gain_map(
+                camera_base, source_path, **gain_options,
+            )
+            reference_base, reference_gain_applied = apply_dng_gain_map(
+                reference_base, source_path, **gain_options,
+            )
         except Exception as exc:
             raise EnhancedDNGColorError("DNG gain map cannot be reproduced for export") from exc
         if not camera_gain_applied or camera_gain_applied != reference_gain_applied:
