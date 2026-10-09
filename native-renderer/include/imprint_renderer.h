@@ -230,6 +230,32 @@ IMPRINT_API im_status im_renderer_create(im_backend_kind backend, im_renderer **
 IMPRINT_API void im_renderer_destroy(im_renderer *renderer);
 IMPRINT_API const char *im_renderer_last_error(const im_renderer *renderer);
 IMPRINT_API const char *im_renderer_backend_name(const im_renderer *renderer);
+/* Dense full-resolution stages. Sources are normalized finite RGB float32;
+   dimensions/counts follow the dense CPU contract and outputs never alias inputs. */
+IMPRINT_API im_status im_native_rgb_peak(uint32_t width, uint32_t height,
+    const float *source, size_t source_values, float *peak);
+IMPRINT_API im_status im_native_exposure_float(uint32_t width, uint32_t height,
+    const float *source, size_t source_values, float gain,
+    float *destination, size_t destination_values);
+IMPRINT_API im_status im_native_refine_transmission(uint32_t width, uint32_t height,
+    const float *source, size_t source_values, const float *slope, size_t slope_count,
+    const float *intercept, size_t intercept_count, float depth_min, float depth_max,
+    float *destination, size_t destination_count);
+IMPRINT_API im_status im_native_relief_transmission(uint32_t width, uint32_t height,
+    const float *source, size_t source_values, const float *relief, size_t relief_count,
+    const float *airlight_rgb, float base, float knee, float initial_t,
+    float *destination, size_t destination_count);
+
+/* Same physical float contract, with the shared dark-background guard fused
+   into the GPU pass. dark_floor must be finite and within [0, 2]. */
+IMPRINT_API im_status im_renderer_render_physical_guarded_float(
+    im_renderer *renderer, uint32_t width, uint32_t height,
+    const float *source, size_t source_values,
+    const float *transmission, size_t transmission_count,
+    const float *airlight_rgb, const im_dehaze_params *params, float dark_floor,
+    float *destination, size_t destination_values);
+IMPRINT_API int im_renderer_supports_physical_guarded_float(const im_renderer *renderer);
+
 /* Returns 1 only if this renderer implements the linear-float physical operator. */
 IMPRINT_API int im_renderer_supports_physical_float(const im_renderer *renderer);
 

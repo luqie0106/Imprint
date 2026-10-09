@@ -206,6 +206,19 @@ def _configure_library(library: ctypes.CDLL) -> None:
         ]
         physical_float.restype = ctypes.c_int
 
+    guarded = getattr(library, "im_renderer_render_physical_guarded_float", None)
+    if guarded is not None:
+        float_pointer = ctypes.POINTER(ctypes.c_float)
+        guarded.argtypes = [renderer, ctypes.c_uint32, ctypes.c_uint32,
+            float_pointer, ctypes.c_size_t, float_pointer, ctypes.c_size_t,
+            float_pointer, ctypes.POINTER(_DehazeParams), ctypes.c_float,
+            float_pointer, ctypes.c_size_t]
+        guarded.restype = ctypes.c_int
+    supports_guarded = getattr(library, "im_renderer_supports_physical_guarded_float", None)
+    if supports_guarded is not None:
+        supports_guarded.argtypes = [renderer]
+        supports_guarded.restype = ctypes.c_int
+
 
 def _supports_physical_float(library: object, renderer: object, backend: str) -> bool:
     query = getattr(library, "im_renderer_supports_physical_float", None)
@@ -215,12 +228,23 @@ def _supports_physical_float(library: object, renderer: object, backend: str) ->
     return backend.lower() == "metal"
 
 
+_physical_context = threading.local()
+
+
+def get_last_native_physical_guarded() -> bool:
+    return bool(getattr(_physical_context, "guarded", False))
+
+
 def native_physical_dehaze(
     image: np.ndarray, params: object, transmission: np.ndarray, atmosphere: np.ndarray,
+    *, dark_floor: float | None = None,
 ) -> np.ndarray:
     """Run the optional linear-float physical operator on Metal or D3D12."""
     global _last_native_physical_backend
     _last_native_physical_backend = None
+    _physical_context.guarded = False
+    if dark_floor is not None and (not math.isfinite(dark_floor) or not 0 <= dark_floor <= 2):
+        raise ValueError("Dark background floor must be finite and within [0, 2]")
     if not isinstance(image, np.ndarray):
         raise TypeError("Physical dehaze source must be a numpy array")
     if image.ndim != 3 or image.shape[2] != 3:
@@ -269,20 +293,37 @@ def native_physical_dehaze(
                 f"Native physical float dehaze is unavailable on this backend ({backend})"
             )
         native_params = _DehazeParams(*values)
-        status = render(
-            renderer, width, height,
-            source32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source32.size,
-            transmission32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), transmission32.size,
-            atmosphere32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-            ctypes.byref(native_params),
-            output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
-        )
+        guarded_render = getattr(library, "im_renderer_render_physical_guarded_float", None)
+        supports_guarded = getattr(library, "im_renderer_supports_physical_guarded_float", None)
+        # Metal passed full-resolution Python parity and hardware timing gates.
+        # D3D12 remains opt-in pending the same checks on Windows hardware.
+        use_guarded = (dark_floor is not None and dark_floor > 1e-8
+            and os.environ.get("IMPRINT_NATIVE_GUARDED_FLOAT",
+                               "1" if backend == "Metal" else "0") == "1"
+            and guarded_render is not None and supports_guarded is not None
+            and bool(supports_guarded(renderer)))
+        if use_guarded:
+            status = guarded_render(renderer, width, height,
+                source32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source32.size,
+                transmission32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), transmission32.size,
+                atmosphere32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), ctypes.byref(native_params),
+                dark_floor, output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size)
+        else:
+            status = render(
+                renderer, width, height,
+                source32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source32.size,
+                transmission32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), transmission32.size,
+                atmosphere32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                ctypes.byref(native_params),
+                output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+            )
         if status != 0:
             raise NativeRendererError(
                 f"Native physical float dehaze failed (status {status}): "
                 f"{_native_error(library, renderer)}"
             )
         _last_native_physical_backend = backend
+        _physical_context.guarded = use_guarded
     finally:
         library.im_renderer_destroy(renderer)
     return output

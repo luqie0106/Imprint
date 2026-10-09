@@ -899,3 +899,197 @@ extern "C" IMPRINT_API im_status im_native_basic_rgb16(
         return IM_STATUS_RUNTIME_ERROR;
     }
 }
+
+extern "C" IMPRINT_API im_status im_native_exposure_float(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    float gain, float *destination, size_t destination_values) {
+    try {
+        size_t pixels = 0, rgb_values = 0;
+        if (!source || !destination || !image_extent(width, height, &pixels, &rgb_values) ||
+            source_values != rgb_values || destination_values != rgb_values ||
+            !std::isfinite(gain) || gain < 1.0f || gain > 4.0f) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+
+        size_t source_bytes = 0, destination_bytes = 0;
+        if (!byte_length<float>(source_values, &source_bytes) ||
+            !byte_length<float>(destination_values, &destination_bytes) ||
+            ranges_overlap(source, source_bytes, destination, destination_bytes)) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        for (size_t value = 0; value < rgb_values; ++value) {
+            if (!std::isfinite(source[value]) || source[value] < 0.0f || source[value] > 1.0f) {
+                return IM_STATUS_INVALID_ARGUMENT;
+            }
+        }
+
+        const bool completed = parallel_for(rgb_values, [&](size_t value) {
+            destination[value] = source[value] * gain;
+        });
+        return completed ? IM_STATUS_OK : IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_rgb_peak(
+    uint32_t width, uint32_t height, const float *source,
+    size_t source_values, float *peak) {
+    try {
+        size_t pixels = 0, rgb_values = 0;
+        if (!source || !peak || !image_extent(width, height, &pixels, &rgb_values) ||
+            source_values != rgb_values) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+
+        size_t source_bytes = 0, peak_bytes = 0;
+        if (!byte_length<float>(source_values, &source_bytes) ||
+            !byte_length<float>(1, &peak_bytes) ||
+            ranges_overlap(source, source_bytes, peak, peak_bytes)) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+
+        std::atomic<bool> invalid{false};
+        std::atomic<float> maximum{-std::numeric_limits<float>::infinity()};
+        const bool completed = parallel_for(pixels, [&](size_t pixel) {
+            const RGB input = read_rgb(source, pixel);
+            if (!normalized_rgb(input)) {
+                invalid.store(true, std::memory_order_relaxed);
+                return;
+            }
+            const float pixel_peak = std::fmax(input.r, std::fmax(input.g, input.b));
+            float observed = maximum.load(std::memory_order_relaxed);
+            while (pixel_peak > observed ||
+                   (pixel_peak == observed && pixel_peak == 0.0f &&
+                    std::signbit(observed) && !std::signbit(pixel_peak))) {
+                if (maximum.compare_exchange_weak(observed, pixel_peak,
+                                                  std::memory_order_relaxed,
+                                                  std::memory_order_relaxed)) {
+                    break;
+                }
+            }
+        });
+        if (!completed) return IM_STATUS_RUNTIME_ERROR;
+        if (invalid.load(std::memory_order_relaxed)) return IM_STATUS_INVALID_ARGUMENT;
+        *peak = maximum.load(std::memory_order_relaxed);
+        return IM_STATUS_OK;
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_refine_transmission(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *slope, size_t slope_count, const float *intercept,
+    size_t intercept_count, float depth_min, float depth_max,
+    float *destination, size_t destination_count) {
+    try {
+        size_t pixels = 0, rgb_values = 0;
+        if (!source || !slope || !intercept || !destination ||
+            !image_extent(width, height, &pixels, &rgb_values) ||
+            source_values != rgb_values || slope_count != pixels ||
+            intercept_count != pixels || destination_count != pixels ||
+            !std::isfinite(depth_min) || !std::isfinite(depth_max) ||
+            depth_min < 0.0f || depth_max > 10.0f || depth_min > depth_max) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+
+        size_t source_bytes = 0, slope_bytes = 0, intercept_bytes = 0;
+        size_t destination_bytes = 0;
+        if (!byte_length<float>(source_values, &source_bytes) ||
+            !byte_length<float>(slope_count, &slope_bytes) ||
+            !byte_length<float>(intercept_count, &intercept_bytes) ||
+            !byte_length<float>(destination_count, &destination_bytes) ||
+            ranges_overlap(source, source_bytes, destination, destination_bytes) ||
+            ranges_overlap(slope, slope_bytes, destination, destination_bytes) ||
+            ranges_overlap(intercept, intercept_bytes, destination, destination_bytes)) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        for (size_t value = 0; value < rgb_values; ++value) {
+            if (!std::isfinite(source[value]) || source[value] < 0.0f || source[value] > 1.0f) {
+                return IM_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        for (size_t pixel = 0; pixel < pixels; ++pixel) {
+            if (!std::isfinite(slope[pixel]) || !std::isfinite(intercept[pixel])) {
+                return IM_STATUS_INVALID_ARGUMENT;
+            }
+        }
+
+        const bool completed = parallel_for(pixels, [&](size_t pixel) {
+            const float luma = luminance(read_rgb(source, pixel));
+            const float refined = clamp(slope[pixel] * luma + intercept[pixel],
+                                        depth_min, depth_max);
+            destination[pixel] = std::exp(-refined);
+        });
+        return completed ? IM_STATUS_OK : IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_relief_transmission(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *relief, size_t relief_count, const float *airlight_rgb,
+    float base, float knee, float initial_t, float *destination,
+    size_t destination_count) {
+    try {
+        size_t pixels = 0, rgb_values = 0;
+        if (!source || !relief || !airlight_rgb || !destination ||
+            !image_extent(width, height, &pixels, &rgb_values) ||
+            source_values != rgb_values || relief_count != pixels ||
+            destination_count != pixels || !std::isfinite(base) ||
+            !std::isfinite(knee) || !std::isfinite(initial_t) ||
+            base < 0.0f || base > 1.0f || knee < 0.0f || knee > 0.1f ||
+            initial_t < 0.0f || initial_t > 1.0f) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+
+        size_t source_bytes = 0, relief_bytes = 0, airlight_bytes = 0;
+        size_t destination_bytes = 0;
+        if (!byte_length<float>(source_values, &source_bytes) ||
+            !byte_length<float>(relief_count, &relief_bytes) ||
+            !byte_length<float>(3, &airlight_bytes) ||
+            !byte_length<float>(destination_count, &destination_bytes) ||
+            ranges_overlap(source, source_bytes, destination, destination_bytes) ||
+            ranges_overlap(relief, relief_bytes, destination, destination_bytes) ||
+            ranges_overlap(airlight_rgb, airlight_bytes, destination, destination_bytes)) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+
+        const RGB air = read_rgb(airlight_rgb, 0);
+        if (!normalized_rgb(air)) return IM_STATUS_INVALID_ARGUMENT;
+        for (size_t value = 0; value < rgb_values; ++value) {
+            if (!std::isfinite(source[value]) || source[value] < 0.0f || source[value] > 1.0f) {
+                return IM_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        for (size_t pixel = 0; pixel < pixels; ++pixel) {
+            if (!std::isfinite(relief[pixel]) || relief[pixel] < 0.0f || relief[pixel] > 1.0f) {
+                return IM_STATUS_INVALID_ARGUMENT;
+            }
+        }
+
+        const float air_norm = std::sqrt((air.r * air.r + air.g * air.g) + air.b * air.b);
+        const float air_denominator = std::max(air_norm, 1e-6f);
+        const bool completed = parallel_for(pixels, [&](size_t pixel) {
+            const RGB input = read_rgb(source, pixel);
+            const RGB deficit{air.r - input.r, air.g - input.g, air.b - input.b};
+            const float radius_norm = std::sqrt(
+                (deficit.r * deficit.r + deficit.g * deficit.g) + deficit.b * deficit.b);
+            const float radius = radius_norm / air_denominator;
+            const float below_r = deficit.r / std::max(air.r, 1e-6f);
+            const float below_g = deficit.g / std::max(air.g, 1e-6f);
+            const float below_b = deficit.b / std::max(air.b, 1e-6f);
+            const float below_air = std::min(below_r, std::min(below_g, below_b));
+            const float support = smoothstep(0.10f, 0.25f, radius) *
+                                  smoothstep(0.0f, 0.05f, below_air);
+            const float target = base - knee + (1.0f - base) * 0.5f *
+                                 relief[pixel] * support;
+            destination[pixel] = std::max(initial_t, target);
+        });
+        return completed ? IM_STATUS_OK : IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}

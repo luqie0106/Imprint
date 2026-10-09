@@ -169,7 +169,12 @@ public:
 
     bool ready() const { return ready_; }
     const char *name() const override { return "D3D12"; }
-    bool supports_physical_float() const override { return ready_; }
+    bool supports_physical_float() const override {
+        return ready_ && physical_pipeline_.Get() != nullptr;
+    }
+    bool supports_physical_guarded_float() const override {
+        return ready_ && physical_pipeline_.Get() != nullptr;
+    }
 
     bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) override {
         std::array<ComPtr<ID3D12Resource>, 3> next_resources{};
@@ -427,6 +432,31 @@ public:
                                const float *airlight_rgb, const im_dehaze_params &params,
                                float *destination, size_t destination_values,
                                std::string &error) override {
+        return render_physical_float_impl(width, height, source, transmission, airlight_rgb,
+                                          params, 0.0f, destination, destination_values, error);
+    }
+
+    bool render_physical_guarded_float(uint32_t width, uint32_t height,
+                                       const float *source, const float *transmission,
+                                       const float *airlight_rgb, const im_dehaze_params &params,
+                                       float dark_floor, float *destination,
+                                       size_t destination_values,
+                                       std::string &error) override {
+        return render_physical_float_impl(width, height, source, transmission, airlight_rgb,
+                                          params, dark_floor, destination, destination_values,
+                                          error);
+    }
+
+private:
+    bool render_physical_float_impl(uint32_t width, uint32_t height,
+                                    const float *source, const float *transmission,
+                                    const float *airlight_rgb, const im_dehaze_params &params,
+                                    float dark_floor, float *destination,
+                                    size_t destination_values, std::string &error) {
+        if (!std::isfinite(dark_floor) || dark_floor < 0.0f) {
+            error = "D3D12 physical float dark floor must be finite and non-negative";
+            return false;
+        }
         const uint64_t pixels64 = static_cast<uint64_t>(width) * height;
         constexpr uint64_t max_values = 1ull << 29;
         if (!width || !height || width > 65535 || height > 65535 || !source ||
@@ -483,9 +513,10 @@ public:
         stats.air_g = airlight_rgb[1];
         stats.air_b = airlight_rgb[2];
         im_basic_params unused_basic{};
-        const RenderConstants constants = make_constants(params, unused_basic, filter_, stats,
-                                                         lut_edge_, static_cast<uint32_t>(pixels64),
-                                                         row_stride, false);
+        RenderConstants constants = make_constants(params, unused_basic, filter_, stats,
+                                                   lut_edge_, static_cast<uint32_t>(pixels64),
+                                                   row_stride, false);
+        constants.stats1[3] = dark_floor;
 
         if (!begin_commands(error)) return false;
         command_list_->CopyBufferRegion(gpu_source.Get(), 0, source_staging.Get(), 0,
@@ -528,7 +559,6 @@ public:
         return true;
     }
 
-private:
     bool initialize_device(std::string &error) {
         ComPtr<IDXGIFactory4> factory;
         HRESULT result = CreateDXGIFactory1(IID_PPV_ARGS(&factory));

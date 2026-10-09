@@ -5,6 +5,7 @@
 #include "embedded_metal_shader.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -89,6 +90,7 @@ public:
     }
     const char *name() const override { return "Metal"; }
     bool supports_physical_float() const override { return ready(); }
+    bool supports_physical_guarded_float() const override { return ready(); }
 
     bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) override {
         std::array<id<MTLBuffer>, 3> buffers{};
@@ -245,9 +247,29 @@ public:
                                const float *airlight_rgb, const im_dehaze_params &params,
                                float *destination, size_t destination_values,
                                std::string &error) override {
+        return render_physical_float_impl(width, height, source, transmission, airlight_rgb,
+                                          params, 0.0f, destination, destination_values, error);
+    }
+
+    bool render_physical_guarded_float(uint32_t width, uint32_t height,
+                                       const float *source, const float *transmission,
+                                       const float *airlight_rgb, const im_dehaze_params &params,
+                                       float dark_floor, float *destination,
+                                       size_t destination_values, std::string &error) override {
+        return render_physical_float_impl(width, height, source, transmission, airlight_rgb,
+                                          params, dark_floor, destination, destination_values, error);
+    }
+
+private:
+    bool render_physical_float_impl(uint32_t width, uint32_t height,
+                                    const float *source, const float *transmission,
+                                    const float *airlight_rgb, const im_dehaze_params &params,
+                                    float dark_floor, float *destination,
+                                    size_t destination_values, std::string &error) {
         const size_t pixel_count = static_cast<size_t>(width) * height;
         const size_t expected_values = pixel_count * 3;
         if (!width || !height || !source || !transmission || !airlight_rgb || !destination ||
+            !std::isfinite(dark_floor) || dark_floor < 0.0f ||
             expected_values > std::numeric_limits<size_t>::max() / sizeof(float) ||
             destination_values < expected_values) {
             error = "Metal physical float render buffers or output dimensions are invalid";
@@ -286,6 +308,7 @@ public:
         [encoder setBytes:&params length:sizeof(params) atIndex:3];
         [encoder setBuffer:output_buffer offset:0 atIndex:4];
         [encoder setBytes:&count length:sizeof(count) atIndex:5];
+        [encoder setBytes:&dark_floor length:sizeof(dark_floor) atIndex:6];
         const NSUInteger threads = physical_pipeline_.threadExecutionWidth
                                        ? physical_pipeline_.threadExecutionWidth : 256;
         [encoder dispatchThreadgroups:MTLSizeMake((pixel_count + threads - 1) / threads, 1, 1)
@@ -301,7 +324,6 @@ public:
         return true;
     }
 
-private:
     static std::string describe_error(const char *prefix, NSError *error) {
         std::ostringstream stream;
         stream << prefix;

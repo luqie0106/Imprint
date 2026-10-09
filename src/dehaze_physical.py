@@ -206,17 +206,20 @@ def _estimate_scene(source: np.ndarray, p: DehazeParams, spatial: bool,
             # The RGB lookup retains equal treatment at every coordinate.
             # Reapplying a spatial guided filter would break that invariant.
             # Reject the ill-conditioned neighbourhood of I=A continuously.
-            for start in range(0, source.shape[0], 256):
-                stop = min(source.shape[0], start + 256)
-                deficit = air - source[start:stop]
-                radius = np.linalg.norm(deficit, axis=2) / max(float(np.linalg.norm(air)), 1e-6)
-                below_air = np.min(deficit / np.maximum(air, 1e-6), axis=2)
-                support = (_smoothstep(.10, .25, radius)
-                           * _smoothstep(0.0, .05, below_air))
-                knee = .015 * (1.0 - 1.0 / (
-                    1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)))
-                target = base - knee + (1.0 - base) * .5 * relief[start:stop] * support
-                t[start:stop] = np.maximum(t[start:stop], target)
+            knee = .015 * (1.0 - 1.0 / (
+                1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)))
+            try:
+                t = native_dense.relief_transmission(source, relief, air, base, knee, float(t.flat[0]))
+            except NativeRendererError:
+                for start in range(0, source.shape[0], 256):
+                    stop = min(source.shape[0], start + 256)
+                    deficit = air - source[start:stop]
+                    radius = np.linalg.norm(deficit, axis=2) / max(float(np.linalg.norm(air)), 1e-6)
+                    below_air = np.min(deficit / np.maximum(air, 1e-6), axis=2)
+                    support = (_smoothstep(.10, .25, radius)
+                               * _smoothstep(0.0, .05, below_air))
+                    target = base - knee + (1.0 - base) * .5 * relief[start:stop] * support
+                    t[start:stop] = np.maximum(t[start:stop], target)
     stats = {"airlight": air.tolist(), "airlight_confidence": confidence,
              "transmission_min": float(np.min(t)), "transmission_median": float(np.median(t)),
              "backlit_optical_scale": optical_scale,
@@ -301,6 +304,11 @@ def _regularize_transmission(source: np.ndarray, transmission: np.ndarray) -> np
         size = (source.shape[1], source.shape[0])
         slope = cv2.resize(slope, size, interpolation=cv2.INTER_LINEAR)
         intercept = cv2.resize(intercept, size, interpolation=cv2.INTER_LINEAR)
+    depth_min, depth_max = float(np.min(depth)), float(np.max(depth))
+    try:
+        return native_dense.refine_transmission(source, slope, intercept, depth_min, depth_max)
+    except NativeRendererError:
+        pass
     refined = slope * _luminance(source) + intercept
     # A constant field (manual mode included) remains constant. Projection only
     # keeps small guided-filter overshoots inside the original global range.
@@ -482,11 +490,16 @@ def apply_physical_dehaze(image: np.ndarray, params: DehazeParams | None = None,
         diagnostics["max_inverse_gain"] = 1.0 + .8 * p.strength * (1.0 - .35 * p.naturalness)
     if not stats.get("nonlocal_active", False):
         transmission = _regularize_transmission(source, transmission)
+    floor_level = _dark_background_floor(source, atmosphere, p)
+    gpu_guarded = False
     result = None
     if backend in ("native", "auto", "legacy_gpu", "pytorch"):
         try:
-            from native_renderer import native_physical_dehaze, get_last_native_physical_backend
-            result = native_physical_dehaze(source, p, transmission, atmosphere)
+            from native_renderer import (native_physical_dehaze,
+                get_last_native_physical_backend, get_last_native_physical_guarded)
+            result = native_physical_dehaze(source, p, transmission, atmosphere,
+                **({"dark_floor": floor_level} if floor_level > 1e-8 else {}))
+            gpu_guarded = get_last_native_physical_guarded()
             actual_backend = f"{get_last_native_physical_backend()} GPU（线性浮点）"
         except Exception:
             # Never fall back to the old integer operator: same mathematics on
@@ -506,9 +519,8 @@ def apply_physical_dehaze(image: np.ndarray, params: DehazeParams | None = None,
         actual_backend = "Python CPU（线性浮点）"
     # The shared dark-background guard leaves recovered smoke and lights
     # unchanged; it never applies an exposure gain to the complete image.
-    floor_level = _dark_background_floor(source, atmosphere, p)
-    dark_backend = "inactive"
-    if floor_level > 1e-8:
+    dark_backend = "gpu_fused" if gpu_guarded else "inactive"
+    if floor_level > 1e-8 and not gpu_guarded:
         try:
             result = native_dense.dark_guard(source, result, floor_level)
             dark_backend = "cpp_cpu"

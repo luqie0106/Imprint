@@ -195,13 +195,14 @@ im_status im_renderer_render_spatial_full(im_renderer *renderer, uint32_t width,
     }
 }
 
-im_status im_renderer_render_physical_float(im_renderer *renderer,
+static im_status render_physical_float_impl(im_renderer *renderer,
                                             uint32_t width, uint32_t height,
                                             const float *source, size_t source_values,
                                             const float *transmission, size_t transmission_count,
                                             const float *airlight_rgb,
                                             const im_dehaze_params *params,
-                                            float *destination, size_t destination_values) {
+                                            float *destination, size_t destination_values,
+                                            float dark_floor, bool guarded) {
     if (!renderer) return IM_STATUS_INVALID_ARGUMENT;
     const auto fail = [renderer](im_status status, const char *message) {
         std::lock_guard<std::mutex> lock(renderer->mutex);
@@ -209,7 +210,8 @@ im_status im_renderer_render_physical_float(im_renderer *renderer,
         return status;
     };
     if (!source || !transmission || !airlight_rgb || !params || !destination ||
-        !width || !height || width > 65535 || height > 65535 || !valid_dehaze(*params)) {
+        !width || !height || width > 65535 || height > 65535 || !valid_dehaze(*params) ||
+        !std::isfinite(dark_floor) || dark_floor < 0.0f || dark_floor > 2.0f) {
         return fail(IM_STATUS_INVALID_ARGUMENT, "Physical float dehaze arguments or parameters are invalid");
     }
 
@@ -251,9 +253,12 @@ im_status im_renderer_render_physical_float(im_renderer *renderer,
     try {
         std::string error;
         std::lock_guard<std::mutex> lock(renderer->mutex);
-        if (!renderer->backend->render_physical_float(width, height, source, transmission,
-                                                       airlight_rgb, *params, destination,
-                                                       destination_values, error)) {
+        const bool completed = guarded
+            ? renderer->backend->render_physical_guarded_float(width, height, source, transmission,
+                airlight_rgb, *params, dark_floor, destination, destination_values, error)
+            : renderer->backend->render_physical_float(width, height, source, transmission,
+                airlight_rgb, *params, destination, destination_values, error);
+        if (!completed) {
             renderer->error = error.empty() ? "Physical float dehaze is unavailable on this GPU backend"
                                             : std::move(error);
             return IM_STATUS_BACKEND_UNAVAILABLE;
@@ -310,6 +315,29 @@ const char *im_renderer_last_error(const im_renderer *renderer) {
 
 const char *im_renderer_backend_name(const im_renderer *renderer) {
     return renderer && renderer->backend ? renderer->backend->name() : "unavailable";
+}
+
+im_status im_renderer_render_physical_float(im_renderer *renderer,
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *transmission, size_t transmission_count, const float *airlight_rgb,
+    const im_dehaze_params *params, float *destination, size_t destination_values) {
+    return render_physical_float_impl(renderer, width, height, source, source_values,
+        transmission, transmission_count, airlight_rgb, params, destination,
+        destination_values, 0.0f, false);
+}
+
+im_status im_renderer_render_physical_guarded_float(im_renderer *renderer,
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *transmission, size_t transmission_count, const float *airlight_rgb,
+    const im_dehaze_params *params, float dark_floor, float *destination,
+    size_t destination_values) {
+    return render_physical_float_impl(renderer, width, height, source, source_values,
+        transmission, transmission_count, airlight_rgb, params, destination,
+        destination_values, dark_floor, true);
+}
+
+int im_renderer_supports_physical_guarded_float(const im_renderer *renderer) {
+    return renderer && renderer->backend && renderer->backend->supports_physical_guarded_float() ? 1 : 0;
 }
 
 int im_renderer_supports_physical_float(const im_renderer *renderer) {

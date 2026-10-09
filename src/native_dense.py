@@ -179,3 +179,47 @@ def basic_pixels(source, params):
     _check(fn(w, h, image.ctypes.data_as(pointer), image.size, ct.byref(_BasicParams(*values)),
               output.ctypes.data_as(pointer), output.size), "basic pixels")
     return output
+
+
+def exposure_pixels(source, gain):
+    image, w, h = _source(source)
+    fn = _function("im_native_exposure_float", _IMAGE + [ct.c_float, _F, ct.c_size_t])
+    out = np.empty_like(image)
+    _check(fn(w, h, _pointer(image), image.size, gain, _pointer(out), out.size), "exposure")
+    return out
+
+
+def refine_transmission(source, slope, intercept, depth_min, depth_max):
+    image, w, h = _source(source)
+    a = np.ascontiguousarray(slope, dtype=np.float32)
+    b = np.ascontiguousarray(intercept, dtype=np.float32)
+    if a.shape != (h, w) or b.shape != (h, w):
+        raise ValueError("transmission coefficients must match source dimensions")
+    fn = _function("im_native_refine_transmission", _IMAGE + [_F, ct.c_size_t,
+        _F, ct.c_size_t, ct.c_float, ct.c_float, _F, ct.c_size_t])
+    out = np.empty((h, w), dtype=np.float32)
+    _check(fn(w, h, _pointer(image), image.size, _pointer(a), a.size, _pointer(b), b.size,
+        depth_min, depth_max, _pointer(out), out.size), "transmission refinement")
+    return out
+
+
+def relief_transmission(source, relief, atmosphere, base, knee, initial_t):
+    image, w, h = _source(source)
+    values = np.ascontiguousarray(relief, dtype=np.float32)
+    air = np.ascontiguousarray(atmosphere, dtype=np.float32)
+    if values.shape != (h, w) or air.shape != (3,):
+        raise ValueError("transmission relief/airlight shape mismatch")
+    fn = _function("im_native_relief_transmission", _IMAGE + [_F, ct.c_size_t, _F,
+        ct.c_float, ct.c_float, ct.c_float, _F, ct.c_size_t])
+    out = np.empty((h, w), dtype=np.float32)
+    _check(fn(w, h, _pointer(image), image.size, _pointer(values), values.size, _pointer(air),
+        base, knee, initial_t, _pointer(out), out.size), "transmission relief")
+    return out
+
+
+def rgb_peak(source):
+    image, w, h = _source(source)
+    fn = _function("im_native_rgb_peak", _IMAGE + [_F])
+    result = ct.c_float()
+    _check(fn(w, h, _pointer(image), image.size, ct.byref(result)), "RGB peak")
+    return float(result.value)

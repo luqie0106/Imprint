@@ -31,6 +31,7 @@ public:
     virtual ~Backend() = default;
     virtual const char *name() const = 0;
     virtual bool supports_physical_float() const { return false; }
+    virtual bool supports_physical_guarded_float() const { return false; }
     virtual bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) = 0;
     virtual bool set_filter(const im_filter_params &params,
                             const std::vector<uint16_t> &curve,
@@ -77,6 +78,19 @@ public:
         error = "Physical float dehaze is unavailable on this GPU backend";
         return false;
     }
+    virtual bool render_physical_guarded_float(uint32_t width, uint32_t height,
+                                               const float *source, const float *transmission,
+                                               const float *airlight_rgb,
+                                               const im_dehaze_params &params, float dark_floor,
+                                               float *destination, size_t destination_values,
+                                               std::string &error) {
+        (void)width; (void)height; (void)source; (void)transmission;
+        (void)airlight_rgb; (void)params; (void)dark_floor;
+        (void)destination; (void)destination_values;
+        error = "Guarded physical float dehaze is unavailable on this GPU backend";
+        return false;
+    }
+
 };
 
 std::unique_ptr<Backend> create_backend(im_backend_kind kind, std::string &error);

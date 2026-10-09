@@ -16,16 +16,26 @@ _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 _REASONS = {"off", "target_reached", "highlight_limited", "applied", "black"}
 
 
-def _validated_source(image: np.ndarray) -> np.ndarray:
+def _validated_source_and_peak(image: np.ndarray) -> tuple[np.ndarray, float]:
     if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3:
         raise ValueError("auto exposure requires an HxWx3 linear RGB array")
     if image.dtype != np.float32:
         raise TypeError("auto exposure requires float32 linear RGB")
     if image.size == 0:
         raise ValueError("auto exposure requires a non-empty image")
+    from native_dense import rgb_peak
+    from native_renderer import NativeRendererError
+    try:
+        return image, rgb_peak(image)
+    except NativeRendererError:
+        pass
     if not np.isfinite(image).all() or np.any(image < 0.0) or np.any(image > 1.0):
         raise ValueError("auto exposure input must be finite and in [0, 1]")
-    return image
+    return image, float(np.max(image))
+
+
+def _validated_source(image: np.ndarray) -> np.ndarray:
+    return _validated_source_and_peak(image)[0]
 
 
 def estimate_auto_exposure(image: np.ndarray) -> tuple[float, str]:
@@ -35,7 +45,11 @@ def estimate_auto_exposure(image: np.ndarray) -> tuple[float, str]:
     The highlight bound uses the full input array so a small bright source is
     still protected when the median-analysis image is reduced.
     """
-    source = _validated_source(image)
+    source, peak = _validated_source_and_peak(image)
+    return _estimate_auto_exposure_validated(source, peak)
+
+
+def _estimate_auto_exposure_validated(source: np.ndarray, peak: float) -> tuple[float, str]:
     height, width = source.shape[:2]
     longest = max(height, width)
     if longest > 768:
@@ -49,7 +63,6 @@ def estimate_auto_exposure(image: np.ndarray) -> tuple[float, str]:
         analysis = source
     luma = analysis @ _LUMA_WEIGHTS
     median_luma = float(np.median(luma))
-    peak = float(np.max(source))
 
     if median_luma <= 1e-8:
         return 0.0, "black"
@@ -81,11 +94,11 @@ def apply_auto_exposure(
     diagnostics: dict | None = None,
 ) -> np.ndarray:
     """Return a new array with bounded scalar exposure; never mutate ``image``."""
-    source = _validated_source(image)
+    source, peak = _validated_source_and_peak(image)
     if not enabled:
         ev, reason = 0.0, "off"
     elif ev_override is None:
-        ev, reason = estimate_auto_exposure(source)
+        ev, reason = _estimate_auto_exposure_validated(source, peak)
     else:
         override = float(ev_override)
         if not math.isfinite(override) or not 0.0 <= override <= MAX_EV:
@@ -93,7 +106,6 @@ def apply_auto_exposure(
         if reason_override is not None and reason_override not in _REASONS - {"off"}:
             raise ValueError("invalid auto exposure reason override")
         ev, reason = override, reason_override or ("applied" if override > 0 else "target_reached")
-        peak = float(np.max(source))
         if peak >= MAX_HIGHLIGHT:
             safe_ev = 0.0
         elif peak > 0.0:
@@ -103,6 +115,8 @@ def apply_auto_exposure(
         if safe_ev < ev - 1e-7:
             ev, reason = safe_ev, "highlight_limited"
 
+    # The standalone C++ gain kernel passed parity but was slower than NumPy
+    # once its mandatory validation scan was included. Keep the faster path.
     result = source.copy()
     if ev > 0.0:
         np.multiply(result, np.float32(2.0 ** ev), out=result)

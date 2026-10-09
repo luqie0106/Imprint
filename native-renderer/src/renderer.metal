@@ -462,12 +462,56 @@ static float3 physical_gamut(float3 rgb) {
     return clamp(float3(y) + chroma * scale, 0.0, 1.0);
 }
 
+static float physical_one_minus_exp_neg(float x) {
+#pragma clang fp contract(off)
+#pragma clang fp reassociate(off)
+    // 1 - exp(-x) loses relative precision near zero. Use its Taylor series
+    // there, and the direct expression only once subtraction is well-conditioned.
+    if (x < 0.05f) {
+        return x * (1.0f + x * (-0.5f + x * (0.16666666666666666f +
+               x * (-0.041666666666666664f + x * (0.008333333333333333f +
+               x * (-0.001388888888888889f + x * 0.0001984126984126984f))))));
+    }
+    return 1.0f - exp(-x);
+}
+
+static float3 physical_source_colour_ceiling(float3 source, float3 result) {
+    float y = physical_luma(source);
+    float result_y = min(physical_luma(result), y);
+    float3 base = source * (result_y / max(y, 1e-20f));
+    float3 deviation = result - base;
+    float3 upper_room = max(source - base, float3(0.0f)) /
+                        max(deviation, float3(1e-20f));
+    float3 lower_room = base / max(-deviation, float3(1e-20f));
+    float3 room = select(lower_room, upper_room, deviation > float3(0.0f));
+    float colour_scale = clamp(min(room.r, min(room.g, room.b)), 0.0f, 1.0f);
+    return clamp(base + deviation * colour_scale, 0.0f, 1.0f);
+}
+
+static float3 physical_protect_dark_background(float3 source, float3 result,
+                                                float floor_level) {
+    if (floor_level <= 1e-8f) return result;
+    float source_y = physical_luma(source);
+    float result_y = physical_luma(result);
+    float floor = floor_level * physical_one_minus_exp_neg(source_y / floor_level);
+    float width = 0.02f * floor_level;
+    float delta = result_y - floor;
+    float target_y = max(result_y, floor);
+    float softness = max(width - abs(delta), 0.0f);
+    target_y += softness * softness / (4.0f * width);
+    float lift = max(target_y - result_y, 0.0f);
+    if (lift <= 0.0f) return result;
+    float3 candidate = result + source * (lift / max(source_y, 1e-20f));
+    return physical_source_colour_ceiling(source, candidate);
+}
+
 kernel void render_physical_float(device const float *source [[buffer(0)]],
                                   device const float *transmission [[buffer(1)]],
                                   device const float *airlight [[buffer(2)]],
                                   constant DehazeParams &p [[buffer(3)]],
                                   device float *destination [[buffer(4)]],
                                   constant uint &pixel_count [[buffer(5)]],
+                                  constant float &dark_floor [[buffer(6)]],
                                   uint pixel [[thread_position_in_grid]]) {
     if (pixel >= pixel_count) return;
     float3 original = float3(source[pixel * 3], source[pixel * 3 + 1],
@@ -534,6 +578,7 @@ kernel void render_physical_float(device const float *source [[buffer(0)]],
     float colour_scale = clamp(min(room.r, min(room.g, room.b)), 0.0f, 1.0f);
     result = base + deviation * colour_scale;
     result = clamp(result, 0.0, 1.0);
+    result = physical_protect_dark_background(original, result, dark_floor);
     destination[pixel * 3] = result.r;
     destination[pixel * 3 + 1] = result.g;
     destination[pixel * 3 + 2] = result.b;

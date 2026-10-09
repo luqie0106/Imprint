@@ -7,7 +7,7 @@ cbuffer RenderConstants : register(b0) {
     float4 filter0; // curve mix, LUT mix, exposure EV, contrast
     float4 filter1; // saturation, warmth, tint, fade
     float4 stats0;  // mean luma, max luma, air R, air G
-    float4 stats1;  // air B, haze level, brightness gain, padding
+    float4 stats1;  // air B, haze level, brightness gain, guarded dark floor
     uint4 dispatch; // LUT edge, pixel count, identity-copy flag, padding
 };
 
@@ -416,6 +416,33 @@ float3 physical_room(float3 lower_room, float3 upper_room, float3 deviation) {
                   deviation.b > 0.0 ? upper_room.b : lower_room.b);
 }
 
+float physical_one_minus_exp_negative(float value) {
+    if (value < 0.05) {
+        precise float value2 = value * value;
+        precise float value3 = value2 * value;
+        precise float value4 = value3 * value;
+        precise float value5 = value4 * value;
+        precise float value6 = value5 * value;
+        precise float value7 = value6 * value;
+        precise float term2 = 0.5 * value2;
+        precise float term3 = value3 * 0.16666666666666666;
+        precise float term4 = value4 * 0.041666666666666664;
+        precise float term5 = value5 * 0.008333333333333333;
+        precise float term6 = value6 * 0.001388888888888889;
+        precise float term7 = value7 * 0.0001984126984126984;
+        precise float first_pair = value - term2;
+        precise float first_three = first_pair + term3;
+        precise float first_four = first_three - term4;
+        precise float first_five = first_four + term5;
+        precise float first_six = first_five - term6;
+        precise float result = first_six + term7;
+        return result;
+    }
+    precise float exponential = exp(-value);
+    precise float result = 1.0 - exponential;
+    return result;
+}
+
 [numthreads(256, 1, 1)]
 void render_physical_float(uint3 thread_id : SV_DispatchThreadID) {
     uint pixel = thread_id.x + thread_id.y * dispatch.w;
@@ -482,6 +509,40 @@ void render_physical_float(uint3 thread_id : SV_DispatchThreadID) {
     float3 room = physical_room(lower_room, upper_room, deviation);
     float colour_scale = clamp(min(room.r, min(room.g, room.b)), 0.0, 1.0);
     result = clamp(base + deviation * colour_scale, 0.0, 1.0);
+
+    if (stats1.w > 1e-8) {
+        precise float source_y = y;
+        precise float guarded_result_y = physical_luma(result);
+        precise float normalized_source_y = source_y / stats1.w;
+        precise float envelope_fraction = physical_one_minus_exp_negative(normalized_source_y);
+        precise float floor_value = stats1.w * envelope_fraction;
+        precise float width = 0.02 * stats1.w;
+        precise float delta_y = guarded_result_y - floor_value;
+        precise float target_y = max(guarded_result_y, floor_value);
+        precise float handoff = max(width - abs(delta_y), 0.0);
+        precise float correction = (handoff * handoff) / (4.0 * width);
+        target_y = target_y + correction;
+        precise float lift = max(target_y - guarded_result_y, 0.0);
+        if (lift > 0.0) {
+            precise float source_denominator = max(source_y, 1e-20);
+            precise float hue_amount = lift / source_denominator;
+            precise float3 candidate = result + original * hue_amount;
+
+            precise float candidate_y = min(physical_luma(candidate), source_y);
+            precise float3 guard_base = original * (candidate_y / max(source_y, 1e-20));
+            precise float3 guard_deviation = candidate - guard_base;
+            precise float3 guard_upper_room = max(original - guard_base,
+                                                   float3(0.0, 0.0, 0.0)) /
+                max(guard_deviation, float3(1e-20, 1e-20, 1e-20));
+            precise float3 guard_lower_room = guard_base /
+                max(-guard_deviation, float3(1e-20, 1e-20, 1e-20));
+            precise float3 guard_room = physical_room(guard_lower_room, guard_upper_room,
+                                                       guard_deviation);
+            precise float guard_colour_scale = clamp(
+                min(guard_room.r, min(guard_room.g, guard_room.b)), 0.0, 1.0);
+            result = clamp(guard_base + guard_deviation * guard_colour_scale, 0.0, 1.0);
+        }
+    }
 
     DestinationData.Store(input_base, asuint(result.r));
     DestinationData.Store(input_base + 4u, asuint(result.g));
