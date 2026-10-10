@@ -106,7 +106,7 @@ from dng_warp import apply_dng_warp_correction
 from native_renderer import clear_native_warp_cache
 
 LENS_PREVIEW_VERSION = "dng-warp-ordered-gainmap-gpu-v5"
-BASIC_PREVIEW_VERSION = "camera-profile-linear-exposure-v3"
+BASIC_PREVIEW_VERSION = "camera-profile-ricoh-linear-exposure-v4"
 
 import io
 import logging
@@ -1157,7 +1157,10 @@ def _full_resolution_profile_stage_key(
         DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
         tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
         req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb,
-        backend, PROFILE_PREVIEW_VERSION, profile.fingerprint,
+        backend, PROFILE_PREVIEW_VERSION, BASIC_PREVIEW_VERSION,
+        profile.fingerprint,
+        req.ricoh_preset_id if req.mode == "dehazed" else None,
+        req.ricoh_backend,
     )
 
 
@@ -1416,7 +1419,9 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
            LENS_PREVIEW_VERSION, tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
            req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb, backend,
            PROFILE_PREVIEW_VERSION, profile.fingerprint if profile is not None else None,
-           exposure_ev if profile is not None else 0.0)
+           exposure_ev if profile is not None else 0.0,
+           req.ricoh_preset_id if req.mode == "dehazed" else None,
+           req.ricoh_backend, BASIC_PREVIEW_VERSION)
     cached = _FULL_RESOLUTION_BASE_CACHE.get(key)
     if cached is not None:
         decoded_key = key[:5]
@@ -1497,6 +1502,10 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
     enhanced16 = _linear_float_to_uint16(enhanced)
     del enhanced
     enhanced16, _, _ = _correct_enhanced_raw(enhanced16, metadata, path, preview=True)
+    if req.mode == "dehazed" and req.ricoh_preset_id is not None:
+        enhanced16 = _bake_ricoh_linear(
+            enhanced16, req.ricoh_preset_id, req.ricoh_backend,
+        )
     if profile is not None:
         camera_cache: dict[str, str] = {}
         display, profile_status, profile_backend = _profile_display_base(
@@ -1553,6 +1562,18 @@ def _render_ricoh(image: np.ndarray, preset_id: str, basic: dict[str, float] | N
         return apply_ricoh_preview_effect(image, preset_id, basic,
                                           use_measured_color=True)
     return apply_ricoh_preview_effect(image, preset_id, basic)
+
+
+def _bake_ricoh_linear(
+    linear16: np.ndarray, preset_id: str, backend: str,
+) -> np.ndarray:
+    """Apply the measured Ricoh appearance to 16-bit linear RGB samples."""
+    display16 = _linear16_to_srgb16(linear16)
+    effected16 = _render_ricoh(
+        display16, preset_id, BasicParamsRequest().values(), backend,
+        use_measured_color=True,
+    )
+    return _srgb16_to_linear16(effected16)
 
 
 def _cached_processing_preview(
@@ -1671,8 +1692,10 @@ def _cached_dehazed_display_preview(
     status_out: dict[str, Any] | None = None,
     profile: Any = None,
     manual_exposure_ev: float = 0.0,
+    ricoh_preset_id: str | None = None,
+    ricoh_backend: str = "python",
 ) -> np.ndarray:
-    """Cache the post-dehaze display base so basic and Ricoh edits stay responsive."""
+    """Cache the styled, profile-rendered display base before remaining basics."""
     effective_nonlocal_mode = resolve_nonlocal_mode(nonlocal_mode)
     stat = path.stat()
     dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
@@ -1687,6 +1710,7 @@ def _cached_dehazed_display_preview(
         bool(color_manage_srgb),
         PROFILE_PREVIEW_VERSION, profile.fingerprint if profile is not None else None,
         manual_exposure_ev if profile is not None else 0.0,
+        ricoh_preset_id, ricoh_backend, BASIC_PREVIEW_VERSION,
     )
     with _DISPLAY_PREVIEW_LOCK:
         cached = _DEHAZED_PREVIEW_CACHE.get(key)
@@ -1735,6 +1759,8 @@ def _cached_dehazed_display_preview(
     _set_preview_status(status_out, status)
     dehazed16 = _linear_float_to_uint16(dehazed)
     corrected, _, _ = _correct_enhanced_raw(dehazed16, metadata, path, preview=True)
+    if ricoh_preset_id is not None:
+        corrected = _bake_ricoh_linear(corrected, ricoh_preset_id, ricoh_backend)
     if profile is not None:
         display, profile_status, profile_backend = _profile_display_base(
             corrected, image, metadata, path, profile, manual_exposure_ev,
@@ -1777,48 +1803,20 @@ def _cached_dehazed_display_preview(
 
 @app.post("/api/ricoh/preview")
 def create_ricoh_preview(req: RicohPreviewRequest):
-    with _ENHANCE_LOCK:
-        path = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
-    if path is None or not Path(path).is_file():
-        return JSONResponse(status_code=404, content={"error": "照片预览会话已失效"})
-    basic = req.basic_params.values()
-    cache_key = (req.session_id, req.photo_id, req.preset_id, req.max_edge,
-                 BASIC_PREVIEW_VERSION, req.ricoh_backend,
-                 tuple(basic[key] for key in sorted(basic)))
-    with _ENHANCE_LOCK:
-        cached = _RICOH_PREVIEW_CACHE.get(cache_key)
-    if cached is not None:
-        return Response(
-            content=cached, media_type="image/jpeg",
-            headers={"Cache-Control": "private, max-age=3600", "X-Preview-Approximation": "true",
-                     "X-Preview-Empirical-Color": "hsl-and-grading-response"},
-        )
-    try:
-        display_image = _cached_display_preview(req.session_id, req.photo_id, Path(path), req.max_edge)
-        effected = _render_ricoh(display_image, req.preset_id, basic,
-                                 req.ricoh_backend, use_measured_color=True)
-        payload = _encode_preview(effected)
-        with _ENHANCE_LOCK:
-            _insert_bounded_jpeg_preview(
-                _RICOH_PREVIEW_CACHE, cache_key, payload,
-                max_entries=128, max_bytes=_MAX_RICOH_PREVIEW_CACHE_BYTES,
-            )
-        return Response(
-            content=payload,
-            media_type="image/jpeg",
-            headers={
-                "Cache-Control": "private, max-age=3600",
-                "X-Image-Width": str(display_image.shape[1]),
-                "X-Image-Height": str(display_image.shape[0]),
-                "X-Preview-Approximation": "true",
-                "X-Preview-Empirical-Color": "hsl-and-grading-response",
-            },
-        )
-    except KeyError:
-        return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
-    except Exception as exc:
-        status_code = 422 if _is_enhance_unsupported_error(exc) else 500
-        return JSONResponse(status_code=status_code, content={"error": _enhance_error_message(exc)})
+    response = create_enhance_preview(EnhancePreviewRequest(
+        session_id=req.session_id,
+        photo_id=req.photo_id,
+        params=EnhanceParamsRequest(strength=0.0),
+        basic_params=req.basic_params,
+        max_edge=req.max_edge,
+        color_manage_srgb=True,
+        ricoh_backend=req.ricoh_backend,
+        ricoh_preset_id=req.preset_id,
+    ))
+    if response.status_code == 200 and response.media_type == "image/jpeg":
+        response.headers["X-Preview-Approximation"] = "true"
+        response.headers["X-Preview-Empirical-Color"] = "hsl-and-grading-response"
+    return response
 
 
 @app.post("/api/burst/run")
@@ -2365,9 +2363,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     effective_preset_id = req.ricoh_preset_id if req.mode == "dehazed" else None
     render_mode = _render_mode(req.render_backend, req.use_gpu)
     basic_mode = _basic_mode(req.basic_backend, render_mode)
-    # Ricoh presets merge their own exposure/curves; retain that existing path
-    # until its camera-profile stage has been independently calibrated.
-    profile = resolve_profile(Path(path), {}) if req.ricoh_preset_id is None else None
+    profile = resolve_profile(Path(path), {})
     adjustment_basic = dict(basic)
     if profile is not None:
         adjustment_basic["exposure"] = 0.0
@@ -2472,9 +2468,6 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 adjustments_started = time.perf_counter()
                 if req.mode == "original":
                     effected = display
-                elif effective_preset_id is not None:
-                    effected = _render_ricoh(display, effective_preset_id, basic,
-                                             req.ricoh_backend, use_measured_color=True)
                 else:
                     effected = _render_basic(display, adjustment_basic, basic_mode)
                 adjustments_time = time.perf_counter() - adjustments_started
@@ -2523,6 +2516,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 nonlocal_mode=req.nonlocal_mode,
                 status_out=status_out,
                 **({"profile": profile, "manual_exposure_ev": basic["exposure"]} if profile is not None else {}),
+                ricoh_preset_id=effective_preset_id,
+                ricoh_backend=req.ricoh_backend,
             )
             nonlocal_status = status_out.get("status", "off")
             nonlocal_reason = status_out.get("reason", "")
@@ -2530,13 +2525,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             auto_exposure_reason = str(status_out.get("auto_exposure_reason", "off"))
             camera_profile_status = str(status_out.get("camera_profile_status", "legacy"))
             camera_profile_backend = str(status_out.get("camera_profile_backend", "legacy"))
-            if effective_preset_id is not None:
-                effected = _render_ricoh(
-                    display, effective_preset_id, basic, req.ricoh_backend,
-                    use_measured_color=True,
-                )
-            else:
-                effected = _render_basic(display, adjustment_basic, basic_mode)
+            effected = _render_basic(display, adjustment_basic, basic_mode)
             payload = _encode_preview(effected)
             width, height = display.shape[1], display.shape[0]
         else:
@@ -2970,12 +2959,9 @@ def _run_enhance_job(
             export_basic = _complete_export_basic_params(basic)
             photo_preset_id = (preset_ids_by_photo or {}).get(photo_id)
             if photo_preset_id is not None:
-                display = _linear16_to_srgb16(corrected)
-                adjusted = _render_ricoh(
-                    display, photo_preset_id, BasicParamsRequest().values(), ricoh_backend,
-                    use_measured_color=True,
+                corrected = _bake_ricoh_linear(
+                    corrected, photo_preset_id, ricoh_backend,
                 )
-                corrected = _srgb16_to_linear16(adjusted)
             del enhanced
             if cancel_event.is_set():
                 with _ENHANCE_LOCK:
@@ -3311,16 +3297,14 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str | None, output_d
                     else _srgb16_to_linear16(source16)
                 )
             else:
-                display16 = (
-                    _linear16_to_srgb16(source16)
+                source_linear16 = (
+                    source16
                     if getattr(metadata, "color_space", "") == "Linear sRGB"
-                    else source16
+                    else _srgb16_to_linear16(source16)
                 )
-                effected_display16 = _render_ricoh(
-                    display16, photo_preset_id, BasicParamsRequest().values(),
-                    ricoh_backend,
+                effected_linear16 = _bake_ricoh_linear(
+                    source_linear16, photo_preset_id, ricoh_backend,
                 )
-                effected_linear16 = _srgb16_to_linear16(effected_display16)
             output_path = write_linear_dng(
                 effected_linear16, path, output_dir,
                 _export_metadata_with_basic_params(metadata.exif, export_basic),
