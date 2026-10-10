@@ -867,6 +867,10 @@ function beginSliderInteraction() {
   sliderFinishing = false;
 }
 
+function showParameterEffect() {
+  if (previewMode.value === "original") previewMode.value = "enhanced";
+}
+
 function endSliderInteraction() {
   if (!sliderAdjusting || sliderFinishing) return;
   sliderFinishing = true;
@@ -1102,7 +1106,7 @@ onBeforeUnmount(() => {
           <p class="mb-3 text-[11px] text-slate-500">调整后自动保存到 XMP。去朦胧会转换为 Camera Raw 可编辑的近似曲线，局部效果可能有差异。</p>
           <label v-for="item in basicControls" :key="item.key" class="mb-3 block text-[11px]">
             <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-500">{{ basicParams[item.key] > 0 ? '+' : '' }}{{ basicParams[item.key] }}</span></span>
-            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" :style="rangeChangeStyle(basicParams[item.key], item.min, item.max, 0)" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" @pointerdown="beginSliderInteraction" />
+            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" :style="rangeChangeStyle(basicParams[item.key], item.min, item.max, 0)" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" @pointerdown="beginSliderInteraction" @input="showParameterEffect" />
           </label>
         </section>
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">

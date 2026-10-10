@@ -288,13 +288,24 @@ def _exif_tags(info: dict[str, Any], width: int, height: int) -> list[_Tag]:
 
 
 def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
-    """Build embedded Camera Raw and Imprint lens-correction metadata.
+    """Build embedded editable Camera Raw settings and lens metadata.
 
     When Lensfun correction has already been baked into the Linear RGB pixels,
     the packet explicitly disables an additional ACR profile pass and records
     what Imprint applied.  The legacy automatic-profile request remains only
     for callers that have not supplied a correction result.
     """
+    basic_attributes: list[str] = []
+    basic_params = info.get("ACRBasicParams")
+    if basic_params is not None:
+        # Share the editor's field/range validation. These values are settings,
+        # never gains applied to the full-resolution samples written below.
+        from ricoh_filter import _BASIC_FIELDS, validate_basic_params
+
+        values = validate_basic_params(basic_params)
+        basic_attributes.append('crs:ProcessVersion="15.4"')
+        for key, (field_name, _, _) in _BASIC_FIELDS.items():
+            basic_attributes.append(f'crs:{field_name}="{values[key]:.8g}"')
     lens_model = _metadata_text(info.get("LensModel"))
     camera_model = _metadata_text(info.get("Model"))
     picture_control = _metadata_text(info.get("NikonPictureControlName"))
@@ -322,6 +333,7 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
         and picture_control is None
         and source_camera_profile is None
         and embedded_profile is None
+        and basic_params is None
     ):
         return None
     lens_serial = _metadata_text(info.get("LensSerialNumber"))
@@ -366,6 +378,8 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
             '   crs:LensProfileDistortionScale="0"\n'
             '   crs:LensProfileVignettingScale="0"\n'
         )
+    elif basic_params is not None and lens_model is None and camera_model is None:
+        profile_attributes = '   crs:LensProfileEnable="0"\n'
     else:
         profile_attributes = (
             '   crs:LensProfileEnable="1"\n'
@@ -402,7 +416,7 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
         '   crs:HasSettings="True"\n'
         f'{profile_attributes}'
         f'   crs:RawFileName="{raw_name}"\n'
-        f'   {" ".join(auxiliary + correction_attributes)}/>\n'
+        f'   {" ".join(auxiliary + correction_attributes + basic_attributes)}/>\n'
         ' </rdf:RDF>\n'
         '</x:xmpmeta>\n'
         '<?xpacket end="w"?>'
@@ -563,6 +577,16 @@ def _quantize_samples(image_rgb16: np.ndarray, bits_per_sample: int) -> np.ndarr
     return scaled.astype(np.uint16)
 
 
+def _expanded_quantized_samples(image_rgb16: np.ndarray, bits_per_sample: int) -> np.ndarray:
+    """Quantize at the selected precision, then map samples back to uint16 range."""
+    if bits_per_sample == 16:
+        return image_rgb16
+    maximum = (1 << bits_per_sample) - 1
+    quantized = _quantize_samples(image_rgb16, bits_per_sample).astype(np.uint32)
+    expanded = (quantized * 65535 + maximum // 2) // maximum
+    return expanded.astype(np.uint16)
+
+
 _DNG_COMPRESSION = {
     "none": 1,
     "lossless_jpeg": 7,
@@ -603,9 +627,21 @@ def _packed_strip_bytes(strip: np.ndarray, bits_per_sample: int) -> bytes:
     return np.packbits(bits[:, 16 - bits_per_sample:].reshape(-1)).tobytes()
 
 
-def _jpeg_preview(image: np.ndarray, max_edge: int = 1024) -> tuple[bytes, int, int]:
+def _jpeg_preview(image: np.ndarray, max_edge: int = 1024,
+                  basic_params: dict[str, float] | None = None) -> tuple[bytes, int, int]:
     preview = Image.fromarray((image >> 8).astype(np.uint8), mode="RGB")
     preview.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+    if basic_params is not None:
+        from ricoh_filter import apply_basic_preview_effect, validate_basic_params
+
+        # Only this bounded display preview includes the editable settings.
+        # Full-resolution LinearRaw samples remain untouched.
+        values = validate_basic_params(basic_params)
+        linear = np.asarray(preview, dtype=np.float32) / 255.0
+        srgb = np.where(linear <= 0.0031308, 12.92 * linear,
+                        1.055 * np.power(linear, 1.0 / 2.4) - 0.055)
+        display = np.clip(np.rint(srgb * 255.0), 0, 255).astype(np.uint8)
+        preview = Image.fromarray(apply_basic_preview_effect(display, values), mode="RGB")
     stream = io.BytesIO()
     preview.save(stream, "JPEG", quality=88, optimize=True)
     return stream.getvalue(), preview.width, preview.height
@@ -669,8 +705,10 @@ def write_linear_dng(
         strip_byte_counts = _compress_strips(
             image_rgb16, strip_rows, encode_strip, compressed_spool
         )
-    preview, preview_width, preview_height = _jpeg_preview(image_rgb16)
     info = metadata or {}
+    preview, preview_width, preview_height = _jpeg_preview(
+        image_rgb16, basic_params=info.get("ACRBasicParams"),
+    )
     native_color_profile = _native_color_profile(info)
     make = _metadata_text(info.get("Make")) or "Imprint"
     model = _metadata_text(info.get("Model")) or "RGB Linear DNG"
@@ -1120,7 +1158,12 @@ def write_enhanced_dng(
     CFA samples and the full-resolution enhanced LinearRaw RGB samples; its
     next IFD is a display-referred sRGB JPEG preview. ``preview_rgb16`` accepts
     uint8 display-referred sRGB or the legacy uint16 representation. The two
-    full-resolution arrays must already share sensor orientation.
+    full-resolution arrays must already share sensor orientation. For enhanced
+    RGB, ``bits_per_sample`` selects the precision before encoding; the samples
+    are then expanded across the 16-bit range. Its DNG layer is always encoded
+    as 16-bit with WhiteLevel 65535. ``raw_bits_per_sample`` retains the CFA
+    precision. Compressed CFA uses bounded JPEG tiles so RAW readers decode
+    every block.
     """
     if (
         not isinstance(enhanced_rgb16, np.ndarray)
@@ -1139,8 +1182,6 @@ def write_enhanced_dng(
     _validate_sample_bits(bits_per_sample, "Enhanced RGB bit depth")
     _validate_sample_bits(raw_bits_per_sample, "CFA bit depth")
     compression_value = _compression_tag(compression)
-    if compression == "jpegxl" and bits_per_sample != 16:
-        raise ValueError("JPEG XL DNG encoding requires 16-bit enhanced RGB samples")
     if height < 1 or width < 1 or raw_cfa16.shape != (height, width):
         raise ValueError("Enhanced RGB and CFA inputs must have matching non-empty dimensions")
     if orientation not in {1, 3, 6, 8}:
@@ -1243,12 +1284,26 @@ def write_enhanced_dng(
     compressed_spool = tempfile.TemporaryFile(mode="w+b")
     try:
         raw_rows_per_strip, raw_strips = _dng_strip_layout(width, height, 1)
+        raw_tiled = compression != "none"
+        raw_tile_width = ((width + 15) // 16) * 16
+        if raw_tiled:
+            # LibRaw's DNG lossless-JPEG loader follows TileOffsets, not a
+            # multi-strip offset table. Use bounded, TIFF-aligned full-width
+            # tiles so every CFA block is actually decoded by RAW readers.
+            raw_rows_per_strip = max(16, min(
+                (_DNG_CODEC_STRIP_BYTES // (raw_tile_width * 2) // 16) * 16,
+                ((height + 15) // 16) * 16, 65520,
+            ))
+            raw_strips = [(row, min(height, row + raw_rows_per_strip))
+                          for row in range(0, height, raw_rows_per_strip)]
         rgb_rows_per_strip, rgb_strips = _dng_strip_layout(width, height, 3)
 
         def encode_cfa_strip(strip: np.ndarray) -> bytes:
             if compression == "none":
                 return _packed_strip_bytes(strip, raw_bits_per_sample)
-            return _encode_lossless_jpeg(strip, raw_bits_per_sample)
+            tile = np.zeros((raw_rows_per_strip, raw_tile_width), dtype=np.uint16)
+            tile[:strip.shape[0], :width] = strip
+            return _encode_lossless_jpeg(tile, raw_bits_per_sample)
 
         raw_byte_counts = _compress_strips(
             raw_cfa16,
@@ -1258,12 +1313,12 @@ def write_enhanced_dng(
         )
 
         def encode_enhanced_strip(strip: np.ndarray) -> bytes:
-            quantized = _quantize_samples(strip, bits_per_sample)
+            full_range = _expanded_quantized_samples(strip, bits_per_sample)
             if compression == "none":
-                return _packed_strip_bytes(quantized, bits_per_sample)
+                return _packed_strip_bytes(full_range, 16)
             if compression == "lossless_jpeg":
-                return _encode_lossless_jpeg(quantized, bits_per_sample)
-            return _encode_jpeg_xl(quantized)
+                return _encode_lossless_jpeg(full_range, 16)
+            return _encode_jpeg_xl(full_range)
 
         rgb_byte_counts = _compress_strips(
             enhanced_rgb16, rgb_strips, encode_enhanced_strip, compressed_spool
@@ -1329,11 +1384,8 @@ def write_enhanced_dng(
             _tag(258, SHORT, _shorts([raw_bits_per_sample])),
             _tag(259, SHORT, _shorts([1 if compression == "none" else 7])),
             _tag(262, SHORT, _shorts([32803])),
-            _tag(273, LONG, _longs([0] * len(raw_strips))),
             _tag(274, SHORT, _shorts([orientation])),
             _tag(277, SHORT, _shorts([1])),
-            _tag(278, LONG, _longs([raw_rows_per_strip])),
-            _tag(279, LONG, _longs(raw_byte_counts)),
             _tag(284, SHORT, _shorts([1])),
             _tag(33421, SHORT, _shorts([2, 2])),
             _tag(33422, BYTE, pattern_bytes, 4),
@@ -1346,11 +1398,21 @@ def write_enhanced_dng(
             _tag(50720, LONG, _longs(crop_size)),
             _tag(50829, LONG, _longs([0, 0, height, width])),
         ]
+        raw_offset_tag = 324 if raw_tiled else 273
+        raw_tags.extend([
+            _tag(raw_offset_tag, LONG, _longs([0] * len(raw_strips))),
+            _tag(325 if raw_tiled else 279, LONG, _longs(raw_byte_counts)),
+        ])
+        if raw_tiled:
+            raw_tags.extend([_tag(322, LONG, _longs([raw_tile_width])),
+                             _tag(323, LONG, _longs([raw_rows_per_strip]))])
+        else:
+            raw_tags.append(_tag(278, LONG, _longs([raw_rows_per_strip])))
         enhanced_tags = [
             _tag(254, LONG, _longs([16])),
             _tag(256, LONG, _longs([width])),
             _tag(257, LONG, _longs([height])),
-            _tag(258, SHORT, _shorts([bits_per_sample, bits_per_sample, bits_per_sample])),
+            _tag(258, SHORT, _shorts([16, 16, 16])),
             _tag(259, SHORT, _shorts([compression_value])),
             _tag(262, SHORT, _shorts([34892])),
             _tag(273, LONG, _longs([0] * len(rgb_strips))),
@@ -1361,7 +1423,7 @@ def write_enhanced_dng(
             _tag(284, SHORT, _shorts([1])),
             _tag(339, SHORT, _shorts([1, 1, 1])),
         _tag(50714, RATIONAL, _rationals([(0, 1), (0, 1), (0, 1)])),
-        _tag(50717, LONG, _longs([(1 << bits_per_sample) - 1] * 3)),
+        _tag(50717, LONG, _longs([65535] * 3)),
         _tag(51182, ASCII, _ascii("Imprint Dehaze")),
     ]
 
@@ -1430,7 +1492,7 @@ def write_enhanced_dng(
             for item in root_tags
         ]
         raw_tags = [
-            _tag(273, LONG, _longs(raw_offsets)) if item.code == 273 else item
+            _tag(raw_offset_tag, LONG, _longs(raw_offsets)) if item.code == raw_offset_tag else item
             for item in raw_tags
         ]
         enhanced_tags = [

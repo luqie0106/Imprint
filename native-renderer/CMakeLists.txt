@@ -12,6 +12,7 @@ set(IMPRINT_RENDERER_SOURCES
     src/renderer.cpp
     src/dehaze_reference.cpp
     src/dense_kernels.cpp
+    src/camera_profile_kernels.cpp
     src/backend_factory.cpp
 )
 set(IMPRINT_BACKEND_DEFINITIONS "")
@@ -67,9 +68,10 @@ target_compile_definitions(imprint_renderer PRIVATE IMPRINT_RENDERER_BUILD ${IMP
 target_link_libraries(imprint_renderer PRIVATE Threads::Threads)
 # Keep the dense CPU operators' float32 evaluation order aligned with NumPy.
 if(MSVC)
-    set_source_files_properties(src/dense_kernels.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+    set_source_files_properties(src/dense_kernels.cpp src/camera_profile_kernels.cpp
+        PROPERTIES COMPILE_OPTIONS "/fp:strict")
 else()
-    set_source_files_properties(src/dense_kernels.cpp PROPERTIES
+    set_source_files_properties(src/dense_kernels.cpp src/camera_profile_kernels.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
     )
 endif()

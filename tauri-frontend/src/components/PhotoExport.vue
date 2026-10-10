@@ -111,7 +111,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer));
     </button>
     <template v-if="menuOpen">
       <div class="fixed inset-0 z-40" @click="menuOpen = false"></div>
-      <div role="menu" class="absolute right-0 top-9 z-50 w-48 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+      <div role="menu" class="absolute right-0 top-9 z-50 flex w-48 flex-col rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
         <button role="menuitem" @click="configure('current')" :disabled="!selected" class="w-full rounded-lg px-3 py-2.5 text-left hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-zinc-800">导出当前照片</button>
         <button role="menuitem" @click="configure('all')" class="w-full rounded-lg px-3 py-2.5 text-left hover:bg-slate-100 dark:hover:bg-zinc-800">导出全部照片（{{ sharedPhotoSource?.files.length }}）</button>
         <button v-if="job" role="menuitem" @click="menuOpen = false; dialogOpen = true" class="mt-1 w-full rounded-lg border-t border-slate-100 px-3 py-2.5 text-left text-slate-500 hover:bg-slate-100 dark:border-zinc-800 dark:hover:bg-zinc-800">查看导出结果</button>
@@ -127,9 +127,9 @@ onBeforeUnmount(() => window.clearInterval(pollTimer));
               <div class="flex items-center justify-between"><span class="text-slate-500 dark:text-zinc-400">格式</span><span class="font-medium">DNG</span></div>
               <label class="flex items-center justify-between gap-4">位深<select v-model="bitDepth" :disabled="compression === 'jpegxl'" class="rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-zinc-700 dark:bg-zinc-800"><option value="source">与原始 RAW 相同</option><option value="16">16 位</option></select></label>
               <label class="flex items-center justify-between gap-4">压缩<select v-model="compression" class="rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-zinc-700 dark:bg-zinc-800"><option value="jpegxl">JPEG XL · 无损</option><option value="lossless_jpeg">JPEG · 无损</option><option value="none">不压缩</option></select></label>
-              <p class="text-[11px] leading-5 text-slate-500 dark:text-zinc-400">位深逐张读取；普通图片及无法识别位深的 RAW 使用 16 位。JPEG XL 使用 16 位，需要支持 DNG 1.7 的阅读器。</p>
+              <p class="text-[11px] leading-5 text-slate-500 dark:text-zinc-400">跟随原图时保留 RAW 位深和增强结果精度，增强图像以 16 位存储。普通图片及无法识别位深的 RAW 使用 16 位。JPEG XL 需要支持 DNG 1.7 的阅读器。</p>
               <div><p class="mb-2 text-slate-500 dark:text-zinc-400">输出位置</p><button @click="chooseOutput" :title="outputDir" class="flex w-full items-center gap-2 rounded-xl border border-slate-200 p-3 text-left hover:border-blue-400 dark:border-zinc-700"><FolderOpen class="h-4 w-4 shrink-0" /><span class="truncate">{{ outputDir || '选择输出文件夹' }}</span></button></div>
-              <p class="rounded-xl bg-blue-50 p-3 text-[11px] leading-5 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">合并每张照片的去朦胧、理光风格和基础调整。未启用的效果不应用。原始照片保持不变，同名输出自动编号。</p>
+              <p class="rounded-xl bg-blue-50 p-3 text-[11px] leading-5 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">去朦胧和理光风格写入图像；基础调整保存在 DNG 内嵌 XMP 中，可在 Camera Raw 中继续调整。原始照片保持不变，同名输出自动编号。</p>
             </div>
           </template>
           <div v-if="job" class="mt-4 space-y-2 text-xs">

@@ -505,6 +505,23 @@ def _apply_gr3_vivid_street_luminance_calibration(rgb, np):
     return _adjust_luminance_preserving_color(rgb, luminance, target_luminance, np)
 
 
+def _apply_display_srgb_exposure(rgb, exposure: float, np):
+    """Apply EV gain in linear light to normalized display sRGB values."""
+    if exposure == 0.0:
+        return rgb
+    linear = np.where(
+        rgb <= 0.04045,
+        rgb / 12.92,
+        ((rgb + 0.055) / 1.055) ** 2.4,
+    )
+    linear *= float(2.0 ** exposure)
+    return np.where(
+        linear <= 0.0031308,
+        linear * 12.92,
+        1.055 * np.power(linear, 1.0 / 2.4) - 0.055,
+    )
+
+
 def apply_ricoh_preview_effect(image: "object", preset_id: str,
                                basic_params: dict[str, float] | None = None,
                                use_measured_color: bool = False):
@@ -553,7 +570,7 @@ def apply_ricoh_preview_effect(image: "object", preset_id: str,
         rgb[..., 0] *= max(0.6, 1.0 + temperature / 10000.0 + tint / 20000.0)
         rgb[..., 1] *= max(0.6, 1.0 + tint / 10000.0)
         rgb[..., 2] *= max(0.6, 1.0 - temperature / 10000.0 + tint / 20000.0)
-        rgb *= float(2.0 ** float(controls["exposure"]))
+        rgb = _apply_display_srgb_exposure(rgb, float(controls["exposure"]), np)
 
         luminance = rgb @ luminance_weights
         # Apply contrast as a smooth luminance curve. Its correction is zero at
@@ -843,24 +860,35 @@ def apply_basic_preview_effect(image: "object", params: dict[str, float]):
 
 
 def _apply_basic_preview_effect_python(image: "object", params: dict[str, float]):
-    """Unchanged NumPy reference for basic controls and older-library fallback."""
+    """NumPy reference for basic controls and older-library fallback."""
     import numpy as np
     values = validate_basic_params(params)
     maximum = float(np.iinfo(image.dtype).max)
-    rgb = image.astype(np.float32) / maximum
-    rgb *= 2.0 ** values["exposure"]
-    rgb = (rgb - 0.5) * (1.0 + values["contrast"] / 100.0) + 0.5
-    luminance = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    shadow = np.clip((0.62 - luminance) / 0.62, 0, 1) ** 1.5
-    highlight = np.clip((luminance - 0.38) / 0.62, 0, 1) ** 1.5
-    rgb += (values["shadows"] * 0.0022 + values["blacks"] * 0.0008) * shadow[..., None]
-    rgb += (values["highlights"] * 0.0018 + values["whites"] * 0.0008) * highlight[..., None]
-    luminance = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    chroma = rgb - luminance[..., None]
-    chroma_level = np.max(np.abs(chroma), axis=2)
-    vibrance_factor = 1.0 + values["vibrance"] / 100.0 * np.clip(1.0 - chroma_level, 0, 1)
-    rgb = luminance[..., None] + chroma * (1.0 + values["saturation"] / 100.0) * vibrance_factor[..., None]
-    return np.clip(np.rint(rgb * maximum), 0, maximum).astype(image.dtype)
+    output = np.empty_like(image)
+    luminance_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    contrast_scale = 1.0 + values["contrast"] / 100.0
+    shadow_lift = values["shadows"] * 0.0022 + values["blacks"] * 0.0008
+    highlight_lift = values["highlights"] * 0.0018 + values["whites"] * 0.0008
+    saturation_scale = 1.0 + values["saturation"] / 100.0
+    for row in range(0, image.shape[0], 64):
+        end = min(image.shape[0], row + 64)
+        rgb = image[row:end].astype(np.float32) / maximum
+        rgb = _apply_display_srgb_exposure(rgb, values["exposure"], np)
+        rgb = (rgb - 0.5) * contrast_scale + 0.5
+        luminance = rgb @ luminance_weights
+        shadow = np.clip((0.62 - luminance) / 0.62, 0, 1) ** 1.5
+        highlight = np.clip((luminance - 0.38) / 0.62, 0, 1) ** 1.5
+        rgb += shadow_lift * shadow[..., None]
+        rgb += highlight_lift * highlight[..., None]
+        luminance = rgb @ luminance_weights
+        chroma = rgb - luminance[..., None]
+        chroma_level = np.max(np.abs(chroma), axis=2)
+        vibrance_factor = 1.0 + values["vibrance"] / 100.0 * np.clip(
+            1.0 - chroma_level, 0, 1,
+        )
+        rgb = luminance[..., None] + chroma * saturation_scale * vibrance_factor[..., None]
+        output[row:end] = np.clip(np.rint(rgb * maximum), 0, maximum).astype(image.dtype)
+    return output
 
 
 def read_photo_settings(photo: str | Path) -> dict[str, object]:

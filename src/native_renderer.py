@@ -818,11 +818,17 @@ def native_dehaze_preview(
 
 
 def native_basic(image: object, params: object) -> np.ndarray:
-    """Apply only native basic adjustments to RGB uint8/uint16 input.
+    """Apply basic adjustments, using the corrected CPU path for nonzero EV.
 
-    The current native basic implementation can differ from the Python preview
-    implementation; this bridge does not claim pixel-for-pixel equivalence.
+    The GPU shader ABI predates the linear-light exposure correction. Zero-EV
+    calls retain the GPU path; nonzero exposure uses the v2 CPU kernel or its
+    NumPy fallback.
     """
+    values = _values(params, _BASIC_FIELDS, _BASIC_LIMITS, "basic")
+    if values[0] != 0.0:
+        from ricoh_filter import apply_basic_preview_effect
+
+        return apply_basic_preview_effect(image, dict(zip(_BASIC_FIELDS, values)))
     return _render_one_stage(image, params, stage="basic")
 
 

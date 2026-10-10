@@ -72,6 +72,10 @@ from native_renderer import (
 )
 from native_sort import get_native_sort_status
 from dng_writer import write_enhanced_dng, write_linear_dng
+from camera_profile import (
+    PROFILE_PREVIEW_VERSION, resolve_profile, load_camera_rgb,
+    transfer_enhancement, render_profile, get_last_profile_backend,
+)
 from image_io import (
     OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES,
     EnhancedDNGColorError, camera_profile_names, enhanced_dng_source_data,
@@ -96,8 +100,10 @@ from lens_correction import (
 from dng_gainmap import apply_dng_gain_map
 
 LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-c1-highlights-v4"
+BASIC_PREVIEW_VERSION = "camera-profile-linear-exposure-v3"
 
 import io
+import logging
 import cv2
 import onnx
 import onnxruntime as ort
@@ -164,7 +170,7 @@ _DISPLAY_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DISPLAY_PREVIEW_BYTES = 64 * 1024 * 1024
 _DEHAZED_PREVIEW_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _MAX_DEHAZED_PREVIEW_BYTES = 64 * 1024 * 1024
-_DEHAZED_PREVIEW_STATUS_CACHE: OrderedDict[tuple, tuple[str, str, float, str]] = OrderedDict()
+_DEHAZED_PREVIEW_STATUS_CACHE: OrderedDict[tuple, tuple] = OrderedDict()
 _MAX_DEHAZED_PREVIEW_STATUS_ENTRIES = 512
 _PROCESSING_PREVIEW_CACHE: OrderedDict[tuple, tuple[np.ndarray, Any]] = OrderedDict()
 _MAX_PROCESSING_PREVIEW_BYTES = 96 * 1024 * 1024
@@ -874,6 +880,8 @@ def _set_preview_status(
         target.update(
             status=status[0], reason=status[1],
             auto_exposure_ev=status[2], auto_exposure_reason=status[3],
+            camera_profile_status=status[4] if len(status) > 4 else "legacy",
+            camera_profile_backend=status[5] if len(status) > 5 else "legacy",
         )
 
 
@@ -884,6 +892,86 @@ def _render_basic(image: np.ndarray, basic: dict[str, float], mode: str) -> np.n
         except Exception:
             pass
     return apply_basic_preview_effect(image, basic)
+
+
+# Only bounded preview camera/reference pairs are retained. Full-size data is
+# temporary; the existing full-resolution decode/base cache owns its lifetime.
+_CAMERA_PROFILE_SOURCE_CACHE: OrderedDict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = OrderedDict()
+_MAX_CAMERA_PROFILE_SOURCE_BYTES = 128 * 1024 * 1024
+
+
+def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
+                          metadata: Any, path: Path, profile: Any,
+                          exposure_ev: float, *, preview: bool) -> tuple[np.ndarray, str, str]:
+    """Render the native camera anchor before display quantization and EV clipping.
+
+    On failure the old display path still applies EV exactly once. The caller
+    consequently clears only the manual exposure from subsequent basic edits.
+    """
+    try:
+        if getattr(metadata, "source_kind", "") != "raw":
+            raise ValueError("camera profile requires RAW input")
+        if reference.shape != processed.shape:
+            reference = cv2.resize(reference, (processed.shape[1], processed.shape[0]),
+                                   interpolation=cv2.INTER_AREA)
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size, reference.shape,
+               preview, LENS_PREVIEW_VERSION)
+        with _DISPLAY_PREVIEW_LOCK:
+            cached = _CAMERA_PROFILE_SOURCE_CACHE.get(key)
+            if cached is not None:
+                _CAMERA_PROFILE_SOURCE_CACHE.move_to_end(key)
+        if cached is None:
+            camera, neutral = load_camera_rgb(path, reference.shape, preview)
+            neutral = np.asarray(neutral, dtype=np.float64)
+            camera, _, _ = _correct_enhanced_raw(camera, metadata, path, preview=True)
+            corrected_reference, _, _ = _correct_enhanced_raw(reference, metadata, path, preview=True)
+            cached = (camera, corrected_reference, neutral)
+            size = sum(value.nbytes for value in cached)
+            if preview and size <= _MAX_CAMERA_PROFILE_SOURCE_BYTES:
+                for value in cached:
+                    value.setflags(write=False)
+                with _DISPLAY_PREVIEW_LOCK:
+                    while (_CAMERA_PROFILE_SOURCE_CACHE and
+                           sum(sum(a.nbytes for a in value) for value in _CAMERA_PROFILE_SOURCE_CACHE.values())
+                           + size > _MAX_CAMERA_PROFILE_SOURCE_BYTES):
+                        _CAMERA_PROFILE_SOURCE_CACHE.popitem(last=False)
+                    _CAMERA_PROFILE_SOURCE_CACHE[key] = cached
+        camera, corrected_reference, neutral = cached
+        camera_processed = transfer_enhancement(camera, corrected_reference, processed)
+        display = render_profile(camera_processed, neutral, profile, exposure_ev)
+        return display, "applied", get_last_profile_backend()
+    except Exception as exc:
+        # A bad/missing optional profile must not break slider interaction or
+        # accidentally suppress exposure. Keep errors out of HTTP image bodies.
+        logging.getLogger(__name__).debug("Camera profile preview fallback: %s", type(exc).__name__)
+        display = _display_rgb8(processed, linear=True)
+        if exposure_ev:
+            display = _render_basic(display, BasicParamsRequest(exposure=exposure_ev).values(), "python")
+        return display, "fallback", "legacy"
+
+
+def _complete_export_basic_params(
+    params: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """Return the complete Camera Raw settings packet for a DNG export."""
+    return BasicParamsRequest(**dict(params or {})).values()
+
+
+def _export_metadata_with_basic_params(
+    source_metadata: Mapping[str, Any], basic_params: dict[str, float],
+) -> dict[str, Any]:
+    """Keep source EXIF and explicitly attach this export's editable settings."""
+    output_metadata = dict(source_metadata)
+    # These values describe an existing source-side edit and must not be copied
+    # to a new DNG, where they could apply the edit a second time.
+    for key in (
+        "ACRBasicParams", "XMP", "XMPPacket", "XMPData",
+        "DehazeCompatibilityCurves",
+    ):
+        output_metadata.pop(key, None)
+    output_metadata["ACRBasicParams"] = dict(basic_params)
+    return output_metadata
 
 
 def _clear_full_resolution_preview_caches() -> None:
@@ -963,6 +1051,8 @@ def _shutdown_full_resolution_preview_cache() -> None:
             timer.cancel()
         _clear_full_resolution_preview_caches()
         _release_unused_preview_memory()
+    with _DISPLAY_PREVIEW_LOCK:
+        _CAMERA_PROFILE_SOURCE_CACHE.clear()
 
 
 app.router.add_event_handler("shutdown", _shutdown_full_resolution_preview_cache)
@@ -995,14 +1085,17 @@ def _full_resolution_decoded_image(
 
 
 def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
-                                  params: DehazeParams, backend: str
+                                  params: DehazeParams, backend: str,
+                                  profile: Any = None, exposure_ev: float = 0.0
                                   ) -> tuple[np.ndarray, tuple, bool, str]:
     """Called under the full-preview lock; cache a single immutable RGB8 base."""
     stat = path.stat()
     key = (req.session_id, req.photo_id, str(path), stat.st_mtime_ns, stat.st_size,
            DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
            LENS_PREVIEW_VERSION, tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
-           req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb, backend)
+           req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb, backend,
+           PROFILE_PREVIEW_VERSION, profile.fingerprint if profile is not None else None,
+           exposure_ev if profile is not None else 0.0)
     cached = _FULL_RESOLUTION_BASE_CACHE.get(key)
     if cached is not None:
         decoded_key = key[:5]
@@ -1031,7 +1124,12 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
     enhanced16 = _linear_float_to_uint16(enhanced)
     del enhanced
     enhanced16, _, _ = _correct_enhanced_raw(enhanced16, metadata, path, preview=True)
-    display = _display_rgb8(enhanced16, linear=True)
+    if profile is not None:
+        display, profile_status, profile_backend = _profile_display_base(
+            enhanced16, image, metadata, path, profile, exposure_ev, preview=False)
+        preview_status += (profile_status, profile_backend)
+    else:
+        display = _display_rgb8(enhanced16, linear=True)
     del enhanced16
     display.setflags(write=False)
     if display.nbytes <= _MAX_FULL_RESOLUTION_BASE_BYTES:
@@ -1144,6 +1242,8 @@ def _cached_dehazed_display_preview(
     auto_exposure: bool = False,
     nonlocal_mode: str | None = None,
     status_out: dict[str, Any] | None = None,
+    profile: Any = None,
+    manual_exposure_ev: float = 0.0,
 ) -> np.ndarray:
     """Cache the post-dehaze display base so basic and Ricoh edits stay responsive."""
     effective_nonlocal_mode = resolve_nonlocal_mode(nonlocal_mode)
@@ -1158,6 +1258,8 @@ def _cached_dehazed_display_preview(
         bool(auto_exposure),
         effective_nonlocal_mode,
         bool(color_manage_srgb),
+        PROFILE_PREVIEW_VERSION, profile.fingerprint if profile is not None else None,
+        manual_exposure_ev if profile is not None else 0.0,
     )
     with _DISPLAY_PREVIEW_LOCK:
         cached = _DEHAZED_PREVIEW_CACHE.get(key)
@@ -1206,7 +1308,13 @@ def _cached_dehazed_display_preview(
     _set_preview_status(status_out, status)
     dehazed16 = _linear_float_to_uint16(dehazed)
     corrected, _, _ = _correct_enhanced_raw(dehazed16, metadata, path, preview=True)
-    display = _display_rgb8(corrected, linear=True)
+    if profile is not None:
+        display, profile_status, profile_backend = _profile_display_base(
+            corrected, image, metadata, path, profile, manual_exposure_ev, preview=True)
+        status += (profile_status, profile_backend)
+        _set_preview_status(status_out, status)
+    else:
+        display = _display_rgb8(corrected, linear=True)
     display.setflags(write=False)
 
     if display.nbytes <= _MAX_DEHAZED_PREVIEW_BYTES:
@@ -1247,7 +1355,8 @@ def create_ricoh_preview(req: RicohPreviewRequest):
         return JSONResponse(status_code=404, content={"error": "照片预览会话已失效"})
     basic = req.basic_params.values()
     cache_key = (req.session_id, req.photo_id, req.preset_id, req.max_edge,
-                 req.ricoh_backend, tuple(basic[key] for key in sorted(basic)))
+                 BASIC_PREVIEW_VERSION, req.ricoh_backend,
+                 tuple(basic[key] for key in sorted(basic)))
     with _ENHANCE_LOCK:
         cached = _RICOH_PREVIEW_CACHE.get(cache_key)
     if cached is not None:
@@ -1827,14 +1936,21 @@ def create_enhance_preview(req: EnhancePreviewRequest):
     effective_preset_id = req.ricoh_preset_id if req.mode == "dehazed" else None
     render_mode = _render_mode(req.render_backend, req.use_gpu)
     basic_mode = _basic_mode(req.basic_backend, render_mode)
+    # Ricoh presets merge their own exposure/curves; retain that existing path
+    # until its camera-profile stage has been independently calibrated.
+    profile = resolve_profile(Path(path), {}) if req.ricoh_preset_id is None else None
+    adjustment_basic = dict(basic)
+    if profile is not None:
+        adjustment_basic["exposure"] = 0.0
     cache_key = (req.session_id, req.photo_id, stat.st_mtime_ns, stat.st_size,
                  DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
-                 LENS_PREVIEW_VERSION,
+                 LENS_PREVIEW_VERSION, BASIC_PREVIEW_VERSION,
                  dehaze_values, req.max_edge,
                  req.preview_level, bool(req.full_resolution), req.mode,
                  req.algorithm, bool(req.auto_mode), bool(req.auto_exposure), req.nonlocal_mode,
                  effective_preset_id, render_mode, basic_mode, req.ricoh_backend,
-                 bool(req.color_manage_srgb),
+                 bool(req.color_manage_srgb), PROFILE_PREVIEW_VERSION,
+                 profile.fingerprint if profile is not None else None,
                  tuple(basic[key] for key in sorted(basic)))
 
     if effective_preset_id is not None:
@@ -1846,7 +1962,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
         if cached is not None:
             (payload, width, height, nonlocal_status, nonlocal_reason,
-             auto_exposure_ev, auto_exposure_reason) = cached
+             auto_exposure_ev, auto_exposure_reason, camera_profile_status, camera_profile_backend) = cached
             return Response(
                 content=payload,
                 media_type="image/jpeg",
@@ -1858,6 +1974,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                     "X-Dehaze-Nonlocal-Reason": nonlocal_reason,
                     "X-Auto-Exposure-EV": format(auto_exposure_ev, ".8g"),
                     "X-Auto-Exposure-Reason": auto_exposure_reason,
+                    "X-Camera-Profile-Status": camera_profile_status,
+                    "X-Camera-Profile-Backend": camera_profile_backend,
                 },
             )
     try:
@@ -1866,6 +1984,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         auto_exposure_ev = 0.0
         auto_exposure_reason = "off"
         preview_headers: dict[str, str] = {}
+        camera_profile_status = "legacy"
+        camera_profile_backend = "legacy"
         if req.full_resolution:
             started = time.perf_counter()
             waiting = started
@@ -1874,8 +1994,13 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 base_started = time.perf_counter()
                 if req.mode == "original":
                     image, metadata, decode_hit = _full_resolution_decoded_image(req, Path(path))
+                    reference = image
                     image, _, _ = _correct_enhanced_raw(image, metadata, Path(path), preview=True)
-                    display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+                    if profile is not None:
+                        display, camera_profile_status, camera_profile_backend = _profile_display_base(
+                            image, reference, metadata, Path(path), profile, 0.0, preview=False)
+                    else:
+                        display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
                     if req.color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
                         display = standard_preview_to_srgb(display, path)
                     base_cache = "bypass"
@@ -1883,8 +2008,11 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 else:
                     display, preview_status, hit, decode_hit = _full_resolution_display_base(
                         req, Path(path), params, render_mode,
+                        **({"profile": profile, "exposure_ev": basic["exposure"]} if profile is not None else {}),
                     )
-                    nonlocal_status, nonlocal_reason, auto_exposure_ev, auto_exposure_reason = preview_status
+                    nonlocal_status, nonlocal_reason, auto_exposure_ev, auto_exposure_reason = preview_status[:4]
+                    camera_profile_status = preview_status[4] if len(preview_status) > 4 else "legacy"
+                    camera_profile_backend = preview_status[5] if len(preview_status) > 5 else "legacy"
                     base_cache = "hit" if hit else "miss"
                     decode_cache = decode_hit
                 width, height = int(display.shape[1]), int(display.shape[0])
@@ -1896,7 +2024,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                     effected = _render_ricoh(display, effective_preset_id, basic,
                                              req.ricoh_backend, use_measured_color=True)
                 else:
-                    effected = _render_basic(display, basic, basic_mode)
+                    effected = _render_basic(display, adjustment_basic, basic_mode)
                 adjustments_time = time.perf_counter() - adjustments_started
                 encoding_started = time.perf_counter()
                 payload = _encode_preview(effected)
@@ -1912,6 +2040,17 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 # Cold decodes may take longer than the idle window. Start the
                 # complete idle interval after rendering/encoding finishes.
                 _touch_full_resolution_preview_cache()
+        elif req.mode == "original" and profile is not None:
+            original_status: dict[str, Any] = {}
+            display = _cached_dehazed_display_preview(
+                req.session_id, req.photo_id, Path(path), req.max_edge,
+                DehazeParams(strength=0.0), "cpu", req.color_manage_srgb,
+                profile=profile, status_out=original_status,
+            )
+            camera_profile_status = str(original_status.get("camera_profile_status", "legacy"))
+            camera_profile_backend = str(original_status.get("camera_profile_backend", "legacy"))
+            payload = _encode_preview(display)
+            width, height = display.shape[1], display.shape[0]
         elif req.mode == "original" and req.color_manage_srgb:
             display = _cached_display_preview(
                 req.session_id, req.photo_id, Path(path), req.max_edge,
@@ -1930,18 +2069,21 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 auto_exposure=req.auto_exposure,
                 nonlocal_mode=req.nonlocal_mode,
                 status_out=status_out,
+                **({"profile": profile, "manual_exposure_ev": basic["exposure"]} if profile is not None else {}),
             )
             nonlocal_status = status_out.get("status", "off")
             nonlocal_reason = status_out.get("reason", "")
             auto_exposure_ev = float(status_out.get("auto_exposure_ev", 0.0))
             auto_exposure_reason = str(status_out.get("auto_exposure_reason", "off"))
+            camera_profile_status = str(status_out.get("camera_profile_status", "legacy"))
+            camera_profile_backend = str(status_out.get("camera_profile_backend", "legacy"))
             if effective_preset_id is not None:
                 effected = _render_ricoh(
                     display, effective_preset_id, basic, req.ricoh_backend,
                     use_measured_color=True,
                 )
             else:
-                effected = _render_basic(display, basic, basic_mode)
+                effected = _render_basic(display, adjustment_basic, basic_mode)
             payload = _encode_preview(effected)
             width, height = display.shape[1], display.shape[0]
         else:
@@ -1955,7 +2097,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 _insert_bounded_jpeg_preview(
                     _ENHANCE_PREVIEW_CACHE, cache_key,
                     (payload, width, height, nonlocal_status, nonlocal_reason,
-                     auto_exposure_ev, auto_exposure_reason),
+                     auto_exposure_ev, auto_exposure_reason, camera_profile_status, camera_profile_backend),
                     max_entries=128, max_bytes=_MAX_ENHANCE_PREVIEW_CACHE_BYTES,
                     payload_index=0,
                 )
@@ -1971,6 +2113,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 "X-Dehaze-Nonlocal-Reason": nonlocal_reason,
                 "X-Auto-Exposure-EV": format(auto_exposure_ev, ".8g"),
                 "X-Auto-Exposure-Reason": auto_exposure_reason,
+                "X-Camera-Profile-Status": camera_profile_status,
+                "X-Camera-Profile-Backend": camera_profile_backend,
             },
         )
     except KeyError:
@@ -2215,17 +2359,19 @@ def _resolve_export_bit_depth(metadata: Any, requested: str) -> tuple[int, int |
         return 16, None, "rgb_16"
 
     exif = getattr(metadata, "exif", {}) or {}
-    raw_bits = _parse_bits_per_sample(exif.get("BitsPerSample"))
-    source = "exif" if raw_bits is not None else ""
+    # Container EXIF can describe the 8-bit embedded JPEG rather than the
+    # sensor (DJI DNG stores that JPEG in IFD0). LibRaw's sensor metadata is
+    # authoritative for CFA depth; never use the preview's BitsPerSample.
+    raw_bits = _parse_bits_per_sample(getattr(metadata, "bit_depth", None))
+    source = "sensor_white_level" if raw_bits is not None else ""
     if raw_bits is None:
         raw_bits = _infer_bits_from_white_level(exif.get("DNGWhiteLevel"))
         if raw_bits is not None:
             source = "dng_white_level"
     if raw_bits is None:
-        # ImageMetadata.bit_depth is populated from LibRaw's sensor white level.
-        raw_bits = _parse_bits_per_sample(getattr(metadata, "bit_depth", None))
+        raw_bits = _parse_bits_per_sample(exif.get("BitsPerSample"))
         if raw_bits is not None:
-            source = "sensor_white_level"
+            source = "exif"
     if raw_bits is None:
         raw_bits = 16
         source = "fallback_16"
@@ -2329,29 +2475,26 @@ def _run_enhance_job(
             enhanced = _render_dehaze(
                 linear_input, photo_params, backend, auto_mode=photo_auto_mode,
                 nonlocal_mode=photo_nonlocal_mode,
-                **({"auto_exposure": True, "diagnostics": render_diagnostics}
-                   if photo_auto_exposure else {}),
+                auto_exposure=photo_auto_exposure, diagnostics=render_diagnostics,
             )
             photo_auto_exposure_ev = float(render_diagnostics.get("auto_exposure_ev", 0.0))
-            photo_auto_exposure_reason = str(
-                render_diagnostics.get("auto_exposure_reason", "off")
-            )
+            photo_auto_exposure_reason = str(render_diagnostics.get("auto_exposure_reason", "off"))
             enhanced16 = _linear_float_to_uint16(enhanced)
             corrected, correction, gain_map_applied = _correct_enhanced_raw(
                 enhanced16, metadata, Path(path), require_correction=True,
             )
-            basic = (basic_params_by_photo or {}).get(photo_id, {})
+            source_basic = (basic_params_by_photo or {}).get(photo_id, {})
+            basic = BasicParamsRequest(**dict(source_basic or {})).values()
+            # Automatic exposure precedes dehaze in the preview and is baked
+            # in the same order here. Only manual basic controls stay editable.
+            export_basic = _complete_export_basic_params(basic)
             photo_preset_id = (preset_ids_by_photo or {}).get(photo_id)
             if photo_preset_id is not None:
                 display = _linear16_to_srgb16(corrected)
                 adjusted = _render_ricoh(
-                    display, photo_preset_id, basic, ricoh_backend,
+                    display, photo_preset_id, BasicParamsRequest().values(), ricoh_backend,
                     use_measured_color=True,
                 )
-                corrected = _srgb16_to_linear16(adjusted)
-            elif basic and any(basic.values()):
-                display = _linear16_to_srgb16(corrected)
-                adjusted = _render_basic(display, basic, basic_backend)
                 corrected = _srgb16_to_linear16(adjusted)
             del enhanced
             if cancel_event.is_set():
@@ -2359,7 +2502,9 @@ def _run_enhance_job(
                     item["status"] = "cancelled"
                     job["status"] = "cancelled"
                 break
-            output_metadata = dict(metadata.exif)
+            output_metadata = _export_metadata_with_basic_params(
+                metadata.exif, export_basic,
+            )
             operations = []
             if correction.distortion_applied:
                 operations.append("distortion")
@@ -2384,12 +2529,15 @@ def _run_enhance_job(
             bits_per_sample, raw_bits_per_sample, bit_depth_source = _resolve_export_bit_depth(
                 metadata, requested_bit_depth,
             )
-            output_bits_per_sample = _resolve_output_bits_per_sample(
-                bits_per_sample, compression,
+            # Enhanced image data is already linearized Stage 3 data. Adobe
+            # interprets integer samples in full uint16 range regardless of
+            # the source CFA depth. Keep precision separate from storage.
+            output_bits_per_sample = (
+                16 if is_raw else _resolve_output_bits_per_sample(bits_per_sample, compression)
             )
             writer_options: dict[str, Any] = (
                 {} if is_raw and compression is None
-                else {"bits_per_sample": output_bits_per_sample}
+                else {"bits_per_sample": bits_per_sample if is_raw else output_bits_per_sample}
             )
             # Older direct callers and test doubles can omit these options;
             # the HTTP export route always supplies the request's default.
@@ -2429,6 +2577,10 @@ def _run_enhance_job(
                 elif orientation == 3:
                     preview_rgb = np.rot90(preview_rgb, 2)
                 preview_rgb = np.ascontiguousarray(preview_rgb)
+                if any(export_basic.values()):
+                    preview_rgb = np.ascontiguousarray(
+                        _render_basic(preview_rgb.copy(), export_basic, basic_backend),
+                    )
                 output_path = write_enhanced_dng(
                     camera_rgb, mosaic, cfa_pattern, path, output_dir,
                     output_metadata, orientation=orientation, preview_rgb16=preview_rgb,
@@ -2445,7 +2597,7 @@ def _run_enhance_job(
                 xmp_status = "failed"
                 try:
                     write_dehaze_settings(
-                        path, photo_params.__dict__, basic, auto_mode=photo_auto_mode,
+                        path, photo_params.__dict__, source_basic, auto_mode=photo_auto_mode,
                         nonlocal_mode=photo_nonlocal_mode,
                         auto_exposure=photo_auto_exposure,
                         compatibility_curves=_build_dehaze_xmp_curves(
@@ -2469,6 +2621,9 @@ def _run_enhance_job(
                         "xmp_status": xmp_status,
                         "bits_per_sample": output_bits_per_sample,
                         "output_bits_per_sample": output_bits_per_sample,
+                        "sample_precision_bits": (
+                            bits_per_sample if compression is not None else output_bits_per_sample
+                        ),
                         "raw_bits_per_sample": raw_bits_per_sample,
                         "bit_depth_source": bit_depth_source,
                         "auto_exposure_ev": photo_auto_exposure_ev,
@@ -2614,34 +2769,42 @@ def _run_ricoh_job(job_id: str, session_id: str, preset_id: str | None, output_d
             photo_preset_id = (preset_ids_by_photo or {}).get(photo_id, preset_id)
             image, metadata = read_image(path, preview=False)
             source16 = to_uint16(image)
-            # Camera Raw controls operate on a display-referred rendering.
-            # Convert back to linear RGB before writing the Linear DNG.
-            display16 = (
-                _linear16_to_srgb16(source16)
-                if getattr(metadata, "color_space", "") == "Linear sRGB"
-                else source16
-            )
-            basic = (basic_params_by_photo or {}).get(photo_id)
+            source_basic = (basic_params_by_photo or {}).get(photo_id)
+            basic = BasicParamsRequest(**dict(source_basic or {})).values()
+            export_basic = _complete_export_basic_params(basic)
             if photo_preset_id is None:
-                effected_display16 = _render_basic(
-                    display16, basic or BasicParamsRequest().values(), basic_backend,
+                # No appearance controls are baked without a Ricoh preset.
+                # Keep already-linear samples exact instead of round-tripping
+                # them through the display transfer function.
+                effected_linear16 = (
+                    source16
+                    if getattr(metadata, "color_space", "") == "Linear sRGB"
+                    else _srgb16_to_linear16(source16)
                 )
             else:
-                effected_display16 = _render_ricoh(display16, photo_preset_id, basic,
-                                                    ricoh_backend)
-            effected_linear16 = _srgb16_to_linear16(effected_display16)
+                display16 = (
+                    _linear16_to_srgb16(source16)
+                    if getattr(metadata, "color_space", "") == "Linear sRGB"
+                    else source16
+                )
+                effected_display16 = _render_ricoh(
+                    display16, photo_preset_id, BasicParamsRequest().values(),
+                    ricoh_backend,
+                )
+                effected_linear16 = _srgb16_to_linear16(effected_display16)
             output_path = write_linear_dng(
-                effected_linear16, path, output_dir, dict(metadata.exif), bits_per_sample=16,
+                effected_linear16, path, output_dir,
+                _export_metadata_with_basic_params(metadata.exif, export_basic),
+                bits_per_sample=16,
                 name_suffix="_ricoh",
             )
-            # The exported DNG already contains its rendered appearance. Keep
-            # Camera Raw preset adjustments on the source only, or Adobe would
-            # apply the same look a second time when opening the DNG.
-            xmp_status: dict[str, str] = {"source": "not_applicable", "output": "rendered"}
+            # Ricoh presets remain baked into the DNG. Basic controls are
+            # embedded as editable Camera Raw settings by the DNG writer.
+            xmp_status: dict[str, str] = {"source": "not_applicable", "output": "embedded"}
             if photo_preset_id is not None:
                 xmp_status["source"] = "failed"
                 try:
-                    write_ricoh_preset(path, photo_preset_id, basic)
+                    write_ricoh_preset(path, photo_preset_id, source_basic)
                     xmp_status["source"] = "written"
                 except Exception:
                     xmp_status["source"] = "failed"

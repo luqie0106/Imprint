@@ -173,7 +173,7 @@ def basic_pixels(source, params):
     sample = ct.c_uint8 if image.dtype == np.uint8 else ct.c_uint16
     pointer = ct.POINTER(sample)
     suffix = "rgb8" if image.dtype == np.uint8 else "rgb16"
-    fn = _function("im_native_basic_" + suffix, [ct.c_uint32, ct.c_uint32, pointer,
+    fn = _function("im_native_basic_v2_" + suffix, [ct.c_uint32, ct.c_uint32, pointer,
                    ct.c_size_t, ct.POINTER(_BasicParams), pointer, ct.c_size_t])
     output = np.empty_like(image)
     _check(fn(w, h, image.ctypes.data_as(pointer), image.size, ct.byref(_BasicParams(*values)),
@@ -223,3 +223,69 @@ def rgb_peak(source):
     result = ct.c_float()
     _check(fn(w, h, _pointer(image), image.size, ct.byref(result)), "RGB peak")
     return float(result.value)
+
+
+def _profile_rgb16(image):
+    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("camera profile source must be RGB")
+    if image.dtype != np.uint16:
+        raise TypeError("camera profile source must use uint16")
+    h, w = image.shape[:2]
+    if not h or not w or h > 65535 or w > 65535 or image.size > (1 << 29):
+        raise ValueError("invalid camera profile dimensions")
+    return np.ascontiguousarray(image), w, h
+
+
+def camera_profile_pixels(source, matrix, white, gain, look, dims, encoding, tone, projection):
+    """Fused native camera → profile look/tone → display RGB8, without a GPU."""
+    image, w, h = _profile_rgb16(source)
+    camera_matrix = np.asarray(matrix, dtype=np.float32)
+    white_rgb = np.asarray(white, dtype=np.float32)
+    project_matrix = np.asarray(projection, dtype=np.float32)
+    if camera_matrix.shape != (3, 3) or white_rgb.shape != (3,) or project_matrix.shape != (3, 3):
+        raise ValueError("invalid camera profile constants")
+    constants = np.ascontiguousarray(np.concatenate((camera_matrix.ravel(), white_rgb,
+        np.asarray([gain], dtype=np.float32), project_matrix.ravel())), dtype=np.float32)
+    hue, saturation, value = (int(v) for v in dims)
+    table = np.ascontiguousarray(look, dtype=np.float32)
+    curve = np.ascontiguousarray(tone, dtype=np.float32)
+    if (hue < 1 or saturation < 2 or value < 2 or hue * saturation * value > 1_000_000
+            or table.shape != (value, hue, saturation, 3)
+            or curve.ndim != 2 or curve.shape[1] != 2 or len(curve) < 2
+            or int(encoding) not in (0, 1)):
+        raise ValueError("invalid camera profile look or tone data")
+    if not all(np.isfinite(a).all() for a in (constants, table, curve)):
+        raise ValueError("camera profile constants must be finite")
+    u16 = ct.POINTER(ct.c_uint16)
+    u8 = ct.POINTER(ct.c_uint8)
+    fn = _function("im_native_camera_profile_render_rgb16_to_rgb8", [ct.c_uint32, ct.c_uint32,
+        u16, ct.c_size_t, _F, ct.c_size_t, _F, ct.c_size_t,
+        ct.c_uint32, ct.c_uint32, ct.c_uint32, ct.c_uint32,
+        _F, ct.c_size_t, u8, ct.c_size_t])
+    output = np.empty(image.shape, dtype=np.uint8)
+    _check(fn(w, h, image.ctypes.data_as(u16), image.size, _pointer(constants), constants.size,
+              _pointer(table), table.size, hue, saturation, value, int(encoding),
+              _pointer(curve), curve.size, output.ctypes.data_as(u8), output.size),
+           "camera profile render")
+    return output
+
+
+def camera_profile_transfer(camera, reference, processed, inverse_matrix):
+    """Transfer linear enhancement residuals onto the native camera anchor."""
+    image, w, h = _profile_rgb16(camera)
+    ref, rw, rh = _profile_rgb16(reference)
+    target, tw, th = _profile_rgb16(processed)
+    inverse = np.ascontiguousarray(inverse_matrix, dtype=np.float32)
+    if (rw, rh) != (w, h) or (tw, th) != (w, h) or inverse.shape != (3, 3):
+        raise ValueError("camera profile transfer shape mismatch")
+    if not np.isfinite(inverse).all():
+        raise ValueError("camera profile transfer matrix must be finite")
+    u16 = ct.POINTER(ct.c_uint16)
+    fn = _function("im_native_camera_profile_transfer_rgb16", [ct.c_uint32, ct.c_uint32,
+        u16, ct.c_size_t, u16, ct.c_size_t, u16, ct.c_size_t,
+        _F, ct.c_size_t, u16, ct.c_size_t])
+    output = np.empty_like(image)
+    _check(fn(w, h, image.ctypes.data_as(u16), image.size, ref.ctypes.data_as(u16), ref.size,
+              target.ctypes.data_as(u16), target.size, _pointer(inverse), inverse.size,
+              output.ctypes.data_as(u16), output.size), "camera profile transfer")
+    return output

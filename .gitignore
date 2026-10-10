@@ -164,3 +164,4 @@ models/clip-vit-large-patch14/
 
 test_images/
 qa/
+artifacts/

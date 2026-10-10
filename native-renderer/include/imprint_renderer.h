@@ -85,6 +85,23 @@ IMPRINT_API im_status im_native_basic_rgb16(uint32_t width,
                                            const im_basic_params *params,
                                            uint16_t *destination,
                                            size_t destination_samples);
+/* Version 2 applies exposure as linear-light gain to display-sRGB samples.
+   Callers requiring that transfer must probe these symbols; older libraries
+   may expose only the original basic ABI. */
+IMPRINT_API im_status im_native_basic_v2_rgb8(uint32_t width,
+                                              uint32_t height,
+                                              const uint8_t *source,
+                                              size_t source_samples,
+                                              const im_basic_params *params,
+                                              uint8_t *destination,
+                                              size_t destination_samples);
+IMPRINT_API im_status im_native_basic_v2_rgb16(uint32_t width,
+                                               uint32_t height,
+                                               const uint16_t *source,
+                                               size_t source_samples,
+                                               const im_basic_params *params,
+                                               uint16_t *destination,
+                                               size_t destination_samples);
 
 typedef struct im_filter_params {
     float curve_mix;                /* [0, 1] */
@@ -245,6 +262,32 @@ IMPRINT_API im_status im_native_relief_transmission(uint32_t width, uint32_t hei
     const float *source, size_t source_values, const float *relief, size_t relief_count,
     const float *airlight_rgb, float base, float knee, float initial_t,
     float *destination, size_t destination_count);
+
+/* Camera profile render. constants22 is camera-to-ProPhoto row-major 3x3,
+   white RGB, exposure gain, then ProPhoto-to-sRGB row-major 3x3. look_table
+   is [value,hue,saturation,channel]; tone_curve is interleaved [x,y] pairs.
+   Counts are exact interleaved RGB sample/value counts. Output never aliases
+   any input. look_encoding is 0 for linear value or 1 for encoded sRGB value. */
+IMPRINT_API im_status im_native_camera_profile_render_rgb16_to_rgb8(
+    uint32_t width, uint32_t height,
+    const uint16_t *camera_rgb, size_t source_values,
+    const float *constants22, size_t constants_count,
+    const float *look_table, size_t look_values,
+    uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+    uint32_t look_encoding,
+    const float *tone_curve, size_t tone_values,
+    uint8_t *destination, size_t destination_values);
+
+/* Transfer enhancement using processed/reference luma ratio and color residual.
+   inverse_matrix9 is row-major and residual is multiplied on the left.
+   Counts are exact interleaved RGB sample counts. Output never aliases inputs. */
+IMPRINT_API im_status im_native_camera_profile_transfer_rgb16(
+    uint32_t width, uint32_t height,
+    const uint16_t *camera_rgb, size_t camera_values,
+    const uint16_t *reference_rgb, size_t reference_values,
+    const uint16_t *processed_rgb, size_t processed_values,
+    const float *inverse_matrix9, size_t inverse_count,
+    uint16_t *destination, size_t destination_values);
 
 /* Same physical float contract, with the shared dark-background guard fused
    into the GPU pass. dark_floor must be finite and within [0, 2]. */

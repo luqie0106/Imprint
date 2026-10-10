@@ -101,6 +101,18 @@ float luminance(RGB value) {
     return rg + value.b * kLumaB;
 }
 
+float srgb_to_linear(float value) {
+    return value <= 0.04045f
+        ? value / 12.92f
+        : std::pow((value + 0.055f) / 1.055f, 2.4f);
+}
+
+float linear_to_srgb(float value) {
+    return value <= 0.0031308f
+        ? value * 12.92f
+        : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
+}
+
 float smoothstep(float low, float high, float value) {
     const float position = clamp((value - low) / (high - low), 0.0f, 1.0f);
     return position * position * (3.0f - 2.0f * position);
@@ -447,13 +459,17 @@ RGB protect_dark_pixel(RGB source, RGB result, float floor_level, float width) {
 }
 
 RGB basic_pixel(RGB source, const im_basic_params &params, float maximum) {
-    const float exposure_gain = static_cast<float>(std::pow(2.0, static_cast<double>(params.exposure)));
     const float contrast_scale = static_cast<float>(1.0 + static_cast<double>(params.contrast) / 100.0);
-    RGB rgb{
-        (source.r / maximum) * exposure_gain,
-        (source.g / maximum) * exposure_gain,
-        (source.b / maximum) * exposure_gain,
-    };
+    RGB rgb{source.r / maximum, source.g / maximum, source.b / maximum};
+    if (params.exposure != 0.0f) {
+        const float exposure_gain = static_cast<float>(
+            std::pow(2.0, static_cast<double>(params.exposure)));
+        rgb = {
+            linear_to_srgb(srgb_to_linear(rgb.r) * exposure_gain),
+            linear_to_srgb(srgb_to_linear(rgb.g) * exposure_gain),
+            linear_to_srgb(srgb_to_linear(rgb.b) * exposure_gain),
+        };
+    }
     rgb = {(rgb.r - 0.5f) * contrast_scale + 0.5f,
            (rgb.g - 0.5f) * contrast_scale + 0.5f,
            (rgb.b - 0.5f) * contrast_scale + 0.5f};
@@ -889,6 +905,30 @@ extern "C" IMPRINT_API im_status im_native_basic_rgb8(
 }
 
 extern "C" IMPRINT_API im_status im_native_basic_rgb16(
+    uint32_t width, uint32_t height, const uint16_t *source,
+    size_t source_samples, const im_basic_params *params,
+    uint16_t *destination, size_t destination_samples) {
+    try {
+        return basic_rgb_run(width, height, source, source_samples, params,
+                             destination, destination_samples);
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_basic_v2_rgb8(
+    uint32_t width, uint32_t height, const uint8_t *source,
+    size_t source_samples, const im_basic_params *params,
+    uint8_t *destination, size_t destination_samples) {
+    try {
+        return basic_rgb_run(width, height, source, source_samples, params,
+                             destination, destination_samples);
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_basic_v2_rgb16(
     uint32_t width, uint32_t height, const uint16_t *source,
     size_t source_samples, const im_basic_params *params,
     uint16_t *destination, size_t destination_samples) {
