@@ -9,6 +9,8 @@ This product includes DNG technology under license by Adobe.
 
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -32,6 +34,7 @@ from PIL import Image
 BYTE, ASCII, SHORT, LONG, RATIONAL, UNDEFINED, SLONG, SRATIONAL, FLOAT, DOUBLE = 1, 2, 3, 4, 5, 7, 9, 10, 11, 12
 TYPE_SIZES = {BYTE: 1, ASCII: 1, SHORT: 2, LONG: 4, RATIONAL: 8, UNDEFINED: 1, SLONG: 4, SRATIONAL: 8, FLOAT: 4, DOUBLE: 8}
 _OUTPUT_LOCK = threading.Lock()
+_MAX_STRIP_ENCODER_WORKERS = 4
 
 
 @dataclass
@@ -310,6 +313,7 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
     camera_model = _metadata_text(info.get("Model"))
     picture_control = _metadata_text(info.get("NikonPictureControlName"))
     source_camera_profile = _metadata_text(info.get("SourceCameraProfileName"))
+    correction_unavailable = bool(info.get("LensCorrectionUnavailable"))
     embedded_profile = _metadata_text(info.get("DNGEmbeddedProfileName"))
     acr_camera_profile = embedded_profile
     source_profile_name = info.get("SourceCameraProfileName")
@@ -334,6 +338,7 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
         and source_camera_profile is None
         and embedded_profile is None
         and basic_params is None
+        and not correction_unavailable
     ):
         return None
     lens_serial = _metadata_text(info.get("LensSerialNumber"))
@@ -357,9 +362,12 @@ def _acr_lens_xmp(source: Path, info: dict[str, Any]) -> bytes | None:
         auxiliary.append(f'aux:LensSerialNumber="{escape(lens_serial, {chr(34): "&quot;"})}"')
     if camera_serial is not None:
         auxiliary.append(f'aux:SerialNumber="{escape(camera_serial, {chr(34): "&quot;"})}"')
-    correction_applied = bool(info.get("LensCorrectionApplied"))
+    correction_applied = bool(info.get("LensCorrectionApplied")) and not correction_unavailable
     correction_attributes: list[str] = []
-    if correction_applied:
+    if correction_unavailable:
+        correction_attributes.append('imprint:LensCorrectionUnavailable="True"')
+        profile_attributes = '   crs:LensProfileEnable="0"\n'
+    elif correction_applied:
         correction_attributes.append('imprint:LensCorrectionApplied="True"')
         for key, attribute in (
             ("LensCorrectionEngine", "LensCorrectionEngine"),
@@ -724,7 +732,7 @@ def write_linear_dng(
     acr_xmp = _acr_lens_xmp(source, info)
     lens_info = info.get("LensSpecification")
     correction_description = None
-    if info.get("LensCorrectionApplied"):
+    if info.get("LensCorrectionApplied") and not info.get("LensCorrectionUnavailable"):
         operations = _metadata_text(info.get("LensCorrectionOperations")) or "lens correction"
         correction_description = _ascii_metadata(
             f"Imprint baked Lensfun correction into pixels: {operations}"
@@ -1041,16 +1049,45 @@ def _compress_strips(
     strips: list[tuple[int, int]],
     encoder,
     spool,
+    workers: int = 1,
 ) -> list[int]:
-    """Write encoded or raw image strips to a seekable spool and return bytecounts."""
+    """Write strips in source order and return their bytecounts.
+
+    Parallel encoding uses a bounded window so completed compressed strips do
+    not accumulate without limit while an earlier strip is still encoding.
+    """
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("strip encoder workers must be a positive integer")
+    workers = min(workers, _MAX_STRIP_ENCODER_WORKERS)
     byte_counts = []
-    for start, end in strips:
-        encoded = encoder(image[start:end])
+
+    def write_encoded(encoded: bytes) -> None:
         byte_count = len(encoded)
         if byte_count < 1 or byte_count > _UINT32_MAX:
             raise OSError("DNG compressed strip size is outside classic TIFF limits")
         spool.write(encoded)
         byte_counts.append(byte_count)
+
+    if workers == 1 or len(strips) < 2:
+        for start, end in strips:
+            write_encoded(encoder(image[start:end]))
+        return byte_counts
+
+    pending = deque()
+    next_strip = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        try:
+            while next_strip < len(strips) or pending:
+                while next_strip < len(strips) and len(pending) < workers:
+                    start, end = strips[next_strip]
+                    pending.append(executor.submit(encoder, image[start:end]))
+                    next_strip += 1
+                future = pending.popleft()
+                write_encoded(future.result())
+        except BaseException:
+            for future in pending:
+                future.cancel()
+            raise
     return byte_counts
 
 
@@ -1305,11 +1342,13 @@ def write_enhanced_dng(
             tile[:strip.shape[0], :width] = strip
             return _encode_lossless_jpeg(tile, raw_bits_per_sample)
 
+        strip_workers = _MAX_STRIP_ENCODER_WORKERS if compression == "lossless_jpeg" else 1
         raw_byte_counts = _compress_strips(
             raw_cfa16,
             raw_strips,
             encode_cfa_strip,
             compressed_spool,
+            workers=strip_workers,
         )
 
         def encode_enhanced_strip(strip: np.ndarray) -> bytes:
@@ -1321,7 +1360,8 @@ def write_enhanced_dng(
             return _encode_jpeg_xl(full_range)
 
         rgb_byte_counts = _compress_strips(
-            enhanced_rgb16, rgb_strips, encode_enhanced_strip, compressed_spool
+            enhanced_rgb16, rgb_strips, encode_enhanced_strip, compressed_spool,
+            workers=strip_workers,
         )
         compressed_size = sum(raw_byte_counts) + sum(rgb_byte_counts)
         if compressed_spool.tell() != compressed_size:

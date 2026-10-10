@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import math
+import os
 from pathlib import Path
 import struct
 import threading
@@ -21,12 +22,12 @@ import numpy as np
 import rawpy
 
 import native_dense
-from native_renderer import NativeRendererError
+from native_renderer import NativeRendererError, native_camera_profile, clear_camera_profile_gpu_cache
 from dng_writer import _embedded_profile_tags
 from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profile_dng
 
 
-PROFILE_PREVIEW_VERSION = "camera-profile-preview-v2-native"
+PROFILE_PREVIEW_VERSION = "camera-profile-preview-v3-gpu-stages"
 _backend_context = threading.local()
 
 
@@ -616,6 +617,7 @@ def render_profile(
     neutral: tuple[float, float, float] | np.ndarray,
     profile: Profile,
     exposure_ev: float,
+    *, backend: str = "cpu",
 ) -> np.ndarray:
     """Render camera-space uint16 RGB through a validated DNG profile."""
     if camera_u16.dtype != np.uint16 or camera_u16.ndim != 3 or camera_u16.shape[2] != 3:
@@ -630,6 +632,15 @@ def render_profile(
     matrix, white = _camera_transform(profile, neutral_array)
     exposure_scale = np.float32(2.0 ** (float(exposure_ev) + profile.baseline_exposure_offset))
     _backend_context.profile = "python"
+    if backend in ("auto", "native") and os.environ.get("IMPRINT_NATIVE_DENSE", "1") != "0":
+        try:
+            output, actual = native_camera_profile(
+                camera_u16, matrix, white, exposure_scale, profile.look_table,
+                profile.look_dims, profile.look_encoding, profile.tone_curve, _PROPHOTO_TO_SRGB)
+            _backend_context.profile = actual
+            return output
+        except NativeRendererError:
+            pass
     try:
         output = native_dense.camera_profile_pixels(
             camera_u16, matrix, white, exposure_scale, profile.look_table,

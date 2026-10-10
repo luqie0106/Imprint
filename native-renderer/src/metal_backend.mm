@@ -3,6 +3,7 @@
 
 #include "backend.hpp"
 #include "embedded_metal_shader.hpp"
+#include "warp_kernels.hpp"
 
 #include <array>
 #include <cmath>
@@ -82,6 +83,16 @@ public:
             error = describe_error("Could not create the Metal physical float pipeline", nativeError);
             return;
         }
+        id<MTLFunction> camera_profile = [library_ newFunctionWithName:@"render_camera_profile"];
+        if (camera_profile) {
+            camera_profile_pipeline_ = [device_ newComputePipelineStateWithFunction:camera_profile
+                                                                              error:&nativeError];
+        }
+        id<MTLFunction> warp_rectilinear = [library_ newFunctionWithName:@"warp_rectilinear_rgb16"];
+        if (warp_rectilinear) {
+            warp_pipeline_ = [device_ newComputePipelineStateWithFunction:warp_rectilinear
+                                                                    error:&nativeError];
+        }
     }
 
     bool ready() const {
@@ -91,6 +102,180 @@ public:
     const char *name() const override { return "Metal"; }
     bool supports_physical_float() const override { return ready(); }
     bool supports_physical_guarded_float() const override { return ready(); }
+    bool supports_warp_rectilinear() const override {
+        return ready() && warp_pipeline_ != nil;
+    }
+    bool supports_camera_profile_render() const override {
+        return ready() && camera_profile_pipeline_ != nil;
+    }
+
+    bool warp_rectilinear_rgb16(uint32_t width, uint32_t height,
+                                const uint16_t *source, size_t source_values,
+                                const float *constants, size_t constant_values,
+                                uint16_t *destination, size_t destination_values,
+                                std::string &error) override {
+        size_t pixels = 0;
+        float radius = 0.0f;
+        if (!supports_warp_rectilinear() ||
+            !validate_warp_rectilinear_rgb16(width, height, source, source_values,
+                                             constants, constant_values, destination,
+                                             destination_values, &pixels, &radius)) {
+            error = "Metal WarpRectilinear buffers or dimensions are invalid";
+            return false;
+        }
+        const size_t source_bytes = source_values * sizeof(uint16_t);
+        const size_t output_bytes = destination_values * sizeof(uint16_t);
+        id<MTLBuffer> source_buffer = [device_ newBufferWithBytes:source
+                                                           length:source_bytes
+                                                          options:MTLResourceStorageModeShared];
+        id<MTLBuffer> constants_buffer = [device_ newBufferWithBytes:constants
+                                                              length:constant_values * sizeof(float)
+                                                             options:MTLResourceStorageModeShared];
+        id<MTLBuffer> output_buffer = [device_ newBufferWithLength:output_bytes
+                                                            options:MTLResourceStorageModeShared];
+        if (!source_buffer || !constants_buffer || !output_buffer) {
+            error = "Could not allocate or upload Metal WarpRectilinear buffers";
+            return false;
+        }
+
+        const float geometry[4] = {static_cast<float>(width) * constants[18],
+                                   static_cast<float>(height) * constants[19], radius,
+                                   constants[20]};
+        const uint32_t dimensions[2] = {width, height};
+        const uint32_t pixel_count = static_cast<uint32_t>(pixels);
+        id<MTLCommandBuffer> command = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (!command || !encoder) {
+            error = "Could not create a Metal WarpRectilinear command";
+            return false;
+        }
+        [encoder setComputePipelineState:warp_pipeline_];
+        [encoder setBuffer:source_buffer offset:0 atIndex:0];
+        [encoder setBuffer:constants_buffer offset:0 atIndex:1];
+        [encoder setBuffer:output_buffer offset:0 atIndex:2];
+        [encoder setBytes:geometry length:sizeof(geometry) atIndex:3];
+        [encoder setBytes:dimensions length:sizeof(dimensions) atIndex:4];
+        [encoder setBytes:&pixel_count length:sizeof(pixel_count) atIndex:5];
+        const NSUInteger width_threads = warp_pipeline_.threadExecutionWidth
+                                             ? warp_pipeline_.threadExecutionWidth : 256;
+        [encoder dispatchThreadgroups:MTLSizeMake((pixels + width_threads - 1) / width_threads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(width_threads, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            error = describe_error("Metal WarpRectilinear failed", command.error);
+            return false;
+        }
+        std::memcpy(destination, output_buffer.contents, output_bytes);
+        return true;
+    }
+
+    bool set_camera_profile_source(uint32_t width, uint32_t height,
+                                   const uint16_t *source, size_t source_values,
+                                   std::string &error) override {
+        if (!supports_camera_profile_render() || !source || !width || !height ||
+            static_cast<uint64_t>(width) * height * 3 != source_values ||
+            source_values > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) {
+            error = "Metal camera profile source dimensions or count are invalid";
+            return false;
+        }
+        const size_t bytes = source_values * sizeof(uint16_t);
+        if (profile_source_buffer_ && profile_width_ == width && profile_height_ == height &&
+            profile_source_buffer_.length == bytes) {
+            std::memcpy(profile_source_buffer_.contents, source, bytes);
+        } else {
+            id<MTLBuffer> next = [device_ newBufferWithBytes:source
+                                                       length:bytes
+                                                      options:MTLResourceStorageModeShared];
+            if (!next) {
+                error = "Could not allocate or upload the Metal camera profile source";
+                return false;
+            }
+            profile_source_buffer_ = next;
+        }
+        profile_width_ = width;
+        profile_height_ = height;
+        profile_source_values_ = source_values;
+        return true;
+    }
+
+    bool render_camera_profile(const float *constants22,
+                               const float *look_table, size_t look_values,
+                               uint32_t hue_count, uint32_t saturation_count,
+                               uint32_t value_count, uint32_t look_encoding,
+                               const float *tone_curve, size_t tone_values,
+                               uint8_t *destination, size_t destination_values,
+                               std::string &error) override {
+        const size_t pixels = static_cast<size_t>(profile_width_) * profile_height_;
+        if (!supports_camera_profile_render() || !profile_source_buffer_ || !profile_width_ ||
+            !profile_height_ || !constants22 || !look_table || !tone_curve || !destination ||
+            destination_values != profile_source_values_ || pixels > std::numeric_limits<uint32_t>::max()) {
+            error = "Metal camera profile render buffers or dimensions are invalid";
+            return false;
+        }
+        if (!ensure_profile_table(look_table, look_values, cached_profile_look_,
+                                  profile_look_buffer_, error, "look") ||
+            !ensure_profile_table(tone_curve, tone_values, cached_profile_tone_,
+                                  profile_tone_buffer_, error, "tone")) return false;
+        const size_t output_bytes = destination_values * sizeof(uint8_t);
+        if (!profile_output_buffer_ || profile_output_buffer_.length != output_bytes) {
+            profile_output_buffer_ = [device_ newBufferWithLength:output_bytes
+                                                           options:MTLResourceStorageModeShared];
+            if (!profile_output_buffer_) {
+                error = "Could not allocate the Metal camera profile output buffer";
+                return false;
+            }
+        }
+
+        id<MTLCommandBuffer> command = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (!command || !encoder) {
+            error = "Could not create a Metal camera profile command";
+            return false;
+        }
+        const uint32_t look_dimensions[4] = {hue_count, saturation_count,
+                                             value_count, look_encoding};
+        const uint32_t profile_counts[2] = {static_cast<uint32_t>(pixels),
+                                            static_cast<uint32_t>(tone_values / 2)};
+        [encoder setComputePipelineState:camera_profile_pipeline_];
+        [encoder setBuffer:profile_source_buffer_ offset:0 atIndex:0];
+        [encoder setBytes:constants22 length:22 * sizeof(float) atIndex:1];
+        [encoder setBuffer:profile_look_buffer_ offset:0 atIndex:2];
+        [encoder setBuffer:profile_tone_buffer_ offset:0 atIndex:3];
+        [encoder setBuffer:profile_output_buffer_ offset:0 atIndex:4];
+        [encoder setBytes:&look_dimensions length:sizeof(look_dimensions) atIndex:5];
+        [encoder setBytes:&profile_counts length:sizeof(profile_counts) atIndex:6];
+        const NSUInteger width = camera_profile_pipeline_.threadExecutionWidth;
+        const NSUInteger threads = width ? width : 256;
+        [encoder dispatchThreadgroups:MTLSizeMake((pixels + threads - 1) / threads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            error = describe_error("Metal camera profile render failed", command.error);
+            return false;
+        }
+        std::memcpy(destination, profile_output_buffer_.contents, output_bytes);
+        return true;
+    }
+
+    bool clear_camera_profile_source(std::string &error) override {
+        if (!supports_camera_profile_render()) {
+            error = "Metal camera profile pipeline is unavailable";
+            return false;
+        }
+        profile_source_buffer_ = nil;
+        profile_output_buffer_ = nil;
+        profile_look_buffer_ = nil;
+        profile_tone_buffer_ = nil;
+        std::vector<float>().swap(cached_profile_look_);
+        std::vector<float>().swap(cached_profile_tone_);
+        profile_source_values_ = 0;
+        profile_width_ = profile_height_ = 0;
+        return true;
+    }
 
     bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) override {
         std::array<id<MTLBuffer>, 3> buffers{};
@@ -261,6 +446,30 @@ public:
     }
 
 private:
+    bool ensure_profile_table(const float *source, size_t count,
+                              std::vector<float> &cached, id<MTLBuffer> __strong &buffer,
+                              std::string &error, const char *label) {
+        if (!source || !count) {
+            error = std::string("Metal camera profile ") + label + " table is empty";
+            return false;
+        }
+        if (cached.size() == count && std::equal(cached.begin(), cached.end(), source)) return true;
+        if (count > std::numeric_limits<size_t>::max() / sizeof(float)) {
+            error = std::string("Metal camera profile ") + label + " table size overflows";
+            return false;
+        }
+        id<MTLBuffer> next = [device_ newBufferWithBytes:source
+                                                  length:count * sizeof(float)
+                                                 options:MTLResourceStorageModeShared];
+        if (!next) {
+            error = std::string("Could not allocate or upload the Metal camera profile ") + label + " table";
+            return false;
+        }
+        cached.assign(source, source + count);
+        buffer = next;
+        return true;
+    }
+
     bool render_physical_float_impl(uint32_t width, uint32_t height,
                                     const float *source, const float *transmission,
                                     const float *airlight_rgb, const im_dehaze_params &params,
@@ -387,9 +596,20 @@ private:
     id<MTLComputePipelineState> spatial_first_pipeline_ = nil;
     id<MTLComputePipelineState> spatial_finish_pipeline_ = nil;
     id<MTLComputePipelineState> physical_pipeline_ = nil;
+    id<MTLComputePipelineState> warp_pipeline_ = nil;
+    id<MTLComputePipelineState> camera_profile_pipeline_ = nil;
     std::array<id<MTLBuffer>, 3> source_buffers_{};
     id<MTLBuffer> curve_buffer_ = nil;
     id<MTLBuffer> lut_buffer_ = nil;
+    id<MTLBuffer> profile_source_buffer_ = nil;
+    id<MTLBuffer> profile_output_buffer_ = nil;
+    id<MTLBuffer> profile_look_buffer_ = nil;
+    id<MTLBuffer> profile_tone_buffer_ = nil;
+    std::vector<float> cached_profile_look_;
+    std::vector<float> cached_profile_tone_;
+    size_t profile_source_values_ = 0;
+    uint32_t profile_width_ = 0;
+    uint32_t profile_height_ = 0;
     std::array<ImageLevel, 3> levels_;
     im_filter_params filter_{};
     uint32_t lut_edge_ = 0;

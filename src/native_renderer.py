@@ -7,6 +7,7 @@ responsible for decoding, color management, lens correction, XMP, and export.
 from __future__ import annotations
 
 import ctypes
+import atexit
 from collections import OrderedDict
 from dataclasses import dataclass, field
 import math
@@ -82,6 +83,141 @@ _load_lock = threading.Lock()
 _cached_library: ctypes.CDLL | None = None
 _cached_library_path: str | None = None
 _last_native_physical_backend: str | None = None
+
+# One camera source on the GPU, with no retained Python full-image reference.
+# Preview cache eviction explicitly destroys this renderer and its allocations.
+_camera_profile_gpu_lock = threading.Lock()
+_camera_profile_gpu_state: tuple | None = None
+
+
+def clear_camera_profile_gpu_cache() -> None:
+    global _camera_profile_gpu_state
+    with _camera_profile_gpu_lock:
+        if _camera_profile_gpu_state is not None:
+            library, renderer, _, _ = _camera_profile_gpu_state
+            _camera_profile_gpu_state = None
+            library.im_renderer_destroy(renderer)
+
+
+def native_camera_profile(source, matrix, white, gain, look, dims, encoding, tone, projection):
+    """Exact camera profile on Metal/D3D12, reusing an immutable source upload.
+
+    Mutable arrays are uploaded on every call. Cached read-only arrays must
+    remain immutable for their lifetime, as with the existing preview caches.
+    Returns (display RGB8, actual backend), or raises for CPU fallback.
+    """
+    global _camera_profile_gpu_state
+    import weakref
+    from native_dense import _camera_profile_arguments
+
+    if os.environ.get("IMPRINT_NATIVE_CAMERA_PROFILE") == "0":
+        raise NativeRendererError("Camera profile GPU operator is disabled")
+    image, width, height, constants, table, (hue, saturation, value), curve = _camera_profile_arguments(
+        source, matrix, white, gain, look, dims, encoding, tone, projection)
+    library, _ = _get_library()
+    upload = getattr(library, "im_renderer_set_camera_profile_source", None)
+    render = getattr(library, "im_renderer_render_camera_profile", None)
+    if upload is None or render is None:
+        raise NativeRendererError("Camera profile GPU ABI is unavailable")
+    u16, u8, fp = (ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_uint8),
+                   ctypes.POINTER(ctypes.c_float))
+    upload.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, u16, ctypes.c_size_t]
+    upload.restype = ctypes.c_int
+    render.argtypes = [ctypes.c_void_p, fp, ctypes.c_size_t, fp, ctypes.c_size_t,
+                      ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+                      fp, ctypes.c_size_t, u8, ctypes.c_size_t]
+    render.restype = ctypes.c_int
+    with _camera_profile_gpu_lock:
+        if _camera_profile_gpu_state is None:
+            renderer, backend = _create_renderer(library)
+            enabled = os.environ.get("IMPRINT_NATIVE_CAMERA_PROFILE", "1" if backend == "Metal" else "0") == "1"
+            if backend not in ("Metal", "D3D12") or not enabled:
+                library.im_renderer_destroy(renderer)
+                raise NativeRendererError("Camera profile GPU backend is unavailable or disabled")
+            _camera_profile_gpu_state = (library, renderer, backend, None)
+        cached_library, renderer, backend, uploaded = _camera_profile_gpu_state
+        if cached_library is not library:
+            raise NativeRendererError("Camera profile renderer library changed; clear the GPU cache first")
+        try:
+            if image.flags.writeable or uploaded is None or uploaded() is not image:
+                status = upload(renderer, width, height, image.ctypes.data_as(u16), image.size)
+                if status != 0:
+                    raise NativeRendererError(f"Camera profile upload failed: {_native_error(library, renderer)}")
+                _camera_profile_gpu_state = (library, renderer, backend, weakref.ref(image))
+            output = np.empty(image.shape, dtype=np.uint8)
+            status = render(renderer, constants.ctypes.data_as(fp), constants.size,
+                            table.ctypes.data_as(fp), table.size, hue, saturation, value, int(encoding),
+                            curve.ctypes.data_as(fp), curve.size, output.ctypes.data_as(u8), output.size)
+            if status != 0:
+                raise NativeRendererError(f"Camera profile GPU render failed: {_native_error(library, renderer)}")
+            return output, backend.lower()
+        except Exception:
+            _camera_profile_gpu_state = None
+            library.im_renderer_destroy(renderer)
+            raise
+
+
+atexit.register(clear_camera_profile_gpu_cache)
+
+
+_warp_gpu_lock = threading.Lock()
+_warp_gpu_state: tuple | None = None
+
+
+def clear_native_warp_cache() -> None:
+    global _warp_gpu_state
+    with _warp_gpu_lock:
+        if _warp_gpu_state is not None:
+            library, renderer, _ = _warp_gpu_state
+            _warp_gpu_state = None
+            library.im_renderer_destroy(renderer)
+
+
+def native_warp_rectilinear(source, constants):
+    """GPU-first stateless RGB16 warp; no source arrays are retained."""
+    global _warp_gpu_state
+    from native_dense import _profile_rgb16
+    from dng_warp import _validate_constants
+    image, width, height = _profile_rgb16(source)
+    values = _validate_constants(constants)
+    library, _ = _get_library()
+    run = getattr(library, "im_renderer_warp_rectilinear_rgb16", None)
+    supports = getattr(library, "im_renderer_supports_warp_rectilinear", None)
+    if run is None or supports is None:
+        raise NativeRendererError("GPU WarpRectilinear ABI is unavailable")
+    u16, fp = ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_float)
+    run.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, u16,
+                   ctypes.c_size_t, fp, ctypes.c_size_t, u16, ctypes.c_size_t]
+    run.restype = ctypes.c_int
+    supports.argtypes = [ctypes.c_void_p]
+    supports.restype = ctypes.c_int
+    with _warp_gpu_lock:
+        if _warp_gpu_state is not None and _warp_gpu_state[0] is not library:
+            old_library, old_renderer, _ = _warp_gpu_state
+            _warp_gpu_state = None
+            old_library.im_renderer_destroy(old_renderer)
+        if _warp_gpu_state is None:
+            renderer, backend = _create_renderer(library)
+            if backend not in ("Metal", "D3D12") or not supports(renderer):
+                library.im_renderer_destroy(renderer)
+                raise NativeRendererError("GPU WarpRectilinear operator is unavailable")
+            _warp_gpu_state = (library, renderer, backend)
+        _, renderer, backend = _warp_gpu_state
+        try:
+            output = np.empty_like(image)
+            status = run(renderer, width, height, image.ctypes.data_as(u16), image.size,
+                         values.ctypes.data_as(fp), values.size,
+                         output.ctypes.data_as(u16), output.size)
+            if status != 0:
+                raise NativeRendererError(f"GPU WarpRectilinear failed: {_native_error(library, renderer)}")
+            return output, backend
+        except Exception:
+            _warp_gpu_state = None
+            library.im_renderer_destroy(renderer)
+            raise
+
+
+atexit.register(clear_native_warp_cache)
 
 
 def _library_names() -> tuple[str, ...]:

@@ -150,6 +150,17 @@ IMPRINT_API im_status im_native_lens_remap_rgb16(uint32_t width,
                                                 size_t destination_values,
                                                 uint32_t interpolation_mode);
 
+/* Apply Adobe WarpRectilinear sampling to an interleaved RGB16 image.
+   constants contains three per-channel [k0,k1,k2,k3,t0,t1] groups followed
+   by normalized center_x, normalized center_y, and vertical pixel scale.
+   Source and destination counts must equal width*height*3; buffers must not
+   overlap. */
+IMPRINT_API im_status im_native_warp_rectilinear_rgb16(
+    uint32_t width, uint32_t height,
+    const uint16_t *source, size_t source_values,
+    const float *constants, size_t constant_values,
+    uint16_t *destination, size_t destination_values);
+
 /* source_values must equal width*height*3, transmission_count width*height,
    and destination_values must be at least width*height*3. Source, transmission,
    airlight, and params are validated before output is written. */
@@ -289,6 +300,21 @@ IMPRINT_API im_status im_native_camera_profile_transfer_rgb16(
     const float *inverse_matrix9, size_t inverse_count,
     uint16_t *destination, size_t destination_values);
 
+/* GPU camera-profile rendering keeps one immutable interleaved RGB16 source
+   resident on the selected renderer. Upload a replacement source explicitly;
+   look/tone resources are cached when their contents are unchanged. */
+IMPRINT_API im_status im_renderer_set_camera_profile_source(
+    im_renderer *renderer, uint32_t width, uint32_t height,
+    const uint16_t *camera_rgb, size_t source_values);
+IMPRINT_API im_status im_renderer_render_camera_profile(
+    im_renderer *renderer, const float *constants22, size_t constants_count,
+    const float *look_table, size_t look_values,
+    uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+    uint32_t look_encoding, const float *tone_curve, size_t tone_values,
+    uint8_t *destination, size_t destination_values);
+IMPRINT_API im_status im_renderer_clear_camera_profile_source(im_renderer *renderer);
+IMPRINT_API int im_renderer_supports_camera_profile_render(const im_renderer *renderer);
+
 /* Same physical float contract, with the shared dark-background guard fused
    into the GPU pass. dark_floor must be finite and within [0, 2]. */
 IMPRINT_API im_status im_renderer_render_physical_guarded_float(
@@ -301,6 +327,14 @@ IMPRINT_API int im_renderer_supports_physical_guarded_float(const im_renderer *r
 
 /* Returns 1 only if this renderer implements the linear-float physical operator. */
 IMPRINT_API int im_renderer_supports_physical_float(const im_renderer *renderer);
+
+/* GPU implementation of the same WarpRectilinear contract as the CPU ABI. */
+IMPRINT_API im_status im_renderer_warp_rectilinear_rgb16(
+    im_renderer *renderer, uint32_t width, uint32_t height,
+    const uint16_t *source, size_t source_values,
+    const float *constants, size_t constant_values,
+    uint16_t *destination, size_t destination_values);
+IMPRINT_API int im_renderer_supports_warp_rectilinear(const im_renderer *renderer);
 
 /* Upload Sidecar-decoded preview RGB16 once. L0 uses this exact image; L1/L2 are
    cached downsampled copies. value_count must equal width*height*3. */

@@ -850,7 +850,7 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
         await refreshPreview(generation, context, shouldUpgradeOriginal, 0, true);
     })();
   };
-  fullResolutionTimer = window.setTimeout(startFullResolutionUpgrade, 500);
+  fullResolutionTimer = window.setTimeout(startFullResolutionUpgrade, 100);
 }
 
 function scheduleParameterPreview() {

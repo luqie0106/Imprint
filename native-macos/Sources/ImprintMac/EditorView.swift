@@ -993,7 +993,7 @@ struct EditorView: View, Equatable {
         let requestID = previewRequestID
         previewIdleTask = Task {
             do {
-                try await Task.sleep(for: .milliseconds(500))
+                try await Task.sleep(for: .milliseconds(100))
             } catch {
                 return
             }

@@ -236,8 +236,8 @@ def _profile_rgb16(image):
     return np.ascontiguousarray(image), w, h
 
 
-def camera_profile_pixels(source, matrix, white, gain, look, dims, encoding, tone, projection):
-    """Fused native camera → profile look/tone → display RGB8, without a GPU."""
+def _camera_profile_arguments(source, matrix, white, gain, look, dims, encoding, tone, projection):
+    """Share the CPU/GPU camera-profile input contract."""
     image, w, h = _profile_rgb16(source)
     camera_matrix = np.asarray(matrix, dtype=np.float32)
     white_rgb = np.asarray(white, dtype=np.float32)
@@ -256,6 +256,15 @@ def camera_profile_pixels(source, matrix, white, gain, look, dims, encoding, ton
         raise ValueError("invalid camera profile look or tone data")
     if not all(np.isfinite(a).all() for a in (constants, table, curve)):
         raise ValueError("camera profile constants must be finite")
+    if gain <= 0 or np.any(np.diff(curve[:, 0]) <= 0):
+        raise ValueError("camera profile gain and tone knots must be valid")
+    return image, w, h, constants, table, (hue, saturation, value), curve
+
+
+def camera_profile_pixels(source, matrix, white, gain, look, dims, encoding, tone, projection):
+    """Fused native camera → profile look/tone → display RGB8, without a GPU."""
+    image, w, h, constants, table, (hue, saturation, value), curve = _camera_profile_arguments(
+        source, matrix, white, gain, look, dims, encoding, tone, projection)
     u16 = ct.POINTER(ct.c_uint16)
     u8 = ct.POINTER(ct.c_uint8)
     fn = _function("im_native_camera_profile_render_rgb16_to_rgb8", [ct.c_uint32, ct.c_uint32,
@@ -288,4 +297,19 @@ def camera_profile_transfer(camera, reference, processed, inverse_matrix):
     _check(fn(w, h, image.ctypes.data_as(u16), image.size, ref.ctypes.data_as(u16), ref.size,
               target.ctypes.data_as(u16), target.size, _pointer(inverse), inverse.size,
               output.ctypes.data_as(u16), output.size), "camera profile transfer")
+    return output
+
+
+def warp_rectilinear(source, constants):
+    """Optional strict-float CPU counterpart of the GPU warp operator."""
+    from dng_warp import _validate_constants
+    image, width, height = _profile_rgb16(source)
+    values = _validate_constants(constants)
+    u16 = ct.POINTER(ct.c_uint16)
+    fn = _function("im_native_warp_rectilinear_rgb16", [ct.c_uint32, ct.c_uint32,
+        u16, ct.c_size_t, _F, ct.c_size_t, u16, ct.c_size_t])
+    output = np.empty_like(image)
+    _check(fn(width, height, image.ctypes.data_as(u16), image.size,
+              _pointer(values), values.size, output.ctypes.data_as(u16), output.size),
+           "WarpRectilinear")
     return output

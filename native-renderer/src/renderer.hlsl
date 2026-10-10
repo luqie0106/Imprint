@@ -548,3 +548,337 @@ void render_physical_float(uint3 thread_id : SV_DispatchThreadID) {
     DestinationData.Store(input_base + 4u, asuint(result.g));
     DestinationData.Store(input_base + 8u, asuint(result.b));
 }
+
+cbuffer WarpConstants : register(b2) {
+    float4 warp_coefficients[6];
+    uint4 warp_metadata; // width, height, pixel count, row stride in pixels
+};
+ByteAddressBuffer WarpSourceData : register(t8);
+RWByteAddressBuffer WarpDestinationData : register(u2);
+
+float warp_constant(uint index) {
+    return warp_coefficients[index >> 2][index & 3u];
+}
+
+uint warp_load_u16(uint index) {
+    uint packed = WarpSourceData.Load((index >> 1) << 2);
+    return (index & 1u) == 0u ? (packed & 0xffffu) : (packed >> 16);
+}
+
+precise float2 warp_source_position(uint x, uint y, uint channel,
+                                    float center_x, float center_y,
+                                    float pixel_scale_v, float radius) {
+    uint coefficient = channel * 6u;
+    precise float dx = float(x) - center_x;
+    precise float dy = float(y) - center_y;
+    precise float scaled_dy = dy * pixel_scale_v;
+    precise float norm_x = dx / radius;
+    precise float norm_y = scaled_dy / radius;
+    precise float norm_x_squared = norm_x * norm_x;
+    precise float norm_y_squared = norm_y * norm_y;
+    precise float r2 = min(norm_x_squared + norm_y_squared, 1.0);
+    precise float radial = warp_constant(coefficient) + r2 * (warp_constant(coefficient + 1u) +
+        r2 * (warp_constant(coefficient + 2u) + r2 * warp_constant(coefficient + 3u)));
+    precise float tangential_x = warp_constant(coefficient + 5u) *
+        (r2 + 2.0 * norm_x_squared) +
+        2.0 * warp_constant(coefficient + 4u) * norm_x * norm_y;
+    precise float tangential_y = warp_constant(coefficient + 4u) *
+        (r2 + 2.0 * norm_y_squared) +
+        2.0 * warp_constant(coefficient + 5u) * norm_x * norm_y;
+    precise float source_x = center_x + dx * radial + radius * tangential_x;
+    precise float source_y = center_y + dy * radial + radius * tangential_y / pixel_scale_v;
+    return float2(source_x, source_y);
+}
+
+uint warp_round_u16(float value) {
+    value = clamp(value, 0.0, 65535.0);
+    float lower_float = floor(value);
+    float fraction = value - lower_float;
+    uint lower = (uint)lower_float;
+    if (fraction > 0.5 || (fraction == 0.5 && (lower & 1u) != 0u)) ++lower;
+    return min(lower, 65535u);
+}
+
+uint warp_sample_channel(uint width, uint height, uint channel, float2 position) {
+    precise float x = clamp(position.x, 0.0, float(width - 1u));
+    precise float y = clamp(position.y, 0.0, float(height - 1u));
+    uint x0 = (uint)floor(x);
+    uint y0 = (uint)floor(y);
+    uint x1 = min(x0 + 1u, width - 1u);
+    uint y1 = min(y0 + 1u, height - 1u);
+    precise float fx = x - float(x0);
+    precise float fy = y - float(y0);
+    uint at00 = (y0 * width + x0) * 3u + channel;
+    uint at01 = (y0 * width + x1) * 3u + channel;
+    uint at10 = (y1 * width + x0) * 3u + channel;
+    uint at11 = (y1 * width + x1) * 3u + channel;
+    precise float top = float(warp_load_u16(at00)) * (1.0 - fx) + float(warp_load_u16(at01)) * fx;
+    precise float bottom = float(warp_load_u16(at10)) * (1.0 - fx) + float(warp_load_u16(at11)) * fx;
+    precise float value = top * (1.0 - fy) + bottom * fy;
+    return warp_round_u16(value);
+}
+
+[numthreads(256, 1, 1)]
+void warp_rectilinear_rgb16(uint3 thread_id : SV_DispatchThreadID) {
+    uint pixel = thread_id.y * warp_metadata.w + thread_id.x;
+    if (pixel >= warp_metadata.z) return;
+    precise float center_x = float(warp_metadata.x) * warp_constant(18u);
+    precise float center_y = float(warp_metadata.y) * warp_constant(19u);
+    precise float pixel_scale_v = warp_constant(20u);
+    precise float radius = warp_constant(21u);
+    uint x = pixel % warp_metadata.x;
+    uint y = pixel / warp_metadata.x;
+    uint output_at = pixel * 3u;
+    [unroll]
+    for (uint channel = 0; channel < 3u; ++channel) {
+        float2 position = warp_source_position(x, y, channel, center_x, center_y,
+                                               pixel_scale_v, radius);
+        WarpDestinationData.Store((output_at + channel) * 4u,
+                                  warp_sample_channel(warp_metadata.x, warp_metadata.y,
+                                                      channel, position));
+    }
+}
+
+cbuffer CameraProfileConstants : register(b1) {
+    float4 camera_profile_constants0;
+    float4 camera_profile_constants1;
+    float4 camera_profile_constants2;
+    float4 camera_profile_constants3;
+    float4 camera_profile_constants4;
+    float4 camera_profile_constants5;
+    uint4 camera_profile_dimensions; // hue, saturation, value, encoding
+    uint4 camera_profile_meta;       // pixel count, tone points, row stride, reserved
+};
+
+ByteAddressBuffer camera_profile_source : register(t5);
+ByteAddressBuffer camera_profile_look : register(t6);
+ByteAddressBuffer camera_profile_tone : register(t7);
+RWByteAddressBuffer camera_profile_output : register(u1);
+
+float camera_profile_constant(uint index) {
+    if (index < 4) return camera_profile_constants0[index];
+    if (index < 8) return camera_profile_constants1[index - 4];
+    if (index < 12) return camera_profile_constants2[index - 8];
+    if (index < 16) return camera_profile_constants3[index - 12];
+    if (index < 20) return camera_profile_constants4[index - 16];
+    return camera_profile_constants5[index - 20];
+}
+
+uint camera_profile_load_u16(uint sample_index) {
+    uint byte_offset = sample_index * 2;
+    uint packed = camera_profile_source.Load(byte_offset & ~3u);
+    return (packed >> ((byte_offset & 2u) * 8u)) & 0xffffu;
+}
+
+float camera_profile_load_look(uint index) {
+    return asfloat(camera_profile_look.Load(index * 4));
+}
+
+float camera_profile_load_tone(uint index) {
+    return asfloat(camera_profile_tone.Load(index * 4));
+}
+
+float camera_profile_encode_srgb(float value) {
+    value = max(value, 0.0);
+    if (value <= 0.0031308) return value * 12.92;
+    return 1.055 * pow(value, 1.0 / 2.4) - 0.055;
+}
+
+float camera_profile_decode_srgb(float value) {
+    if (value <= 0.04045) return value / 12.92;
+    return pow((value + 0.055) / 1.055, 2.4);
+}
+
+float camera_profile_remainder_360(float value) {
+    float result = fmod(value, 360.0);
+    if (result < 0.0) result += 360.0;
+    return result;
+}
+
+struct CameraProfileHsv {
+    float h;
+    float s;
+    float v;
+};
+
+CameraProfileHsv camera_profile_rgb_to_hsv(float r, float g, float b) {
+    float value = max(r, max(g, b));
+    float minimum = min(r, min(g, b));
+    float difference = value - minimum;
+    float saturation = difference / (abs(value) + 1.1920928955078125e-7);
+    float hue = 0.0;
+    if (difference > 1.1920928955078125e-7) {
+        if (value == r) hue = g - b;
+        else if (value == g) hue = (b - r) + 2.0 * difference;
+        else hue = (r - g) + 4.0 * difference;
+        hue *= 60.0 / difference;
+        if (hue < 0.0) hue += 360.0;
+    }
+    CameraProfileHsv result;
+    result.h = hue;
+    result.s = saturation;
+    result.v = value;
+    return result;
+}
+
+void camera_profile_hsv_to_rgb(float h, float s, float v,
+                               out float r, out float g, out float b) {
+    float sector_position = h * (1.0 / 60.0);
+    if (sector_position < 0.0) sector_position += 6.0;
+    else if (sector_position >= 6.0) sector_position -= 6.0;
+    int sector = (int)floor(sector_position);
+    float fraction = sector_position - (float)sector;
+    float p = v * (1.0 - s);
+    float q = v * (1.0 - s * fraction);
+    float t = v * (1.0 - s * (1.0 - fraction));
+    if (sector == 0) { r = v; g = t; b = p; }
+    else if (sector == 1) { r = q; g = v; b = p; }
+    else if (sector == 2) { r = p; g = v; b = t; }
+    else if (sector == 3) { r = p; g = q; b = v; }
+    else if (sector == 4) { r = t; g = p; b = v; }
+    else { r = v; g = p; b = q; }
+}
+
+float camera_profile_look_sample(uint value_index, uint hue_index,
+                                 uint saturation_index, uint channel) {
+    uint at = (((value_index * camera_profile_dimensions.x + hue_index) *
+                camera_profile_dimensions.y + saturation_index) * 3) + channel;
+    return camera_profile_load_look(at);
+}
+
+void camera_profile_apply_look(inout float r, inout float g, inout float b) {
+    CameraProfileHsv hsv = camera_profile_rgb_to_hsv(r, g, b);
+    float encoded_value = camera_profile_dimensions.w == 1
+        ? camera_profile_encode_srgb(hsv.v) : hsv.v;
+    float hue_coord = camera_profile_remainder_360(hsv.h) *
+                      ((float)camera_profile_dimensions.x / 360.0);
+    float saturation_coord = clamp(hsv.s, 0.0, 1.0) *
+                             (float)(camera_profile_dimensions.y - 1);
+    float value_coord = clamp(encoded_value, 0.0, 1.0) *
+                        (float)(camera_profile_dimensions.z - 1);
+    uint h0 = (uint)floor(hue_coord);
+    uint h1 = (h0 + 1u) % camera_profile_dimensions.x;
+    uint s_floor = (uint)floor(saturation_coord);
+    uint v_floor = (uint)floor(value_coord);
+    uint s0 = min(s_floor, camera_profile_dimensions.y - 2u);
+    uint v0 = min(v_floor, camera_profile_dimensions.z - 2u);
+    float hf = hue_coord - (float)h0;
+    float sf = saturation_coord - (float)s0;
+    float vf = value_coord - (float)v0;
+    float3 mods = 0.0;
+    [unroll] for (uint dh = 0; dh < 2; ++dh) {
+        uint hi = dh ? h1 : h0;
+        float hw = dh ? hf : (1.0 - hf);
+        [unroll] for (uint ds = 0; ds < 2; ++ds) {
+            uint si = s0 + ds;
+            float sw = ds ? sf : (1.0 - sf);
+            [unroll] for (uint dv = 0; dv < 2; ++dv) {
+                uint vi = v0 + dv;
+                float vw = dv ? vf : (1.0 - vf);
+                float weight = hw * sw * vw;
+                [unroll] for (uint channel = 0; channel < 3; ++channel) {
+                    float term = weight * camera_profile_look_sample(vi, hi, si, channel);
+                    mods[channel] = mods[channel] + term;
+                }
+            }
+        }
+    }
+    hsv.h = camera_profile_remainder_360(hsv.h + mods[0]);
+    hsv.s = clamp(hsv.s * mods[1], 0.0, 1.0);
+    float new_value = clamp(encoded_value * mods[2], 0.0, 1.0);
+    hsv.v = camera_profile_dimensions.w == 1
+        ? camera_profile_decode_srgb(new_value) : new_value;
+    camera_profile_hsv_to_rgb(hsv.h, hsv.s, hsv.v, r, g, b);
+}
+
+float camera_profile_interp_curve(float x) {
+    uint points = camera_profile_meta.y;
+    float first_x = camera_profile_load_tone(0);
+    if (x <= first_x) return camera_profile_load_tone(1);
+    float last_x = camera_profile_load_tone((points - 1) * 2);
+    if (x >= last_x) return camera_profile_load_tone((points - 1) * 2 + 1);
+    uint low = 0;
+    uint high = points;
+    while (low < high) {
+        uint middle = low + (high - low) / 2;
+        if (camera_profile_load_tone(middle * 2) <= x) low = middle + 1;
+        else high = middle;
+    }
+    uint right = low;
+    uint left = right - 1;
+    float x0 = camera_profile_load_tone(left * 2);
+    float y0 = camera_profile_load_tone(left * 2 + 1);
+    float x1 = camera_profile_load_tone(right * 2);
+    float y1 = camera_profile_load_tone(right * 2 + 1);
+    float slope = (y1 - y0) / (x1 - x0);
+    return slope * (x - x0) + y0;
+}
+
+float camera_profile_encode_srgb_final(float value) {
+    value = max(value, 0.0);
+    if (value <= 0.0031308) return value * 12.92;
+    return 1.055 * pow(value, 1.0 / 2.4) - 0.055;
+}
+
+uint camera_profile_quantize_rgb8(float value) {
+    float scaled = camera_profile_encode_srgb_final(value) * 255.0;
+    if (!(scaled > 0.0)) return 0;
+    if (scaled >= 255.0) return 255;
+    float lower = floor(scaled);
+    float fraction = scaled - lower;
+    uint rounded = (uint)lower;
+    if (fraction > 0.5 || (fraction == 0.5 && (rounded & 1u) != 0u)) ++rounded;
+    return min(rounded, 255u);
+}
+
+[numthreads(256, 1, 1)]
+void render_camera_profile(uint3 thread_id : SV_DispatchThreadID) {
+    uint pixel = thread_id.y * camera_profile_meta.z + thread_id.x;
+    if (pixel >= camera_profile_meta.x) return;
+    uint at = pixel * 3;
+    float camera_r = (float)camera_profile_load_u16(at) / 65535.0;
+    float camera_g = (float)camera_profile_load_u16(at + 1) / 65535.0;
+    float camera_b = (float)camera_profile_load_u16(at + 2) / 65535.0;
+    float clipped_r = min(camera_r, camera_profile_constant(9));
+    float clipped_g = min(camera_g, camera_profile_constant(10));
+    float clipped_b = min(camera_b, camera_profile_constant(11));
+    precise float matrix_r = (clipped_r * camera_profile_constant(0) +
+                              clipped_g * camera_profile_constant(1)) +
+                             clipped_b * camera_profile_constant(2);
+    precise float matrix_g = (clipped_r * camera_profile_constant(3) +
+                              clipped_g * camera_profile_constant(4)) +
+                             clipped_b * camera_profile_constant(5);
+    precise float matrix_b = (clipped_r * camera_profile_constant(6) +
+                              clipped_g * camera_profile_constant(7)) +
+                             clipped_b * camera_profile_constant(8);
+    float r = clamp(matrix_r, 0.0, 1.0) * camera_profile_constant(12);
+    float g = clamp(matrix_g, 0.0, 1.0) * camera_profile_constant(12);
+    float b = clamp(matrix_b, 0.0, 1.0) * camera_profile_constant(12);
+    r = clamp(r, 0.0, 1.0);
+    g = clamp(g, 0.0, 1.0);
+    b = clamp(b, 0.0, 1.0);
+    camera_profile_apply_look(r, g, b);
+
+    float low = min(r, min(g, b));
+    float high = max(r, max(g, b));
+    float span = high - low;
+    float new_low = camera_profile_interp_curve(low);
+    float new_high = camera_profile_interp_curve(high);
+    float3 positions = 0.0;
+    if (span > 1.0e-12) positions = (float3(r, g, b) - low) / span;
+    float tone_r = new_low + (new_high - new_low) * positions.r;
+    float tone_g = new_low + (new_high - new_low) * positions.g;
+    float tone_b = new_low + (new_high - new_low) * positions.b;
+    precise float projected_r = (tone_r * camera_profile_constant(13) +
+                                 tone_g * camera_profile_constant(14)) +
+                                tone_b * camera_profile_constant(15);
+    precise float projected_g = (tone_r * camera_profile_constant(16) +
+                                 tone_g * camera_profile_constant(17)) +
+                                tone_b * camera_profile_constant(18);
+    precise float projected_b = (tone_r * camera_profile_constant(19) +
+                                 tone_g * camera_profile_constant(20)) +
+                                tone_b * camera_profile_constant(21);
+    camera_profile_output.Store(at * 4, camera_profile_quantize_rgb8(projected_r));
+    camera_profile_output.Store((at + 1) * 4, camera_profile_quantize_rgb8(projected_g));
+    camera_profile_output.Store((at + 2) * 4, camera_profile_quantize_rgb8(projected_b));
+}

@@ -583,3 +583,262 @@ kernel void render_physical_float(device const float *source [[buffer(0)]],
     destination[pixel * 3 + 1] = result.g;
     destination[pixel * 3 + 2] = result.b;
 }
+
+static ushort warp_round_u16(float value) {
+    value = clamp(value, 0.0f, 65535.0f);
+    float lower_float = floor(value);
+    float fraction = value - lower_float;
+    uint lower = uint(lower_float);
+    if (fraction > 0.5f || (fraction == 0.5f && (lower & 1u) != 0u)) ++lower;
+    return ushort(min(lower, 65535u));
+}
+
+static float2 warp_source_position(uint x, uint y, uint channel,
+                                   device const float *constants,
+                                   constant float4 &geometry) {
+    uint coefficient = channel * 6u;
+    float dx = float(x) - geometry.x;
+    float dy = float(y) - geometry.y;
+    float scaled_dy = dy * geometry.w;
+    float norm_x = dx / geometry.z;
+    float norm_y = scaled_dy / geometry.z;
+    float norm_x_squared = norm_x * norm_x;
+    float norm_y_squared = norm_y * norm_y;
+    float r2 = min(norm_x_squared + norm_y_squared, 1.0f);
+    float radial = constants[coefficient] + r2 * (constants[coefficient + 1u] +
+        r2 * (constants[coefficient + 2u] + r2 * constants[coefficient + 3u]));
+    float tangential_x = constants[coefficient + 5u] *
+        (r2 + 2.0f * norm_x_squared) +
+        2.0f * constants[coefficient + 4u] * norm_x * norm_y;
+    float tangential_y = constants[coefficient + 4u] *
+        (r2 + 2.0f * norm_y_squared) +
+        2.0f * constants[coefficient + 5u] * norm_x * norm_y;
+    return float2(geometry.x + dx * radial + geometry.z * tangential_x,
+                  geometry.y + dy * radial + geometry.z * tangential_y / geometry.w);
+}
+
+static ushort warp_sample_channel(device const ushort *source, uint width, uint height,
+                                  uint channel, float2 source_position) {
+    float x = clamp(source_position.x, 0.0f, float(width - 1u));
+    float y = clamp(source_position.y, 0.0f, float(height - 1u));
+    uint x0 = uint(floor(x));
+    uint y0 = uint(floor(y));
+    uint x1 = min(x0 + 1u, width - 1u);
+    uint y1 = min(y0 + 1u, height - 1u);
+    float fx = x - float(x0);
+    float fy = y - float(y0);
+    uint at00 = (y0 * width + x0) * 3u + channel;
+    uint at01 = (y0 * width + x1) * 3u + channel;
+    uint at10 = (y1 * width + x0) * 3u + channel;
+    uint at11 = (y1 * width + x1) * 3u + channel;
+    float top = float(source[at00]) * (1.0f - fx) + float(source[at01]) * fx;
+    float bottom = float(source[at10]) * (1.0f - fx) + float(source[at11]) * fx;
+    float value = top * (1.0f - fy) + bottom * fy;
+    return warp_round_u16(value);
+}
+
+kernel void warp_rectilinear_rgb16(device const ushort *source [[buffer(0)]],
+                                   device const float *constants [[buffer(1)]],
+                                   device ushort *destination [[buffer(2)]],
+                                   constant float4 &geometry [[buffer(3)]],
+                                   constant uint2 &dimensions [[buffer(4)]],
+                                   constant uint &pixel_count [[buffer(5)]],
+                                   uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= pixel_count) return;
+    uint x = pixel % dimensions.x;
+    uint y = pixel / dimensions.x;
+    uint at = pixel * 3u;
+    for (uint channel = 0; channel < 3u; ++channel) {
+        const float2 position = warp_source_position(x, y, channel, constants, geometry);
+        destination[at + channel] = warp_sample_channel(source, dimensions.x, dimensions.y,
+                                                        channel, position);
+    }
+}
+
+static float profile_encode_srgb(float value) {
+    value = max(value, 0.0f);
+    if (value <= 0.0031308f) return value * 12.92f;
+    return 1.055f * pow(value, 1.0f / 2.4f) - 0.055f;
+}
+
+static float profile_decode_srgb(float value) {
+    if (value <= 0.04045f) return value / 12.92f;
+    return pow((value + 0.055f) / 1.055f, 2.4f);
+}
+
+static float profile_remainder_360(float value) {
+    float result = fmod(value, 360.0f);
+    if (result < 0.0f) result += 360.0f;
+    return result;
+}
+
+struct ProfileHsv {
+    float h;
+    float s;
+    float v;
+};
+
+static ProfileHsv profile_rgb_to_hsv(float r, float g, float b) {
+    float value = max(r, max(g, b));
+    float minimum = min(r, min(g, b));
+    float difference = value - minimum;
+    float saturation = difference / (abs(value) + 1.1920928955078125e-7f);
+    float hue = 0.0f;
+    if (difference > 1.1920928955078125e-7f) {
+        if (value == r) hue = g - b;
+        else if (value == g) hue = (b - r) + 2.0f * difference;
+        else hue = (r - g) + 4.0f * difference;
+        hue *= 60.0f / difference;
+        if (hue < 0.0f) hue += 360.0f;
+    }
+    return {hue, saturation, value};
+}
+
+static void profile_hsv_to_rgb(float h, float s, float v, thread float &r,
+                               thread float &g, thread float &b) {
+    float sector_position = h * (1.0f / 60.0f);
+    if (sector_position < 0.0f) sector_position += 6.0f;
+    else if (sector_position >= 6.0f) sector_position -= 6.0f;
+    int sector = int(floor(sector_position));
+    float fraction = sector_position - float(sector);
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - s * fraction);
+    float t = v * (1.0f - s * (1.0f - fraction));
+    switch (sector) {
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        default: r = v; g = p; b = q; break;
+    }
+}
+
+static float profile_look_sample(device const float *table, uint h_count,
+                                 uint s_count, uint value_index, uint h_index,
+                                 uint s_index, uint channel) {
+    uint at = (((value_index * h_count + h_index) * s_count + s_index) * 3) + channel;
+    return table[at];
+}
+
+static void profile_apply_look(thread float &r, thread float &g, thread float &b,
+                               device const float *table, uint h_count,
+                               uint s_count, uint v_count, uint encoding) {
+    ProfileHsv hsv = profile_rgb_to_hsv(r, g, b);
+    float encoded_value = encoding == 1 ? profile_encode_srgb(hsv.v) : hsv.v;
+    float hue_coord = profile_remainder_360(hsv.h) * (float(h_count) / 360.0f);
+    float saturation_coord = clamp(hsv.s, 0.0f, 1.0f) * float(s_count - 1);
+    float value_coord = clamp(encoded_value, 0.0f, 1.0f) * float(v_count - 1);
+    uint h0 = uint(floor(hue_coord));
+    uint h1 = (h0 + 1u) % h_count;
+    uint s_floor = uint(floor(saturation_coord));
+    uint v_floor = uint(floor(value_coord));
+    uint s0 = min(s_floor, s_count - 2u);
+    uint v0 = min(v_floor, v_count - 2u);
+    float hf = hue_coord - float(h0);
+    float sf = saturation_coord - float(s0);
+    float vf = value_coord - float(v0);
+    float3 mods = float3(0.0f);
+    for (uint dh = 0; dh < 2; ++dh) {
+        uint hi = dh ? h1 : h0;
+        float hw = dh ? hf : (1.0f - hf);
+        for (uint ds = 0; ds < 2; ++ds) {
+            uint si = s0 + ds;
+            float sw = ds ? sf : (1.0f - sf);
+            for (uint dv = 0; dv < 2; ++dv) {
+                uint vi = v0 + dv;
+                float vw = dv ? vf : (1.0f - vf);
+                float weight = hw * sw * vw;
+                for (uint channel = 0; channel < 3; ++channel) {
+                    float term = weight * profile_look_sample(
+                        table, h_count, s_count, vi, hi, si, channel);
+                    mods[channel] = mods[channel] + term;
+                }
+            }
+        }
+    }
+    hsv.h = profile_remainder_360(hsv.h + mods[0]);
+    hsv.s = clamp(hsv.s * mods[1], 0.0f, 1.0f);
+    float new_value = clamp(encoded_value * mods[2], 0.0f, 1.0f);
+    hsv.v = encoding == 1 ? profile_decode_srgb(new_value) : new_value;
+    profile_hsv_to_rgb(hsv.h, hsv.s, hsv.v, r, g, b);
+}
+
+static float profile_interp_curve(float x, device const float *curve, uint points) {
+    float first_x = curve[0];
+    if (x <= first_x) return curve[1];
+    float last_x = curve[(points - 1) * 2];
+    if (x >= last_x) return curve[(points - 1) * 2 + 1];
+    uint low = 0;
+    uint high = points;
+    while (low < high) {
+        uint middle = low + (high - low) / 2;
+        if (curve[middle * 2] <= x) low = middle + 1;
+        else high = middle;
+    }
+    uint right = low;
+    uint left = right - 1;
+    float x0 = curve[left * 2];
+    float y0 = curve[left * 2 + 1];
+    float x1 = curve[right * 2];
+    float y1 = curve[right * 2 + 1];
+    float slope = (y1 - y0) / (x1 - x0);
+    return slope * (x - x0) + y0;
+}
+
+static uchar profile_quantize_rgb8(float value) {
+    float scaled = profile_encode_srgb(value) * 255.0f;
+    if (!(scaled > 0.0)) return 0;
+    if (scaled >= 255.0) return 255;
+    return uchar(clamp(rint(scaled), 0.0f, 255.0f));
+}
+
+kernel void render_camera_profile(device const ushort *source [[buffer(0)]],
+                                  constant float *constants [[buffer(1)]],
+                                  device const float *look_table [[buffer(2)]],
+                                  device const float *tone_curve [[buffer(3)]],
+                                  device uchar *destination [[buffer(4)]],
+                                  constant uint4 &look_dimensions [[buffer(5)]],
+                                  constant uint2 &profile_counts [[buffer(6)]],
+                                  uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= profile_counts.x) return;
+    uint at = pixel * 3;
+    float camera_r = float(source[at]) / 65535.0f;
+    float camera_g = float(source[at + 1]) / 65535.0f;
+    float camera_b = float(source[at + 2]) / 65535.0f;
+    float clipped_r = min(camera_r, constants[9]);
+    float clipped_g = min(camera_g, constants[10]);
+    float clipped_b = min(camera_b, constants[11]);
+    float matrix_r = (clipped_r * constants[0] + clipped_g * constants[1]) + clipped_b * constants[2];
+    float matrix_g = (clipped_r * constants[3] + clipped_g * constants[4]) + clipped_b * constants[5];
+    float matrix_b = (clipped_r * constants[6] + clipped_g * constants[7]) + clipped_b * constants[8];
+    float r = clamp(matrix_r, 0.0f, 1.0f) * constants[12];
+    float g = clamp(matrix_g, 0.0f, 1.0f) * constants[12];
+    float b = clamp(matrix_b, 0.0f, 1.0f) * constants[12];
+    r = clamp(r, 0.0f, 1.0f);
+    g = clamp(g, 0.0f, 1.0f);
+    b = clamp(b, 0.0f, 1.0f);
+    profile_apply_look(r, g, b, look_table, look_dimensions.x, look_dimensions.y,
+                       look_dimensions.z, look_dimensions.w);
+
+    float low = min(r, min(g, b));
+    float high = max(r, max(g, b));
+    float span = high - low;
+    uint tone_points = profile_counts.y;
+    float new_low = profile_interp_curve(low, tone_curve, tone_points);
+    float new_high = profile_interp_curve(high, tone_curve, tone_points);
+    float3 positions = float3(0.0f);
+    if (span > 1.0e-12f) positions = (float3(r, g, b) - float3(low)) / span;
+    float tone_r = new_low + (new_high - new_low) * positions.r;
+    float tone_g = new_low + (new_high - new_low) * positions.g;
+    float tone_b = new_low + (new_high - new_low) * positions.b;
+    float projected_r = (tone_r * constants[13] + tone_g * constants[14]) +
+                         tone_b * constants[15];
+    float projected_g = (tone_r * constants[16] + tone_g * constants[17]) +
+                         tone_b * constants[18];
+    float projected_b = (tone_r * constants[19] + tone_g * constants[20]) +
+                         tone_b * constants[21];
+    destination[at] = profile_quantize_rgb8(projected_r);
+    destination[at + 1] = profile_quantize_rgb8(projected_g);
+    destination[at + 2] = profile_quantize_rgb8(projected_b);
+}

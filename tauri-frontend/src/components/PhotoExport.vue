@@ -11,10 +11,12 @@ import {
   sharedDehazeAutoByPhoto, sharedDehazeAutoExposureByPhoto, sharedDehazeNonlocalByPhoto,
 } from "../stores/photoSource";
 const props = defineProps<{ visible: boolean }>();
-interface JobFile { photo_id: string; name: string; status: string; error?: string }
+interface JobFile { photo_id: string; name: string; status: string; error?: string; warnings?: string[] }
 interface Job { job_id: string; status: string; total: number; processed: number; success: number; failed: number; progress: number; current_file: string; files: JobFile[] }
 const menuOpen = ref(false);
 const dialogOpen = ref(false);
+const warningDialogOpen = ref(false);
+let notifiedWarningJobId = "";
 const scope = ref<"current" | "all">("current");
 const outputDir = ref("");
 const compression = ref("lossless_jpeg");
@@ -28,6 +30,7 @@ let polling = false;
 const selected = computed(() => sharedPhotoSource.value?.files.find(f => f.photo_id === sharedSelectedPhotoId.value));
 const exportFiles = computed(() => scope.value === "current" ? (selected.value ? [selected.value] : []) : sharedPhotoSource.value?.files ?? []);
 const failedFiles = computed(() => job.value?.files.filter(f => f.status === "failed") ?? []);
+const warnedFiles = computed(() => job.value?.files.filter(f => f.status === "success" && f.warnings?.length) ?? []);
 watch(() => sharedPhotoSource.value?.session_id, () => {
   outputDir.value = sharedPhotoSource.value?.default_output_dir ?? "";
   if (!photoExportRunning.value) job.value = null;
@@ -58,7 +61,14 @@ async function pollJob() {
   try {
     job.value = await request(`/api/enhance/job/${job.value.job_id}`);
     photoExportRunning.value = ["queued", "running"].includes(job.value!.status);
-    if (!photoExportRunning.value) window.clearInterval(pollTimer);
+    if (!photoExportRunning.value) {
+      window.clearInterval(pollTimer);
+      if (warnedFiles.value.length && notifiedWarningJobId !== job.value!.job_id) {
+        notifiedWarningJobId = job.value!.job_id;
+        dialogOpen.value = true;
+        warningDialogOpen.value = true;
+      }
+    }
     error.value = "";
   } catch (cause) { error.value = cause instanceof Error ? cause.message : "无法读取导出进度"; }
   finally { polling = false; }
@@ -69,6 +79,7 @@ async function startExport() {
   starting.value = true;
   photoExportRunning.value = true;
   error.value = "";
+  warningDialogOpen.value = false;
   const ids = exportFiles.value.map(f => f.photo_id);
   try {
     await flushPendingSaves();
@@ -137,10 +148,25 @@ onBeforeUnmount(() => window.clearInterval(pollTimer));
             <div class="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-zinc-800"><div class="h-full bg-blue-600" :style="{ width: `${job.progress * 100}%` }"></div></div>
             <p>成功 {{ job.success }} 张 · 失败 {{ job.failed }} 张</p><p v-if="photoExportRunning" class="truncate text-slate-500">{{ job.current_file }}</p>
             <p v-for="file in failedFiles" :key="file.photo_id" class="text-rose-600">{{ file.name }}：{{ file.error }}</p>
+            <div v-for="file in warnedFiles" :key="`warning-${file.photo_id}`" role="status" class="rounded-lg bg-amber-50 p-3 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              <p class="break-words font-medium">{{ file.name }}</p>
+              <p v-for="warning in file.warnings" :key="warning" class="mt-1 leading-5">{{ warning }}</p>
+            </div>
           </div>
           <p v-if="error || autoSaveError" role="alert" class="mt-4 text-xs text-rose-600">{{ error || autoSaveError }}</p>
           <button v-if="photoExportRunning" @click="cancelExport" :disabled="starting || cancelling" class="mt-5 w-full rounded-xl bg-rose-600 px-4 py-3 text-xs font-semibold text-white disabled:opacity-50">{{ starting ? '正在创建任务…' : cancelling ? '正在停止…' : '停止后续处理' }}</button>
           <button v-else @click="startExport" :disabled="!exportFiles.length" class="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-40"><Download class="h-4 w-4" />开始导出{{ exportFiles.length > 1 ? ` ${exportFiles.length} 张` : '' }}</button>
+        </section>
+      </div>
+      <div v-if="warningDialogOpen" class="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 p-6" @keydown.esc.stop="warningDialogOpen = false">
+        <section role="alertdialog" aria-modal="true" aria-labelledby="export-warning-title" aria-describedby="export-warning-description" class="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-2xl border border-amber-200 bg-white p-6 text-slate-800 shadow-xl dark:border-amber-800 dark:bg-zinc-900 dark:text-zinc-100">
+          <h2 id="export-warning-title" class="text-base font-semibold">导出完成，部分照片未应用镜头校正</h2>
+          <p id="export-warning-description" class="mt-3 text-sm leading-6">{{ warnedFiles.length }} 张照片缺少可用的镜头校正数据，已继续导出 DNG。</p>
+          <div v-for="file in warnedFiles" :key="file.photo_id" class="mt-3 rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+            <p class="break-words font-medium">{{ file.name }}</p>
+            <p v-for="warning in file.warnings" :key="warning">{{ warning }}</p>
+          </div>
+          <button autofocus type="button" @click="warningDialogOpen = false" class="mt-5 w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">我知道了</button>
         </section>
       </div>
     </Teleport>

@@ -75,10 +75,13 @@ from dng_writer import write_enhanced_dng, write_linear_dng
 from camera_profile import (
     PROFILE_PREVIEW_VERSION, resolve_profile, load_camera_rgb,
     transfer_enhancement, render_profile, get_last_profile_backend,
+    clear_camera_profile_gpu_cache,
 )
 from image_io import (
     OUTPUT_DIR_NAME, SUPPORTED_SUFFIXES,
-    EnhancedDNGColorError, camera_profile_names, enhanced_dng_source_data,
+    EnhancedDNGColorError, build_enhanced_dng_source_cache,
+    camera_profile_names, enhanced_dng_source_data,
+    enhanced_dng_source_identity,
     matching_embedded_profile_dng, read_image,
     read_photo_metadata, scan_photo_directory, to_uint16,
 )
@@ -91,6 +94,7 @@ from ricoh_filter import (
 from measured_response import standard_preview_to_srgb
 from lens_correction import (
     LensCorrectionError,
+    LensMetadataUnavailableError,
     LensCorrectionNotAppliedError,
     LensCorrectionResult,
     LensMatchError,
@@ -98,8 +102,10 @@ from lens_correction import (
     apply_lens_correction,
 )
 from dng_gainmap import apply_dng_gain_map
+from dng_warp import apply_dng_warp_correction
+from native_renderer import clear_native_warp_cache
 
-LENS_PREVIEW_VERSION = "lensfun-and-dng-gainmap-c1-highlights-v4"
+LENS_PREVIEW_VERSION = "dng-warp-ordered-gainmap-gpu-v5"
 BASIC_PREVIEW_VERSION = "camera-profile-linear-exposure-v3"
 
 import io
@@ -159,9 +165,24 @@ _FULL_RESOLUTION_PREVIEW_LOCK = threading.Lock()
 # One decoded source and one display RGB8 base. The source lets repeated full
 # preview edits skip RAW decoding; both are cleared together on photo changes.
 _FULL_RESOLUTION_DECODED_CACHE: dict[tuple, tuple[np.ndarray, Any]] = {}
+_FULL_RESOLUTION_DECODED_SOURCE_IDENTITIES: dict[tuple, tuple] = {}
 _MAX_FULL_RESOLUTION_DECODED_BYTES = 256 * 1024 * 1024
 _FULL_RESOLUTION_BASE_CACHE: dict[tuple, tuple[np.ndarray, tuple]] = {}
 _MAX_FULL_RESOLUTION_BASE_BYTES = 96 * 1024 * 1024
+# The camera profile path keeps at most one full-resolution source and one
+# pre-exposure transferred image. All full-resolution arrays share one hard
+# budget so large sources can simply bypass retention.
+_FULL_RESOLUTION_CAMERA_SOURCE_CACHE: dict[
+    tuple, tuple[np.ndarray, np.ndarray, np.ndarray]
+] = {}
+_FULL_RESOLUTION_CAMERA_PROCESSED_CACHE: dict[
+    tuple, tuple[np.ndarray, np.ndarray, tuple]
+] = {}
+_FULL_RESOLUTION_EXPORT_SOURCE_CACHE: dict[tuple, Any] = {}
+_MAX_FULL_RESOLUTION_PREVIEW_CACHE_BYTES = 640 * 1024 * 1024
+_FULL_RESOLUTION_ACTIVE_SOURCE_KEY: tuple | None = None
+_FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE: tuple[int, ...] | None = None
+_FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY: tuple | None = None
 _FULL_RESOLUTION_CACHE_IDLE_SECONDS = 60.0
 _FULL_RESOLUTION_CACHE_GENERATION = 0
 _FULL_RESOLUTION_CACHE_TIMER: threading.Timer | None = None
@@ -188,7 +209,7 @@ app.add_middleware(
         "X-Image-Width", "X-Image-Height", "X-Dehaze-Nonlocal-Status",
         "X-Dehaze-Nonlocal-Reason", "X-Auto-Exposure-EV",
         "X-Auto-Exposure-Reason", "Server-Timing", "X-Preview-Base-Cache",
-        "X-Preview-Decode-Cache",
+        "X-Preview-Decode-Cache", "X-Preview-Camera-Cache",
     ],
 )
 
@@ -649,6 +670,15 @@ def _render_mode(render_backend: str | None, use_gpu: bool = False) -> str:
     return render_backend or ("legacy_gpu" if use_gpu else "cpu")
 
 
+def _camera_profile_render_backend(render_backend: str) -> str:
+    """Map legacy GPU selectors onto the camera profile renderer's GPU mode."""
+    if render_backend in ("auto", "native"):
+        return render_backend
+    if render_backend in ("legacy_gpu", "pytorch"):
+        return "auto"
+    return "cpu"
+
+
 def _basic_mode(basic_backend: str | None, render_mode: str) -> str:
     if basic_backend is not None:
         return basic_backend
@@ -894,15 +924,104 @@ def _render_basic(image: np.ndarray, basic: dict[str, float], mode: str) -> np.n
     return apply_basic_preview_effect(image, basic)
 
 
-# Only bounded preview camera/reference pairs are retained. Full-size data is
-# temporary; the existing full-resolution decode/base cache owns its lifetime.
+# Low-resolution camera/reference pairs use a bounded multi-photo cache.
+# Full-resolution profile layers use the single-photo caches above and the
+# shared full-resolution memory budget.
 _CAMERA_PROFILE_SOURCE_CACHE: OrderedDict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = OrderedDict()
 _MAX_CAMERA_PROFILE_SOURCE_BYTES = 128 * 1024 * 1024
 
 
+def _full_resolution_preview_cache_bytes() -> int:
+    """Count retained array payloads across every full-resolution preview layer."""
+    arrays: dict[int, np.ndarray] = {}
+
+    def include(array: Any) -> None:
+        if isinstance(array, np.ndarray):
+            arrays[id(array)] = array
+
+    for value in _FULL_RESOLUTION_DECODED_CACHE.values():
+        include(value[0])
+    for value in _FULL_RESOLUTION_BASE_CACHE.values():
+        include(value[0])
+    for camera, reference, neutral in _FULL_RESOLUTION_CAMERA_SOURCE_CACHE.values():
+        for array in (camera, reference, neutral):
+            include(array)
+    for processed, neutral, _status in _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.values():
+        include(processed)
+        include(neutral)
+    for source in _FULL_RESOLUTION_EXPORT_SOURCE_CACHE.values():
+        for name in ("camera_rgb16", "reference_rgb16", "srgb_to_camera"):
+            include(getattr(source, name, None))
+    return sum(array.nbytes for array in arrays.values())
+
+
+def _clear_full_resolution_camera_source_cache() -> None:
+    """Drop the preview camera pair and the export snapshot that shares it."""
+    _FULL_RESOLUTION_CAMERA_SOURCE_CACHE.clear()
+    _FULL_RESOLUTION_EXPORT_SOURCE_CACHE.clear()
+
+
+def _full_resolution_export_source_key(
+    session_id: str, photo_id: str, source_identity: tuple,
+    shape: tuple[int, ...], correction_version: str,
+) -> tuple:
+    return (session_id, photo_id, source_identity, tuple(shape), correction_version)
+
+
+def _valid_full_resolution_export_source_cache(
+    source: Any, source_identity: tuple, shape: tuple[int, ...],
+    correction_version: str,
+) -> bool:
+    if (getattr(source, "source_identity", None) != source_identity
+            or tuple(getattr(source, "source_shape", ())) != tuple(shape)
+            or getattr(source, "correction_version", None) != correction_version):
+        return False
+    camera = getattr(source, "camera_rgb16", None)
+    reference = getattr(source, "reference_rgb16", None)
+    matrix = getattr(source, "srgb_to_camera", None)
+    return bool(
+        isinstance(camera, np.ndarray) and camera.dtype == np.uint16
+        and camera.shape == tuple(shape) and camera.flags.c_contiguous
+        and not camera.flags.writeable
+        and isinstance(reference, np.ndarray) and reference.dtype == np.uint16
+        and reference.shape == tuple(shape) and reference.flags.c_contiguous
+        and not reference.flags.writeable
+        and isinstance(matrix, np.ndarray) and matrix.shape == (3, 3)
+        and np.isfinite(matrix).all() and not matrix.flags.writeable
+    )
+
+
+def _trim_full_resolution_preview_cache_budget() -> None:
+    """Evict redundant full-resolution layers until their combined cap holds."""
+    while _full_resolution_preview_cache_bytes() > _MAX_FULL_RESOLUTION_PREVIEW_CACHE_BYTES:
+        if _FULL_RESOLUTION_BASE_CACHE:
+            _FULL_RESOLUTION_BASE_CACHE.clear()
+        elif _FULL_RESOLUTION_DECODED_CACHE:
+            _FULL_RESOLUTION_DECODED_CACHE.clear()
+            _FULL_RESOLUTION_DECODED_SOURCE_IDENTITIES.clear()
+        elif _FULL_RESOLUTION_CAMERA_SOURCE_CACHE:
+            # The transferred stage still renders exposure edits without these
+            # source arrays. Keep it before the more expensive reusable source.
+            _clear_full_resolution_camera_source_cache()
+        elif _FULL_RESOLUTION_EXPORT_SOURCE_CACHE:
+            _FULL_RESOLUTION_EXPORT_SOURCE_CACHE.clear()
+        elif _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE:
+            _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.clear()
+            clear_camera_profile_gpu_cache()
+        else:
+            break
+
+
 def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
                           metadata: Any, path: Path, profile: Any,
-                          exposure_ev: float, *, preview: bool) -> tuple[np.ndarray, str, str]:
+                          exposure_ev: float, *, preview: bool,
+                          backend: str = "cpu",
+                          full_cache_identity: tuple | None = None,
+                          full_export_identity: tuple | None = None,
+                          stage_cache_key: tuple | None = None,
+                          stage_status: tuple | None = None,
+                          camera_cache_out: dict[str, str] | None = None
+                          ) -> tuple[np.ndarray, str, str]:
     """Render the native camera anchor before display quantization and EV clipping.
 
     On failure the old display path still applies EV exactly once. The caller
@@ -917,29 +1036,106 @@ def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size, reference.shape,
                preview, LENS_PREVIEW_VERSION)
-        with _DISPLAY_PREVIEW_LOCK:
-            cached = _CAMERA_PROFILE_SOURCE_CACHE.get(key)
-            if cached is not None:
-                _CAMERA_PROFILE_SOURCE_CACHE.move_to_end(key)
-        if cached is None:
-            camera, neutral = load_camera_rgb(path, reference.shape, preview)
-            neutral = np.asarray(neutral, dtype=np.float64)
-            camera, _, _ = _correct_enhanced_raw(camera, metadata, path, preview=True)
-            corrected_reference, _, _ = _correct_enhanced_raw(reference, metadata, path, preview=True)
-            cached = (camera, corrected_reference, neutral)
-            size = sum(value.nbytes for value in cached)
-            if preview and size <= _MAX_CAMERA_PROFILE_SOURCE_BYTES:
-                for value in cached:
-                    value.setflags(write=False)
-                with _DISPLAY_PREVIEW_LOCK:
-                    while (_CAMERA_PROFILE_SOURCE_CACHE and
-                           sum(sum(a.nbytes for a in value) for value in _CAMERA_PROFILE_SOURCE_CACHE.values())
-                           + size > _MAX_CAMERA_PROFILE_SOURCE_BYTES):
-                        _CAMERA_PROFILE_SOURCE_CACHE.popitem(last=False)
-                    _CAMERA_PROFILE_SOURCE_CACHE[key] = cached
-        camera, corrected_reference, neutral = cached
-        camera_processed = transfer_enhancement(camera, corrected_reference, processed)
-        display = render_profile(camera_processed, neutral, profile, exposure_ev)
+        if preview:
+            with _DISPLAY_PREVIEW_LOCK:
+                cached = _CAMERA_PROFILE_SOURCE_CACHE.get(key)
+                if cached is not None:
+                    _CAMERA_PROFILE_SOURCE_CACHE.move_to_end(key)
+            if cached is None:
+                camera, neutral = load_camera_rgb(path, reference.shape, preview)
+                neutral = np.asarray(neutral, dtype=np.float64)
+                camera, _, _ = _correct_enhanced_raw(
+                    camera, metadata, path, preview=True, highlight_reference=reference,
+                )
+                corrected_reference, _, _ = _correct_enhanced_raw(reference, metadata, path, preview=True)
+                cached = (camera, corrected_reference, neutral)
+                size = sum(value.nbytes for value in cached)
+                if size <= _MAX_CAMERA_PROFILE_SOURCE_BYTES:
+                    for value in cached:
+                        value.setflags(write=False)
+                    with _DISPLAY_PREVIEW_LOCK:
+                        while (_CAMERA_PROFILE_SOURCE_CACHE and
+                               sum(sum(a.nbytes for a in value) for value in _CAMERA_PROFILE_SOURCE_CACHE.values())
+                               + size > _MAX_CAMERA_PROFILE_SOURCE_BYTES):
+                            _CAMERA_PROFILE_SOURCE_CACHE.popitem(last=False)
+                        _CAMERA_PROFILE_SOURCE_CACHE[key] = cached
+            camera, corrected_reference, neutral = cached
+            camera_processed = transfer_enhancement(camera, corrected_reference, processed)
+        else:
+            if full_cache_identity is None:
+                raise ValueError("full profile cache requires a source identity")
+            source_key = (*full_cache_identity, tuple(reference.shape), LENS_PREVIEW_VERSION)
+            cached_source = _FULL_RESOLUTION_CAMERA_SOURCE_CACHE.get(source_key)
+            if cached_source is None:
+                uncorrected_camera, neutral = load_camera_rgb(path, reference.shape, False)
+                neutral = np.asarray(neutral, dtype=np.float64).copy()
+                camera, camera_lens_result, camera_gain_applied = _correct_enhanced_raw(
+                    uncorrected_camera, metadata, path, preview=True,
+                    highlight_reference=reference,
+                )
+                corrected_reference, reference_lens_result, reference_gain_applied = (
+                    _correct_enhanced_raw(reference, metadata, path, preview=True)
+                )
+                cached_source = (camera, corrected_reference, neutral)
+                source_cache = None
+                if full_export_identity is not None:
+                    source_cache = build_enhanced_dng_source_cache(
+                        path, uncorrected_camera, reference, camera, corrected_reference,
+                        camera_lens_result, reference_lens_result,
+                        correction_version=LENS_PREVIEW_VERSION,
+                        camera_gain_applied=camera_gain_applied,
+                        reference_gain_applied=reference_gain_applied,
+                    )
+                if camera.dtype == np.uint16 and corrected_reference.dtype == np.uint16:
+                    for value in cached_source:
+                        value.setflags(write=False)
+                    if sum(value.nbytes for value in cached_source) <= _MAX_FULL_RESOLUTION_PREVIEW_CACHE_BYTES:
+                        _clear_full_resolution_camera_source_cache()
+                        _FULL_RESOLUTION_CAMERA_SOURCE_CACHE[source_key] = cached_source
+                        if (source_cache is not None and full_export_identity is not None
+                                and _valid_full_resolution_export_source_cache(
+                                    source_cache, full_export_identity,
+                                    tuple(reference.shape), LENS_PREVIEW_VERSION,
+                                )):
+                            export_key = _full_resolution_export_source_key(
+                                full_cache_identity[0], full_cache_identity[1],
+                                full_export_identity, tuple(reference.shape), LENS_PREVIEW_VERSION,
+                            )
+                            _FULL_RESOLUTION_EXPORT_SOURCE_CACHE[export_key] = source_cache
+                        _trim_full_resolution_preview_cache_budget()
+            else:
+                if camera_cache_out is not None:
+                    camera_cache_out["source"] = "hit"
+            camera, corrected_reference, neutral = cached_source
+
+            cached_processed = (
+                _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.get(stage_cache_key)
+                if stage_cache_key is not None else None
+            )
+            if cached_processed is not None:
+                camera_processed, neutral, _cached_status = cached_processed
+                if camera_cache_out is not None:
+                    camera_cache_out["stage"] = "hit"
+            else:
+                camera_processed = transfer_enhancement(camera, corrected_reference, processed)
+                if (stage_cache_key is not None and camera_processed.dtype == np.uint16
+                        and camera_processed.shape == processed.shape
+                        and camera_processed.nbytes + neutral.nbytes <= _MAX_FULL_RESOLUTION_PREVIEW_CACHE_BYTES):
+                    camera_processed.setflags(write=False)
+                    neutral.setflags(write=False)
+                    _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.clear()
+                    _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE[stage_cache_key] = (
+                        camera_processed, neutral, tuple(stage_status or ()),
+                    )
+                    _trim_full_resolution_preview_cache_budget()
+                if camera_cache_out is not None:
+                    camera_cache_out["stage"] = "miss"
+            if camera_cache_out is not None:
+                camera_cache_out.setdefault("source", "miss")
+        display = render_profile(
+            camera_processed, neutral, profile, exposure_ev,
+            backend=_camera_profile_render_backend(backend),
+        )
         return display, "applied", get_last_profile_backend()
     except Exception as exc:
         # A bad/missing optional profile must not break slider interaction or
@@ -949,6 +1145,20 @@ def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
         if exposure_ev:
             display = _render_basic(display, BasicParamsRequest(exposure=exposure_ev).values(), "python")
         return display, "fallback", "legacy"
+
+
+def _full_resolution_profile_stage_key(
+    source_identity: tuple, shape: tuple[int, ...], params: DehazeParams,
+    req: EnhancePreviewRequest, backend: str, profile: Any,
+) -> tuple:
+    """Identify the transferred camera RGB16 layer before manual exposure."""
+    return (
+        source_identity, shape, LENS_PREVIEW_VERSION,
+        DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
+        tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
+        req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb,
+        backend, PROFILE_PREVIEW_VERSION, profile.fingerprint,
+    )
 
 
 def _complete_export_basic_params(
@@ -976,8 +1186,18 @@ def _export_metadata_with_basic_params(
 
 def _clear_full_resolution_preview_caches() -> None:
     """Clear full-resolution caches. The caller must hold the full-preview lock."""
+    global _FULL_RESOLUTION_ACTIVE_SOURCE_KEY, _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE
+    global _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY
     _FULL_RESOLUTION_DECODED_CACHE.clear()
+    _FULL_RESOLUTION_DECODED_SOURCE_IDENTITIES.clear()
     _FULL_RESOLUTION_BASE_CACHE.clear()
+    _clear_full_resolution_camera_source_cache()
+    _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.clear()
+    clear_camera_profile_gpu_cache()
+    clear_native_warp_cache()
+    _FULL_RESOLUTION_ACTIVE_SOURCE_KEY = None
+    _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE = None
+    _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY = None
 
 
 def _release_unused_preview_memory() -> None:
@@ -1062,26 +1282,121 @@ def _full_resolution_decoded_image(
     req: EnhancePreviewRequest, path: Path,
 ) -> tuple[np.ndarray, Any, bool]:
     """Return one immutable full-resolution decode, called under its cache lock."""
+    global _FULL_RESOLUTION_ACTIVE_SOURCE_KEY, _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE
+    global _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY
     stat = path.stat()
     key = (req.session_id, req.photo_id, str(path), stat.st_mtime_ns, stat.st_size)
+    strong_identity = enhanced_dng_source_identity(path)
+    if (_FULL_RESOLUTION_ACTIVE_SOURCE_KEY != key
+            or _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY != strong_identity):
+        # All retained full-size layers belong to one active photo/source.
+        _clear_full_resolution_preview_caches()
+        _FULL_RESOLUTION_ACTIVE_SOURCE_KEY = key
+        _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY = strong_identity
     cached = _FULL_RESOLUTION_DECODED_CACHE.get(key)
     if cached is not None:
+        if _FULL_RESOLUTION_DECODED_SOURCE_IDENTITIES.get(key) != strong_identity:
+            # Preserve the historical decoded-cache key shape while validating
+            # its content against the stronger file identity separately.
+            _clear_full_resolution_preview_caches()
+            _FULL_RESOLUTION_ACTIVE_SOURCE_KEY = key
+            _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY = strong_identity
+            cached = None
+    if cached is not None:
+        _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE = tuple(cached[0].shape)
         _touch_full_resolution_preview_cache()
         return cached[0], cached[1], True
 
-    # Photo switches and source changes release both retained full-size arrays
-    # before another decode allocates memory.
-    if _FULL_RESOLUTION_DECODED_CACHE:
-        _clear_full_resolution_preview_caches()
-    elif any(base_key[:5] != key for base_key in _FULL_RESOLUTION_BASE_CACHE):
-        _FULL_RESOLUTION_BASE_CACHE.clear()
-
     image, metadata = read_image(path, preview=False)
+    if enhanced_dng_source_identity(path) != strong_identity:
+        raise RuntimeError("source changed while decoding full-resolution preview")
     image.setflags(write=False)
+    _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE = tuple(image.shape)
     if image.nbytes <= _MAX_FULL_RESOLUTION_DECODED_BYTES:
         _FULL_RESOLUTION_DECODED_CACHE[key] = (image, metadata)
+        _FULL_RESOLUTION_DECODED_SOURCE_IDENTITIES[key] = strong_identity
+        _trim_full_resolution_preview_cache_budget()
     _touch_full_resolution_preview_cache()
     return image, metadata, False
+
+
+def _capture_full_resolution_export_sources(
+    session_id: str, photo_id: str, path: Path,
+) -> tuple[np.ndarray | None, Any, Any, bool, tuple]:
+    """Take strong references to a matching decode and camera snapshot under lock."""
+    global _FULL_RESOLUTION_ACTIVE_SOURCE_KEY, _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY
+    global _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE
+    stat = path.stat()
+    decoded_key = (session_id, photo_id, str(path), stat.st_mtime_ns, stat.st_size)
+    source_identity = enhanced_dng_source_identity(path)
+    with _FULL_RESOLUTION_PREVIEW_LOCK:
+        active_key = _FULL_RESOLUTION_ACTIVE_SOURCE_KEY
+        if active_key is None:
+            return None, None, None, False, source_identity
+        if active_key[:2] != decoded_key[:2]:
+            # Batch export of another photo must not evict the editor's active
+            # full-resolution preview layers.
+            return None, None, None, False, source_identity
+        if _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY != source_identity:
+            _clear_full_resolution_preview_caches()
+            _FULL_RESOLUTION_ACTIVE_SOURCE_KEY = decoded_key
+            _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY = source_identity
+        elif active_key != decoded_key:
+            # The same session/photo now resolves to a different path or legacy
+            # stat key, so its previous decoded and camera layers are stale.
+            _clear_full_resolution_preview_caches()
+            _FULL_RESOLUTION_ACTIVE_SOURCE_KEY = decoded_key
+            _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY = source_identity
+
+        decoded = _FULL_RESOLUTION_DECODED_CACHE.get(decoded_key)
+        if (decoded is not None
+                and _FULL_RESOLUTION_DECODED_SOURCE_IDENTITIES.get(decoded_key) != source_identity):
+            _clear_full_resolution_preview_caches()
+            _FULL_RESOLUTION_ACTIVE_SOURCE_KEY = decoded_key
+            _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY = source_identity
+            decoded = None
+
+        snapshot = None
+        snapshot_shape = None
+        for cache_key, candidate in _FULL_RESOLUTION_EXPORT_SOURCE_CACHE.items():
+            if (len(cache_key) == 5 and cache_key[0] == session_id
+                    and cache_key[1] == photo_id and cache_key[2] == source_identity
+                    and cache_key[4] == LENS_PREVIEW_VERSION
+                    and tuple(getattr(candidate, "source_shape", ())) == tuple(cache_key[3])
+                    and _valid_full_resolution_export_source_cache(
+                        candidate, source_identity, tuple(cache_key[3]), LENS_PREVIEW_VERSION,
+                    )):
+                snapshot = candidate
+                snapshot_shape = tuple(cache_key[3])
+                break
+
+        if decoded is not None:
+            decoded_shape = tuple(decoded[0].shape)
+            _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE = decoded_shape
+            if snapshot is not None and snapshot_shape != decoded_shape:
+                snapshot = None
+        elif snapshot is not None:
+            _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE = snapshot_shape
+
+        _touch_full_resolution_preview_cache()
+        return (
+            decoded[0] if decoded is not None else None,
+            decoded[1] if decoded is not None else None,
+            snapshot,
+            decoded is not None,
+            source_identity,
+        )
+
+
+def _invalidate_full_resolution_export_source(
+    session_id: str, photo_id: str, source_identity: tuple,
+) -> None:
+    """Clear stale preview layers only when they still belong to this source."""
+    with _FULL_RESOLUTION_PREVIEW_LOCK:
+        active_key = _FULL_RESOLUTION_ACTIVE_SOURCE_KEY
+        if (active_key is not None and active_key[:2] == (session_id, photo_id)
+                and _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY == source_identity):
+            _clear_full_resolution_preview_caches()
 
 
 def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
@@ -1089,8 +1404,14 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
                                   profile: Any = None, exposure_ev: float = 0.0
                                   ) -> tuple[np.ndarray, tuple, bool, str]:
     """Called under the full-preview lock; cache a single immutable RGB8 base."""
+    global _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY
     stat = path.stat()
-    key = (req.session_id, req.photo_id, str(path), stat.st_mtime_ns, stat.st_size,
+    source_identity = (req.session_id, req.photo_id, str(path), stat.st_mtime_ns, stat.st_size)
+    full_export_identity = enhanced_dng_source_identity(path)
+    if (_FULL_RESOLUTION_ACTIVE_SOURCE_KEY == source_identity
+            and _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY != full_export_identity):
+        _clear_full_resolution_preview_caches()
+    key = (*source_identity,
            DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
            LENS_PREVIEW_VERSION, tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
            req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb, backend,
@@ -1102,10 +1423,62 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
         decode_cache = "hit" if decoded_key in _FULL_RESOLUTION_DECODED_CACHE else "not-needed"
         _touch_full_resolution_preview_cache()
         return cached[0], cached[1], True, decode_cache
+
+    def remember_base(display: np.ndarray, status: tuple) -> None:
+        display.setflags(write=False)
+        if display.nbytes <= _MAX_FULL_RESOLUTION_BASE_BYTES:
+            _FULL_RESOLUTION_BASE_CACHE[key] = (display, status)
+            _trim_full_resolution_preview_cache_budget()
+
+    stage_key: tuple | None = None
+    active_shape = (
+        _FULL_RESOLUTION_ACTIVE_SOURCE_SHAPE
+        if _FULL_RESOLUTION_ACTIVE_SOURCE_KEY == source_identity else None
+    )
+    if profile is not None and active_shape is not None:
+        stage_key = _full_resolution_profile_stage_key(
+            source_identity, active_shape, params, req, backend, profile,
+        )
+        cached_stage = _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.get(stage_key)
+        if cached_stage is not None:
+            camera_processed, neutral, cached_status = cached_stage
+            try:
+                display = render_profile(
+                    camera_processed, neutral, profile, exposure_ev,
+                    backend=_camera_profile_render_backend(backend),
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).debug(
+                    "Cached camera profile render fallback: %s", type(exc).__name__,
+                )
+            else:
+                preview_status = (
+                    *cached_status, "applied", get_last_profile_backend(), "stage-hit",
+                )
+                remember_base(display, preview_status)
+                _touch_full_resolution_preview_cache()
+                return display, preview_status, False, "not-needed"
+        elif _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE:
+            _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.clear()
+            clear_camera_profile_gpu_cache()
+    elif profile is None:
+        _clear_full_resolution_camera_source_cache()
+        _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.clear()
+        clear_camera_profile_gpu_cache()
+
     # Keep the same decoded source for parameter edits, but release its previous
     # rendered base before allocating another full-size working set.
     _FULL_RESOLUTION_BASE_CACHE.clear()
     image, metadata, decode_hit = _full_resolution_decoded_image(req, path)
+    full_export_identity = _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY
+    reference_shape = tuple(image.shape)
+    if profile is not None:
+        stage_key = _full_resolution_profile_stage_key(
+            source_identity, reference_shape, params, req, backend, profile,
+        )
+        if any(old_key != stage_key for old_key in _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE):
+            _FULL_RESOLUTION_CAMERA_PROCESSED_CACHE.clear()
+            clear_camera_profile_gpu_cache()
     linear_input = _prepare_dehaze_input(image, metadata, path,
                                         color_manage_srgb=req.color_manage_srgb)
     # A float32 linear decode can be returned directly by the preparation helper.
@@ -1125,15 +1498,19 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
     del enhanced
     enhanced16, _, _ = _correct_enhanced_raw(enhanced16, metadata, path, preview=True)
     if profile is not None:
+        camera_cache: dict[str, str] = {}
         display, profile_status, profile_backend = _profile_display_base(
-            enhanced16, image, metadata, path, profile, exposure_ev, preview=False)
-        preview_status += (profile_status, profile_backend)
+            enhanced16, image, metadata, path, profile, exposure_ev, preview=False,
+            backend=backend, full_cache_identity=source_identity,
+            full_export_identity=full_export_identity,
+            stage_cache_key=stage_key, stage_status=preview_status,
+            camera_cache_out=camera_cache)
+        preview_status += (profile_status, profile_backend,
+                           camera_cache.get("stage", "fallback"))
     else:
         display = _display_rgb8(enhanced16, linear=True)
     del enhanced16
-    display.setflags(write=False)
-    if display.nbytes <= _MAX_FULL_RESOLUTION_BASE_BYTES:
-        _FULL_RESOLUTION_BASE_CACHE[key] = (display, preview_status)
+    remember_base(display, preview_status)
     return display, preview_status, False, "hit" if decode_hit else "miss"
 
 
@@ -1212,12 +1589,27 @@ def _cached_processing_preview(
 
 def _correct_enhanced_raw(
     image: np.ndarray, metadata: Any, path: Path, *, require_correction: bool = False,
-    preview: bool = False,
+    preview: bool = False, backend: str = "auto",
+    highlight_reference: np.ndarray | None = None,
 ) -> tuple[np.ndarray, Any, bool]:
     """Use the same lens and DNG gain corrections for preview and export."""
     is_raw = getattr(metadata, "source_kind", "") == "raw"
     if preview and not is_raw:
         return image, LensCorrectionResult(False, None, None, False, False, False), False
+    if is_raw and path.suffix.lower() == ".dng":
+        diagnostics: dict[str, Any] = {}
+        corrected, warp_applied, gain_applied = apply_dng_warp_correction(
+            to_uint16(image), path, backend=backend, preserve_highlights=True,
+            highlight_reference=highlight_reference, diagnostics=diagnostics,
+            full_frame=True,
+        )
+        if warp_applied:
+            exif = getattr(metadata, "exif", {}) or {}
+            return corrected, LensCorrectionResult(
+                True, str(exif.get("Model") or ""), "DNG WarpRectilinear",
+                True, bool(diagnostics.get("tca_applied")), False,
+                engine="DNG/WarpRectilinear", backend=diagnostics.get("backend"),
+            ), gain_applied
     corrected, lens_result = apply_lens_correction(
         to_uint16(image), metadata, require_correction=is_raw and require_correction,
     )
@@ -1227,6 +1619,41 @@ def _correct_enhanced_raw(
             corrected, path, preserve_highlights=True,
         )
     return corrected, lens_result, gain_map_applied
+
+
+_LENS_CORRECTION_FALLBACK_WARNING = "缺少可靠的镜头校正数据，已跳过镜头校正并继续导出。"
+
+
+def _correct_enhanced_raw_for_export(
+    image: np.ndarray, metadata: Any, path: Path, *, backend: str = "auto",
+) -> tuple[np.ndarray, LensCorrectionResult, bool, str | None]:
+    """Keep export strict for processing faults and degrade only missing lens data."""
+    try:
+        corrected, result, gain_map_applied = _correct_enhanced_raw(
+            image, metadata, path, require_correction=True, backend=backend,
+        )
+        return corrected, result, gain_map_applied, None
+    except (
+        LensMatchError,
+        LensfunUnavailableError,
+        LensCorrectionNotAppliedError,
+        LensMetadataUnavailableError,
+    ):
+        # Missing calibration must not prevent a DNG export. Preserve any valid
+        # source DNG GainMap, while allowing malformed opcode data to fail it.
+        corrected = np.ascontiguousarray(to_uint16(image).copy())
+        gain_map_applied = False
+        is_raw = getattr(metadata, "source_kind", "") == "raw"
+        if is_raw and path.suffix.lower() == ".dng":
+            corrected, gain_map_applied = apply_dng_gain_map(
+                corrected, path, preserve_highlights=True,
+            )
+        return (
+            corrected,
+            LensCorrectionResult(False, None, None, False, False, False),
+            gain_map_applied,
+            _LENS_CORRECTION_FALLBACK_WARNING,
+        )
 
 
 def _cached_dehazed_display_preview(
@@ -1310,7 +1737,8 @@ def _cached_dehazed_display_preview(
     corrected, _, _ = _correct_enhanced_raw(dehazed16, metadata, path, preview=True)
     if profile is not None:
         display, profile_status, profile_backend = _profile_display_base(
-            corrected, image, metadata, path, profile, manual_exposure_ev, preview=True)
+            corrected, image, metadata, path, profile, manual_exposure_ev,
+            preview=True, backend=backend)
         status += (profile_status, profile_backend)
         _set_preview_status(status_out, status)
     else:
@@ -1686,7 +2114,9 @@ def _display_rgb8(image_rgb: np.ndarray, *, linear: bool = False) -> np.ndarray:
 def _encode_preview(image_rgb: np.ndarray, *, linear: bool = False) -> bytes:
     image_rgb = _display_rgb8(image_rgb, linear=linear)
     stream = io.BytesIO()
-    Image.fromarray(image_rgb, "RGB").save(stream, "JPEG", quality=91, optimize=True)
+    # Huffman-table optimization adds a full coding pass. Default tables keep
+    # the same quantized pixels and make local interactive previews faster.
+    Image.fromarray(image_rgb, "RGB").save(stream, "JPEG", quality=91, optimize=False)
     return stream.getvalue()
 
 
@@ -1777,10 +2207,9 @@ def create_enhance_session(req: EnhanceSessionRequest):
                 for key in [key for key in _RICOH_PREVIEW_CACHE if key[0] == expired]:
                     _RICOH_PREVIEW_CACHE.pop(key, None)
                 with _FULL_RESOLUTION_PREVIEW_LOCK:
-                    for key in [key for key in _FULL_RESOLUTION_DECODED_CACHE if key[0] == expired]:
-                        _FULL_RESOLUTION_DECODED_CACHE.pop(key, None)
-                    for key in [key for key in _FULL_RESOLUTION_BASE_CACHE if key[0] == expired]:
-                        _FULL_RESOLUTION_BASE_CACHE.pop(key, None)
+                    if (_FULL_RESOLUTION_ACTIVE_SOURCE_KEY is not None
+                            and _FULL_RESOLUTION_ACTIVE_SOURCE_KEY[0] == expired):
+                        _clear_full_resolution_preview_caches()
                 with _DISPLAY_PREVIEW_LOCK:
                     for key in [key for key in _DISPLAY_PREVIEW_CACHE if key[0] == expired]:
                         _DISPLAY_PREVIEW_CACHE.pop(key, None)
@@ -1986,6 +2415,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         preview_headers: dict[str, str] = {}
         camera_profile_status = "legacy"
         camera_profile_backend = "legacy"
+        camera_cache_status = "not-needed"
         if req.full_resolution:
             started = time.perf_counter()
             waiting = started
@@ -1994,11 +2424,29 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 base_started = time.perf_counter()
                 if req.mode == "original":
                     image, metadata, decode_hit = _full_resolution_decoded_image(req, Path(path))
+                    full_export_identity = _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY
                     reference = image
                     image, _, _ = _correct_enhanced_raw(image, metadata, Path(path), preview=True)
                     if profile is not None:
+                        source_identity = (
+                            req.session_id, req.photo_id, str(Path(path)),
+                            stat.st_mtime_ns, stat.st_size,
+                        )
+                        camera_cache: dict[str, str] = {}
+                        original_stage_key = (
+                            source_identity, tuple(reference.shape), LENS_PREVIEW_VERSION,
+                            "original", render_mode, PROFILE_PREVIEW_VERSION,
+                            profile.fingerprint,
+                        )
                         display, camera_profile_status, camera_profile_backend = _profile_display_base(
-                            image, reference, metadata, Path(path), profile, 0.0, preview=False)
+                            image, reference, metadata, Path(path), profile, 0.0,
+                            preview=False, backend=render_mode,
+                            full_cache_identity=source_identity,
+                            full_export_identity=full_export_identity,
+                            stage_cache_key=original_stage_key,
+                            camera_cache_out=camera_cache,
+                        )
+                        camera_cache_status = camera_cache.get("stage", "fallback")
                     else:
                         display = _display_rgb8(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
                     if req.color_manage_srgb and getattr(metadata, "source_kind", "") == "rgb":
@@ -2013,6 +2461,10 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                     nonlocal_status, nonlocal_reason, auto_exposure_ev, auto_exposure_reason = preview_status[:4]
                     camera_profile_status = preview_status[4] if len(preview_status) > 4 else "legacy"
                     camera_profile_backend = preview_status[5] if len(preview_status) > 5 else "legacy"
+                    camera_cache_status = (
+                        "base-hit" if hit else
+                        (preview_status[6] if len(preview_status) > 6 else "not-needed")
+                    )
                     base_cache = "hit" if hit else "miss"
                     decode_cache = decode_hit
                 width, height = int(display.shape[1]), int(display.shape[0])
@@ -2033,6 +2485,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 preview_headers = {
                     "X-Preview-Base-Cache": base_cache,
                     "X-Preview-Decode-Cache": decode_cache,
+                    "X-Preview-Camera-Cache": camera_cache_status,
                     "Server-Timing": ", ".join(f"{name};dur={duration * 1000:.2f}" for name, duration in (
                         ("wait", lock_wait), ("base", base_time), ("adjustments", adjustments_time),
                         ("encode", encoding_time), ("total", total_time))),
@@ -2455,9 +2908,36 @@ def _run_enhance_job(
                 break
             item = next(item for item in job["files"] if item["photo_id"] == photo_id)
             item["status"] = "processing"
+            item["warnings"] = []
+            item["source_cache"] = {"decoded": "miss", "camera": "not-needed"}
             job["current_file"] = Path(path).name
         try:
-            image, metadata = read_image(path, preview=False)
+            image, metadata, export_source_cache, decode_hit, source_identity = (
+                _capture_full_resolution_export_sources(
+                    session_id, photo_id, Path(path),
+                )
+            )
+            current_identity = enhanced_dng_source_identity(path)
+            if current_identity != source_identity:
+                # A file may be replaced just after the locked snapshot handoff.
+                # Drop all retained layers and restart from a fresh full decode.
+                _invalidate_full_resolution_export_source(
+                    session_id, photo_id, source_identity,
+                )
+                source_identity = current_identity
+                image = None
+                metadata = None
+                export_source_cache = None
+                decode_hit = False
+            with _ENHANCE_LOCK:
+                item["source_cache"]["decoded"] = "hit" if decode_hit else "miss"
+            if image is None:
+                image, metadata = read_image(path, preview=False)
+                if enhanced_dng_source_identity(path) != source_identity:
+                    _invalidate_full_resolution_export_source(
+                        session_id, photo_id, source_identity,
+                    )
+                    raise RuntimeError("source changed while decoding export image")
             photo_params = _select_enhance_params(photo_id, params_by_photo, default_params)
             photo_auto_mode = _select_enhance_mode(
                 photo_id, auto_modes_by_photo or {}, default_auto_mode,
@@ -2480,8 +2960,8 @@ def _run_enhance_job(
             photo_auto_exposure_ev = float(render_diagnostics.get("auto_exposure_ev", 0.0))
             photo_auto_exposure_reason = str(render_diagnostics.get("auto_exposure_reason", "off"))
             enhanced16 = _linear_float_to_uint16(enhanced)
-            corrected, correction, gain_map_applied = _correct_enhanced_raw(
-                enhanced16, metadata, Path(path), require_correction=True,
+            corrected, correction, gain_map_applied, lens_warning = (
+                _correct_enhanced_raw_for_export(enhanced16, metadata, Path(path))
             )
             source_basic = (basic_params_by_photo or {}).get(photo_id, {})
             basic = BasicParamsRequest(**dict(source_basic or {})).values()
@@ -2505,6 +2985,12 @@ def _run_enhance_job(
             output_metadata = _export_metadata_with_basic_params(
                 metadata.exif, export_basic,
             )
+            for key in (
+                "LensCorrectionApplied", "LensCorrectionEngine",
+                "LensCorrectionCamera", "LensCorrectionLens",
+                "LensCorrectionOperations", "LensCorrectionUnavailable",
+            ):
+                output_metadata.pop(key, None)
             operations = []
             if correction.distortion_applied:
                 operations.append("distortion")
@@ -2519,12 +3005,14 @@ def _run_enhance_job(
                 output_metadata.update(
                     {
                         "LensCorrectionApplied": True,
-                        "LensCorrectionEngine": "Lensfun/lensfunpy",
+                        "LensCorrectionEngine": getattr(correction, "engine", "Lensfun/lensfunpy"),
                         "LensCorrectionCamera": correction.camera_name or "",
                         "LensCorrectionLens": correction.lens_name or "",
                         "LensCorrectionOperations": ",".join(operations),
                     }
                 )
+            elif lens_warning is not None:
+                output_metadata["LensCorrectionUnavailable"] = True
             is_raw = getattr(metadata, "source_kind", "") == "raw"
             bits_per_sample, raw_bits_per_sample, bit_depth_source = _resolve_export_bit_depth(
                 metadata, requested_bit_depth,
@@ -2550,10 +3038,48 @@ def _run_enhance_job(
                 profile_reference = matching_embedded_profile_dng(path, output_metadata)
                 if profile_reference is not None:
                     output_metadata["DNGProfileReferencePath"] = profile_reference
-                camera_rgb, mosaic, cfa_pattern, profile, orientation = enhanced_dng_source_data(
-                    corrected, image, path, output_metadata,
+                if enhanced_dng_source_identity(path) != source_identity:
+                    _invalidate_full_resolution_export_source(
+                        session_id, photo_id, source_identity,
+                    )
+                    raise RuntimeError("source changed before camera-source export")
+                cache_diagnostics: dict[str, str] = {}
+                cache_compatible = bool(
+                    lens_warning is None
+                    and export_source_cache is not None
+                    and _valid_full_resolution_export_source_cache(
+                        export_source_cache, source_identity, tuple(image.shape),
+                        LENS_PREVIEW_VERSION,
+                    )
                 )
+                if cache_compatible:
+                    camera_rgb, mosaic, cfa_pattern, profile, orientation = enhanced_dng_source_data(
+                        corrected, image, path, output_metadata,
+                        source_cache=export_source_cache,
+                        correction_version=LENS_PREVIEW_VERSION,
+                        cache_diagnostics=cache_diagnostics,
+                    )
+                else:
+                    camera_rgb, mosaic, cfa_pattern, profile, orientation = enhanced_dng_source_data(
+                        corrected, image, path, output_metadata,
+                    )
+                    cache_diagnostics["camera"] = "miss"
+                with _ENHANCE_LOCK:
+                    item["source_cache"]["camera"] = cache_diagnostics.get("camera", "miss")
+                if enhanced_dng_source_identity(path) != source_identity:
+                    _invalidate_full_resolution_export_source(
+                        session_id, photo_id, source_identity,
+                    )
+                    raise RuntimeError("source changed during camera-source export")
                 output_metadata.update(profile)
+                if lens_warning is not None:
+                    for key in (
+                        "LensCorrectionApplied", "LensCorrectionEngine",
+                        "LensCorrectionCamera", "LensCorrectionLens",
+                        "LensCorrectionOperations",
+                    ):
+                        output_metadata.pop(key, None)
+                    output_metadata["LensCorrectionUnavailable"] = True
                 del image
                 # Build a high-resolution display preview from the same
                 # linear pixels as the exported enhanced layer.  Resize in
@@ -2630,12 +3156,15 @@ def _run_enhance_job(
                         "auto_exposure_reason": photo_auto_exposure_reason,
                         "lens_correction": {
                             "applied": correction.applied,
+                            "engine": getattr(correction, "engine", "Lensfun/lensfunpy"),
+                            "backend": getattr(correction, "backend", None),
                             "camera": correction.camera_name,
                             "lens": correction.lens_name,
                             "distortion": correction.distortion_applied,
                             "tca": correction.tca_applied,
                             "vignetting": correction.vignetting_applied,
                         },
+                        "warnings": [lens_warning] if lens_warning is not None else [],
                     }
                 )
                 job["success"] += 1

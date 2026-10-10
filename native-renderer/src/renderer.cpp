@@ -1,5 +1,6 @@
 #include "backend.hpp"
 #include "dehaze_reference.hpp"
+#include "warp_kernels.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -40,6 +41,74 @@ bool valid_filter(const im_filter_params &p) {
     const float maximum[] = {1.0f, 1.0f, 8.0f, 4.0f, 3.0f, 1.0f, 1.0f, 1.0f};
     for (size_t i = 0; i < 8; ++i) {
         if (!std::isfinite(values[i]) || values[i] < minimum[i] || values[i] > maximum[i]) return false;
+    }
+    return true;
+}
+
+template <typename T>
+bool camera_profile_byte_length(size_t count, size_t *bytes) {
+    if (!bytes || count > std::numeric_limits<size_t>::max() / sizeof(T)) return false;
+    *bytes = count * sizeof(T);
+    return true;
+}
+
+bool camera_profile_ranges_overlap(const void *left, size_t left_bytes,
+                                   const void *right, size_t right_bytes) {
+    const uintptr_t left_start = reinterpret_cast<uintptr_t>(left);
+    const uintptr_t right_start = reinterpret_cast<uintptr_t>(right);
+    const uintptr_t address_max = std::numeric_limits<uintptr_t>::max();
+    if (left_bytes > address_max - left_start || right_bytes > address_max - right_start) return true;
+    const uintptr_t left_end = left_start + left_bytes;
+    const uintptr_t right_end = right_start + right_bytes;
+    return left_start < right_end && right_start < left_end;
+}
+
+bool valid_camera_profile_config(const float *constants22, size_t constants_count,
+                                 const float *look_table, size_t look_values,
+                                 uint32_t hue_count, uint32_t saturation_count,
+                                 uint32_t value_count, uint32_t look_encoding,
+                                 const float *tone_curve, size_t tone_values) {
+    if (!constants22 || !look_table || !tone_curve || constants_count != 22 ||
+        hue_count < 1 || saturation_count < 2 || value_count < 2 ||
+        hue_count > 1000000 || saturation_count > 1000000 || value_count > 1000000 ||
+        look_encoding > 1 || tone_values > 4u * 1024u * 1024u) return false;
+    const uint64_t entries = static_cast<uint64_t>(hue_count) * saturation_count * value_count;
+    if (entries > 1000000 || entries * 3u != look_values) return false;
+    for (size_t index = 0; index < 22; ++index) {
+        if (!std::isfinite(constants22[index])) return false;
+    }
+    for (size_t channel = 0; channel < 3; ++channel) {
+        if (constants22[9 + channel] <= 0.0f || constants22[9 + channel] > 1.0f) return false;
+    }
+    if (constants22[12] < 0x1p-40f || constants22[12] > 0x1p40f) return false;
+    for (size_t index = 0; index < 9; ++index) {
+        if (std::abs(constants22[index]) > 1.0e6f ||
+            std::abs(constants22[13 + index]) > 1.0e6f) return false;
+    }
+    for (size_t entry = 0; entry < static_cast<size_t>(entries); ++entry) {
+        const float hue_delta = look_table[entry * 3];
+        const float saturation = look_table[entry * 3 + 1];
+        const float value = look_table[entry * 3 + 2];
+        if (!std::isfinite(hue_delta) || !std::isfinite(saturation) || !std::isfinite(value) ||
+            hue_delta < -360.0f || hue_delta > 360.0f ||
+            saturation < 0.0f || saturation > 16.0f || value < 0.0f || value > 16.0f) return false;
+    }
+    if (tone_values < 4 || (tone_values & 1u) != 0u) return false;
+    const size_t points = tone_values / 2;
+    if (std::abs(tone_curve[0]) > 1.0e-6f ||
+        std::abs(tone_curve[(points - 1) * 2] - 1.0f) > 1.0e-6f ||
+        std::abs(tone_curve[1]) > 1.0e-6f ||
+        std::abs(tone_curve[(points - 1) * 2 + 1] - 1.0f) > 1.0e-6f) return false;
+    for (size_t point = 0; point < points; ++point) {
+        const float x = tone_curve[point * 2];
+        const float y = tone_curve[point * 2 + 1];
+        if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0f || x > 1.0f ||
+            y < 0.0f || y > 1.0f) return false;
+        if (point > 0) {
+            const float previous_x = tone_curve[(point - 1) * 2];
+            const float previous_y = tone_curve[(point - 1) * 2 + 1];
+            if (x <= previous_x || y < previous_y - 1.0e-7f) return false;
+        }
     }
     return true;
 }
@@ -95,6 +164,9 @@ struct im_renderer {
     std::vector<uint16_t> output;
     uint32_t output_width = 0;
     uint32_t output_height = 0;
+    bool has_camera_profile_source = false;
+    uint32_t camera_profile_source_width = 0;
+    uint32_t camera_profile_source_height = 0;
     mutable std::mutex mutex;
     mutable std::string error;
 };
@@ -342,6 +414,207 @@ int im_renderer_supports_physical_guarded_float(const im_renderer *renderer) {
 
 int im_renderer_supports_physical_float(const im_renderer *renderer) {
     return renderer && renderer->backend && renderer->backend->supports_physical_float() ? 1 : 0;
+}
+
+im_status im_renderer_warp_rectilinear_rgb16(im_renderer *renderer,
+    uint32_t width, uint32_t height, const uint16_t *source, size_t source_values,
+    const float *constants, size_t constant_values,
+    uint16_t *destination, size_t destination_values) {
+    if (!renderer) return IM_STATUS_INVALID_ARGUMENT;
+    const auto fail = [renderer](im_status status, const char *message) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = message;
+        return status;
+    };
+    size_t pixels = 0;
+    float radius = 0.0f;
+    if (!imprint::validate_warp_rectilinear_rgb16(width, height, source, source_values,
+                                                  constants, constant_values, destination,
+                                                  destination_values, &pixels, &radius)) {
+        return fail(IM_STATUS_INVALID_ARGUMENT,
+                    "WarpRectilinear buffers, dimensions, or constants are invalid");
+    }
+    (void)pixels;
+    (void)radius;
+
+    try {
+        std::string error;
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->supports_warp_rectilinear()) {
+            renderer->error = "WarpRectilinear is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        if (!renderer->backend->warp_rectilinear_rgb16(width, height, source, source_values,
+                                                       constants, constant_values,
+                                                       destination, destination_values, error)) {
+            renderer->error = error.empty() ? "GPU WarpRectilinear failed" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        return fail(IM_STATUS_RUNTIME_ERROR, "Insufficient memory while running GPU WarpRectilinear");
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        return fail(IM_STATUS_RUNTIME_ERROR, "Unknown error while running GPU WarpRectilinear");
+    }
+}
+
+int im_renderer_supports_warp_rectilinear(const im_renderer *renderer) {
+    return renderer && renderer->backend && renderer->backend->supports_warp_rectilinear() ? 1 : 0;
+}
+
+int im_renderer_supports_camera_profile_render(const im_renderer *renderer) {
+    return renderer && renderer->backend && renderer->backend->supports_camera_profile_render() ? 1 : 0;
+}
+
+im_status im_renderer_set_camera_profile_source(im_renderer *renderer,
+                                                uint32_t width, uint32_t height,
+                                                const uint16_t *camera_rgb,
+                                                size_t source_values) {
+    if (!renderer || !camera_rgb || !width || !height || width > 65535 || height > 65535) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    const uint64_t pixels = static_cast<uint64_t>(width) * height;
+    if (pixels > (1ull << 29) / 3 || source_values != pixels * 3) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Camera profile source sample count does not match its dimensions";
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->supports_camera_profile_render()) {
+            renderer->error = "Camera profile rendering is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        std::string error;
+        if (!renderer->backend->set_camera_profile_source(width, height, camera_rgb,
+                                                          source_values, error)) {
+            renderer->has_camera_profile_source = false;
+            renderer->camera_profile_source_width = renderer->camera_profile_source_height = 0;
+            renderer->error = error.empty() ? "Could not upload camera profile source" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->has_camera_profile_source = true;
+        renderer->camera_profile_source_width = width;
+        renderer->camera_profile_source_height = height;
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while uploading camera profile source";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while uploading camera profile source";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_render_camera_profile(im_renderer *renderer,
+                                            const float *constants22, size_t constants_count,
+                                            const float *look_table, size_t look_values,
+                                            uint32_t hue_count, uint32_t saturation_count,
+                                            uint32_t value_count, uint32_t look_encoding,
+                                            const float *tone_curve, size_t tone_values,
+                                            uint8_t *destination, size_t destination_values) {
+    if (!renderer || !destination ||
+        !valid_camera_profile_config(constants22, constants_count, look_table, look_values,
+                                     hue_count, saturation_count, value_count, look_encoding,
+                                     tone_curve, tone_values)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t constants_bytes = 0, look_bytes = 0, tone_bytes = 0;
+    if (!camera_profile_byte_length<float>(constants_count, &constants_bytes) ||
+        !camera_profile_byte_length<float>(look_values, &look_bytes) ||
+        !camera_profile_byte_length<float>(tone_values, &tone_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    size_t destination_bytes = destination_values;
+    if (!camera_profile_byte_length<float>(constants_count, &constants_bytes) ||
+        !camera_profile_byte_length<float>(look_values, &look_bytes) ||
+        !camera_profile_byte_length<float>(tone_values, &tone_bytes) ||
+        camera_profile_ranges_overlap(destination, destination_bytes, constants22, constants_bytes) ||
+        camera_profile_ranges_overlap(destination, destination_bytes, look_table, look_bytes) ||
+        camera_profile_ranges_overlap(destination, destination_bytes, tone_curve, tone_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->has_camera_profile_source) {
+            renderer->error = "No camera profile source has been uploaded";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        const uint64_t expected64 = static_cast<uint64_t>(renderer->camera_profile_source_width) *
+                                    renderer->camera_profile_source_height * 3;
+        if (expected64 > (1ull << 29) || destination_values != expected64) {
+            renderer->error = "Camera profile destination sample count does not match the source";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        if (!renderer->backend->supports_camera_profile_render()) {
+            renderer->error = "Camera profile rendering is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        std::string error;
+        if (!renderer->backend->render_camera_profile(constants22, look_table, look_values,
+                                                       hue_count, saturation_count, value_count,
+                                                       look_encoding, tone_curve, tone_values,
+                                                       destination, destination_values, error)) {
+            renderer->error = error.empty() ? "Camera profile GPU render failed" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while rendering camera profile";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while rendering camera profile";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_clear_camera_profile_source(im_renderer *renderer) {
+    if (!renderer) return IM_STATUS_INVALID_ARGUMENT;
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->supports_camera_profile_render()) {
+            renderer->error = "Camera profile rendering is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        std::string error;
+        if (!renderer->backend->clear_camera_profile_source(error)) {
+            renderer->error = error.empty() ? "Could not clear camera profile GPU resources" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->has_camera_profile_source = false;
+        renderer->camera_profile_source_width = renderer->camera_profile_source_height = 0;
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while clearing camera profile GPU resources";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
 }
 
 im_status im_renderer_upload_preview_image(im_renderer *renderer, uint32_t width, uint32_t height,

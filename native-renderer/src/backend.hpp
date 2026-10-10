@@ -32,6 +32,42 @@ public:
     virtual const char *name() const = 0;
     virtual bool supports_physical_float() const { return false; }
     virtual bool supports_physical_guarded_float() const { return false; }
+    virtual bool supports_warp_rectilinear() const { return false; }
+    virtual bool warp_rectilinear_rgb16(uint32_t width, uint32_t height,
+                                       const uint16_t *source, size_t source_values,
+                                       const float *constants, size_t constant_values,
+                                       uint16_t *destination, size_t destination_values,
+                                       std::string &error) {
+        (void)width; (void)height; (void)source; (void)source_values;
+        (void)constants; (void)constant_values; (void)destination; (void)destination_values;
+        error = "WarpRectilinear is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool supports_camera_profile_render() const { return false; }
+    virtual bool set_camera_profile_source(uint32_t width, uint32_t height,
+                                           const uint16_t *source, size_t source_values,
+                                           std::string &error) {
+        (void)width; (void)height; (void)source; (void)source_values;
+        error = "Camera profile rendering is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool render_camera_profile(const float *constants22,
+                                       const float *look_table, size_t look_values,
+                                       uint32_t hue_count, uint32_t saturation_count,
+                                       uint32_t value_count, uint32_t look_encoding,
+                                       const float *tone_curve, size_t tone_values,
+                                       uint8_t *destination, size_t destination_values,
+                                       std::string &error) {
+        (void)constants22; (void)look_table; (void)look_values; (void)hue_count;
+        (void)saturation_count; (void)value_count; (void)look_encoding;
+        (void)tone_curve; (void)tone_values; (void)destination; (void)destination_values;
+        error = "Camera profile rendering is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool clear_camera_profile_source(std::string &error) {
+        error = "Camera profile rendering is unavailable on this GPU backend";
+        return false;
+    }
     virtual bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) = 0;
     virtual bool set_filter(const im_filter_params &params,
                             const std::vector<uint16_t> &curve,

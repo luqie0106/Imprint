@@ -44,6 +44,10 @@ class LensCorrectionNotAppliedError(LensCorrectionError):
     """Raised when a match exists but no geometric correction was applied."""
 
 
+class LensMetadataUnavailableError(LensCorrectionError):
+    """Raised when focal length or aperture metadata is missing or invalid."""
+
+
 @dataclass(frozen=True)
 class LensCorrectionResult:
     """What was actually applied to a corrected image."""
@@ -55,6 +59,8 @@ class LensCorrectionResult:
     tca_applied: bool
     vignetting_applied: bool
     scale: float = 1.0
+    engine: str = "Lensfun/lensfunpy"
+    backend: str | None = None
 
     # These aliases make the result convenient for API code without requiring
     # callers to know the exact spelling used by the dataclass fields.
@@ -694,9 +700,9 @@ def apply_lens_correction(
     aperture = _number(_metadata_value(metadata, "FNumber"))
     distance = _number(_metadata_value(metadata, "SubjectDistance"))
     if focal_length is None or focal_length <= 0.0:
-        return _failure(LensCorrectionError("FocalLength 无效，无法初始化 Lensfun"), image_rgb16, require_correction)
+        return _failure(LensMetadataUnavailableError("FocalLength 无效，无法初始化 Lensfun"), image_rgb16, require_correction)
     if aperture is None or aperture <= 0.0:
-        return _failure(LensCorrectionError("FNumber 无效，无法初始化 Lensfun"), image_rgb16, require_correction)
+        return _failure(LensMetadataUnavailableError("FNumber 无效，无法初始化 Lensfun"), image_rgb16, require_correction)
     # Lensfun accepts a very distant subject as a stable default.  EXIF often
     # omits SubjectDistance; only a present, finite positive value overrides it.
     if distance is None or distance <= 0.0:
@@ -768,6 +774,7 @@ __all__ = [
     "LensCorrectionError",
     "LensCorrectionNotAppliedError",
     "LensCorrectionResult",
+    "LensMetadataUnavailableError",
     "LensMatchError",
     "LensfunUnavailableError",
     "apply_lens_correction",

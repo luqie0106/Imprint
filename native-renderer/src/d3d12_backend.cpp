@@ -7,6 +7,7 @@
 
 #include "backend.hpp"
 #include "embedded_hlsl_shader.hpp"
+#include "warp_kernels.hpp"
 
 #include <algorithm>
 #include <array>
@@ -160,6 +161,10 @@ public:
         if (!initialize_device(error) || !initialize_pipeline(error) || !initialize_commands(error)) {
             return;
         }
+        std::string profile_error;
+        initialize_camera_profile_pipeline(profile_error);
+        std::string warp_error;
+        initialize_warp_pipeline(warp_error);
         ready_ = true;
     }
 
@@ -174,6 +179,228 @@ public:
     }
     bool supports_physical_guarded_float() const override {
         return ready_ && physical_pipeline_.Get() != nullptr;
+    }
+    bool supports_warp_rectilinear() const override {
+        return ready_ && warp_pipeline_.Get() != nullptr;
+    }
+    bool supports_camera_profile_render() const override {
+        return ready_ && camera_profile_pipeline_.Get() != nullptr;
+    }
+
+    bool warp_rectilinear_rgb16(uint32_t width, uint32_t height,
+                                const uint16_t *source, size_t source_values,
+                                const float *constants, size_t constant_values,
+                                uint16_t *destination, size_t destination_values,
+                                std::string &error) override {
+        size_t pixels = 0;
+        float radius = 0.0f;
+        if (!supports_warp_rectilinear() ||
+            !validate_warp_rectilinear_rgb16(width, height, source, source_values,
+                                             constants, constant_values, destination,
+                                             destination_values, &pixels, &radius)) {
+            error = "D3D12 WarpRectilinear buffers or dimensions are invalid";
+            return false;
+        }
+        const size_t source_bytes = source_values * sizeof(uint16_t);
+        const uint64_t output_bytes64 = static_cast<uint64_t>(destination_values) * sizeof(uint32_t);
+        if (output_bytes64 > std::numeric_limits<size_t>::max()) {
+            error = "D3D12 WarpRectilinear output size overflows";
+            return false;
+        }
+        const size_t output_bytes = static_cast<size_t>(output_bytes64);
+        ComPtr<ID3D12Resource> source_gpu;
+        ComPtr<ID3D12Resource> source_staging;
+        if (!create_gpu_buffer(source_bytes, D3D12_RESOURCE_FLAG_NONE,
+                               D3D12_RESOURCE_STATE_COPY_DEST, source_gpu, error,
+                               "Could not allocate D3D12 WarpRectilinear input") ||
+            !create_staging_buffer(source, source_bytes, source_staging, error,
+                                   "Could not prepare D3D12 WarpRectilinear input") ||
+            !ensure_warp_output_capacity(output_bytes, error) ||
+            !begin_commands(error)) return false;
+
+        command_list_->CopyBufferRegion(source_gpu.Get(), 0, source_staging.Get(), 0,
+                                         aligned_buffer_size(source_bytes));
+        transition(source_gpu.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        constexpr UINT threads_per_group = 256;
+        constexpr uint64_t max_groups_per_axis = 65535;
+        const uint64_t groups_needed = (static_cast<uint64_t>(pixels) + threads_per_group - 1) /
+                                       threads_per_group;
+        const UINT groups_x = static_cast<UINT>(std::min(groups_needed, max_groups_per_axis));
+        const uint64_t groups_y64 = (groups_needed + groups_x - 1) / groups_x;
+        if (!groups_x || !groups_y64 || groups_y64 > max_groups_per_axis) {
+            error = "D3D12 WarpRectilinear dispatch exceeds the supported grid size";
+            return false;
+        }
+        uint32_t root_constants[28]{};
+        std::memcpy(root_constants, constants, 21 * sizeof(float));
+        std::memcpy(&root_constants[21], &radius, sizeof(radius));
+        root_constants[24] = width;
+        root_constants[25] = height;
+        root_constants[26] = static_cast<uint32_t>(pixels);
+        root_constants[27] = groups_x * threads_per_group;
+        command_list_->SetComputeRootSignature(warp_root_signature_.Get());
+        command_list_->SetPipelineState(warp_pipeline_.Get());
+        command_list_->SetComputeRoot32BitConstants(0, 28, root_constants, 0);
+        command_list_->SetComputeRootShaderResourceView(1, source_gpu->GetGPUVirtualAddress());
+        command_list_->SetComputeRootUnorderedAccessView(2, warp_output_->GetGPUVirtualAddress());
+        command_list_->Dispatch(groups_x, static_cast<UINT>(groups_y64), 1);
+        transition(warp_output_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                   D3D12_RESOURCE_STATE_COPY_SOURCE);
+        command_list_->CopyBufferRegion(warp_readback_.Get(), 0, warp_output_.Get(), 0,
+                                         static_cast<UINT64>(output_bytes));
+        transition(warp_output_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (!submit_and_wait(error, "D3D12 WarpRectilinear failed")) return false;
+
+        void *mapped_buffer = nullptr;
+        D3D12_RANGE read_range{0, static_cast<SIZE_T>(output_bytes)};
+        HRESULT result = warp_readback_->Map(0, &read_range, &mapped_buffer);
+        if (FAILED(result)) return record_failure(error, "Could not map D3D12 WarpRectilinear output", result);
+        const uint32_t *mapped = static_cast<const uint32_t *>(mapped_buffer);
+        for (size_t index = 0; index < destination_values; ++index) {
+            destination[index] = static_cast<uint16_t>(std::min(mapped[index], 65535u));
+        }
+        D3D12_RANGE no_write{0, 0};
+        warp_readback_->Unmap(0, &no_write);
+        return true;
+    }
+
+    bool set_camera_profile_source(uint32_t width, uint32_t height,
+                                   const uint16_t *source, size_t source_values,
+                                   std::string &error) override {
+        const uint64_t pixels = static_cast<uint64_t>(width) * height;
+        if (!supports_camera_profile_render() || !width || !height || width > 65535 ||
+            height > 65535 || pixels > (1ull << 29) / 3 || !source ||
+            source_values != pixels * 3 || source_values >
+                std::numeric_limits<size_t>::max() / sizeof(uint16_t)) {
+            error = "D3D12 camera profile source dimensions or count are invalid";
+            return false;
+        }
+        const size_t bytes = source_values * sizeof(uint16_t);
+        ComPtr<ID3D12Resource> staging;
+        if (!create_staging_buffer(source, bytes, staging, error,
+                                   "Could not prepare the D3D12 camera profile source upload")) {
+            return false;
+        }
+        const bool reuse = profile_source_ && profile_width_ == width && profile_height_ == height;
+        ComPtr<ID3D12Resource> next_source = reuse ? profile_source_ : ComPtr<ID3D12Resource>{};
+        if (!reuse && !create_gpu_buffer(bytes, D3D12_RESOURCE_FLAG_NONE,
+                                         D3D12_RESOURCE_STATE_COPY_DEST, next_source, error,
+                                         "Could not allocate the D3D12 camera profile source")) {
+            return false;
+        }
+        if (!begin_commands(error)) return false;
+        if (reuse) transition(next_source.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                             D3D12_RESOURCE_STATE_COPY_DEST);
+        command_list_->CopyBufferRegion(next_source.Get(), 0, staging.Get(), 0,
+                                         aligned_buffer_size(bytes));
+        transition(next_source.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (!submit_and_wait(error, "Could not upload the D3D12 camera profile source")) {
+            profile_source_.Reset();
+            profile_width_ = profile_height_ = 0;
+            return false;
+        }
+        profile_source_ = std::move(next_source);
+        profile_width_ = width;
+        profile_height_ = height;
+        profile_source_values_ = source_values;
+        return true;
+    }
+
+    bool render_camera_profile(const float *constants22,
+                               const float *look_table, size_t look_values,
+                               uint32_t hue_count, uint32_t saturation_count,
+                               uint32_t value_count, uint32_t look_encoding,
+                               const float *tone_curve, size_t tone_values,
+                               uint8_t *destination, size_t destination_values,
+                               std::string &error) override {
+        const uint64_t pixels64 = static_cast<uint64_t>(profile_width_) * profile_height_;
+        if (!supports_camera_profile_render() || !profile_source_ || !constants22 ||
+            !look_table || !tone_curve || !destination || !profile_width_ || !profile_height_ ||
+            destination_values != profile_source_values_ || pixels64 > (1ull << 29) / 3 ||
+            pixels64 > std::numeric_limits<uint32_t>::max() ||
+            tone_values < 4 || (tone_values & 1u) != 0u) {
+            error = "D3D12 camera profile render buffers or dimensions are invalid";
+            return false;
+        }
+        if (!ensure_profile_table(look_table, look_values, profile_look_values_, profile_look_,
+                                  error, "look") ||
+            !ensure_profile_table(tone_curve, tone_values, profile_tone_values_, profile_tone_,
+                                  error, "tone")) return false;
+
+        const uint64_t output_bytes64 = static_cast<uint64_t>(destination_values) * sizeof(uint32_t);
+        if (output_bytes64 > std::numeric_limits<size_t>::max() ||
+            !ensure_profile_output_capacity(static_cast<size_t>(output_bytes64), error)) return false;
+        constexpr uint64_t max_groups_per_axis = 65535;
+        const uint64_t groups_needed = (pixels64 + 255) / 256;
+        const UINT groups_x = static_cast<UINT>(std::min(groups_needed, max_groups_per_axis));
+        if (!groups_x) {
+            error = "D3D12 camera profile dispatch has no thread groups";
+            return false;
+        }
+        const uint64_t groups_y64 = (groups_needed + groups_x - 1) / groups_x;
+        if (!groups_y64 || groups_y64 > max_groups_per_axis) {
+            error = "D3D12 camera profile dispatch exceeds the supported grid size";
+            return false;
+        }
+        uint32_t root_constants[32]{};
+        std::memcpy(root_constants, constants22, 22 * sizeof(float));
+        root_constants[24] = hue_count;
+        root_constants[25] = saturation_count;
+        root_constants[26] = value_count;
+        root_constants[27] = look_encoding;
+        root_constants[28] = static_cast<uint32_t>(pixels64);
+        root_constants[29] = static_cast<uint32_t>(tone_values / 2);
+        root_constants[30] = groups_x * 256u;
+
+        if (!begin_commands(error)) return false;
+        command_list_->SetComputeRootSignature(camera_profile_root_signature_.Get());
+        command_list_->SetPipelineState(camera_profile_pipeline_.Get());
+        command_list_->SetComputeRoot32BitConstants(0, 32, root_constants, 0);
+        command_list_->SetComputeRootShaderResourceView(1, profile_source_->GetGPUVirtualAddress());
+        command_list_->SetComputeRootShaderResourceView(2, profile_look_->GetGPUVirtualAddress());
+        command_list_->SetComputeRootShaderResourceView(3, profile_tone_->GetGPUVirtualAddress());
+        command_list_->SetComputeRootUnorderedAccessView(4, profile_output_->GetGPUVirtualAddress());
+        command_list_->Dispatch(groups_x, static_cast<UINT>(groups_y64), 1);
+        transition(profile_output_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                   D3D12_RESOURCE_STATE_COPY_SOURCE);
+        command_list_->CopyBufferRegion(profile_readback_.Get(), 0, profile_output_.Get(), 0,
+                                         static_cast<UINT64>(output_bytes64));
+        transition(profile_output_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (!submit_and_wait(error, "D3D12 camera profile render failed")) return false;
+
+        void *mapped_buffer = nullptr;
+        D3D12_RANGE read_range{0, static_cast<SIZE_T>(output_bytes64)};
+        HRESULT result = profile_readback_->Map(0, &read_range, &mapped_buffer);
+        if (FAILED(result)) return record_failure(error, "Could not map D3D12 camera profile output", result);
+        const uint32_t *mapped = static_cast<const uint32_t *>(mapped_buffer);
+        for (size_t value = 0; value < destination_values; ++value) {
+            destination[value] = static_cast<uint8_t>(mapped[value]);
+        }
+        D3D12_RANGE no_write{0, 0};
+        profile_readback_->Unmap(0, &no_write);
+        return true;
+    }
+
+    bool clear_camera_profile_source(std::string &error) override {
+        if (!supports_camera_profile_render()) {
+            error = "D3D12 camera profile pipeline is unavailable";
+            return false;
+        }
+        profile_source_.Reset();
+        profile_look_.Reset();
+        profile_tone_.Reset();
+        profile_output_.Reset();
+        profile_readback_.Reset();
+        profile_output_capacity_ = 0;
+        profile_source_values_ = 0;
+        profile_width_ = profile_height_ = 0;
+        std::vector<float>().swap(profile_look_values_);
+        std::vector<float>().swap(profile_tone_values_);
+        return true;
     }
 
     bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) override {
@@ -448,6 +675,91 @@ public:
     }
 
 private:
+    bool ensure_profile_table(const float *source, size_t count,
+                              std::vector<float> &cached,
+                              ComPtr<ID3D12Resource> &resource,
+                              std::string &error, const char *label) {
+        if (!source || !count || count > std::numeric_limits<size_t>::max() / sizeof(float)) {
+            error = std::string("D3D12 camera profile ") + label + " table size is invalid";
+            return false;
+        }
+        if (cached.size() == count && std::equal(cached.begin(), cached.end(), source)) return true;
+        std::vector<float> next_values(source, source + count);
+        const size_t bytes = count * sizeof(float);
+        ComPtr<ID3D12Resource> next_resource;
+        ComPtr<ID3D12Resource> staging;
+        if (!create_gpu_buffer(bytes, D3D12_RESOURCE_FLAG_NONE,
+                               D3D12_RESOURCE_STATE_COPY_DEST, next_resource, error,
+                               "Could not allocate D3D12 camera profile table") ||
+            !create_staging_buffer(source, bytes, staging, error,
+                                   "Could not prepare D3D12 camera profile table upload") ||
+            !begin_commands(error)) return false;
+        command_list_->CopyBufferRegion(next_resource.Get(), 0, staging.Get(), 0,
+                                         aligned_buffer_size(bytes));
+        transition(next_resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (!submit_and_wait(error, "Could not upload D3D12 camera profile table")) return false;
+        cached.swap(next_values);
+        resource = std::move(next_resource);
+        return true;
+    }
+
+    bool ensure_profile_output_capacity(size_t output_bytes, std::string &error) {
+        if (output_bytes <= profile_output_capacity_) return true;
+        const UINT64 width = aligned_buffer_size(output_bytes);
+        if (!width) {
+            error = "D3D12 camera profile output size overflow";
+            return false;
+        }
+        ComPtr<ID3D12Resource> next_output;
+        ComPtr<ID3D12Resource> next_readback;
+        const D3D12_HEAP_PROPERTIES default_heap = heap_properties(D3D12_HEAP_TYPE_DEFAULT);
+        const D3D12_RESOURCE_DESC output_description = buffer_description(
+            width, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        HRESULT result = device_->CreateCommittedResource(
+            &default_heap, D3D12_HEAP_FLAG_NONE, &output_description,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&next_output));
+        if (FAILED(result)) return record_failure(error, "Could not allocate D3D12 camera profile output", result);
+        const D3D12_HEAP_PROPERTIES readback_heap = heap_properties(D3D12_HEAP_TYPE_READBACK);
+        const D3D12_RESOURCE_DESC readback_description = buffer_description(width, D3D12_RESOURCE_FLAG_NONE);
+        result = device_->CreateCommittedResource(
+            &readback_heap, D3D12_HEAP_FLAG_NONE, &readback_description,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&next_readback));
+        if (FAILED(result)) return record_failure(error, "Could not allocate D3D12 camera profile readback", result);
+        profile_output_ = std::move(next_output);
+        profile_readback_ = std::move(next_readback);
+        profile_output_capacity_ = static_cast<size_t>(width);
+        return true;
+    }
+
+    bool ensure_warp_output_capacity(size_t output_bytes, std::string &error) {
+        if (output_bytes <= warp_output_capacity_) return true;
+        const UINT64 width = aligned_buffer_size(output_bytes);
+        if (!width) {
+            error = "D3D12 WarpRectilinear output size overflow";
+            return false;
+        }
+        ComPtr<ID3D12Resource> next_output;
+        ComPtr<ID3D12Resource> next_readback;
+        const D3D12_HEAP_PROPERTIES default_heap = heap_properties(D3D12_HEAP_TYPE_DEFAULT);
+        const D3D12_RESOURCE_DESC output_description = buffer_description(
+            width, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        HRESULT result = device_->CreateCommittedResource(
+            &default_heap, D3D12_HEAP_FLAG_NONE, &output_description,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&next_output));
+        if (FAILED(result)) return record_failure(error, "Could not allocate D3D12 WarpRectilinear output", result);
+        const D3D12_HEAP_PROPERTIES readback_heap = heap_properties(D3D12_HEAP_TYPE_READBACK);
+        const D3D12_RESOURCE_DESC readback_description = buffer_description(width, D3D12_RESOURCE_FLAG_NONE);
+        result = device_->CreateCommittedResource(
+            &readback_heap, D3D12_HEAP_FLAG_NONE, &readback_description,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&next_readback));
+        if (FAILED(result)) return record_failure(error, "Could not allocate D3D12 WarpRectilinear readback", result);
+        warp_output_ = std::move(next_output);
+        warp_readback_ = std::move(next_readback);
+        warp_output_capacity_ = static_cast<size_t>(width);
+        return true;
+    }
+
     bool render_physical_float_impl(uint32_t width, uint32_t height,
                                     const float *source, const float *transmission,
                                     const float *airlight_rgb, const im_dehaze_params &params,
@@ -692,6 +1004,133 @@ private:
         return true;
     }
 
+    bool initialize_camera_profile_pipeline(std::string &error) {
+        D3D12_ROOT_PARAMETER parameters[5]{};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[0].Constants.ShaderRegister = 1;
+        parameters[0].Constants.RegisterSpace = 0;
+        parameters[0].Constants.Num32BitValues = 32;
+        parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        const D3D12_ROOT_PARAMETER_TYPE types[4] = {
+            D3D12_ROOT_PARAMETER_TYPE_SRV, D3D12_ROOT_PARAMETER_TYPE_SRV,
+            D3D12_ROOT_PARAMETER_TYPE_SRV, D3D12_ROOT_PARAMETER_TYPE_UAV};
+        const UINT registers[4] = {5, 6, 7, 1};
+        for (UINT i = 0; i < 4; ++i) {
+            parameters[i + 1].ParameterType = types[i];
+            parameters[i + 1].Descriptor.ShaderRegister = registers[i];
+            parameters[i + 1].Descriptor.RegisterSpace = 0;
+            parameters[i + 1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        }
+        D3D12_ROOT_SIGNATURE_DESC description{};
+        description.NumParameters = static_cast<UINT>(std::size(parameters));
+        description.pParameters = parameters;
+        ComPtr<ID3DBlob> serialized;
+        ComPtr<ID3DBlob> serialization_error;
+        HRESULT result = D3D12SerializeRootSignature(&description, D3D_ROOT_SIGNATURE_VERSION_1,
+                                                      &serialized, &serialization_error);
+        if (FAILED(result)) {
+            error = hresult_text("Could not serialize the D3D12 camera profile root signature", result);
+            if (serialization_error && serialization_error->GetBufferPointer()) {
+                error += ": ";
+                error.append(static_cast<const char *>(serialization_error->GetBufferPointer()),
+                             serialization_error->GetBufferSize());
+            }
+            return false;
+        }
+        result = device_->CreateRootSignature(0, serialized->GetBufferPointer(),
+                                              serialized->GetBufferSize(),
+                                              IID_PPV_ARGS(&camera_profile_root_signature_));
+        if (FAILED(result)) return record_failure(error, "Could not create the D3D12 camera profile root signature", result);
+
+        ComPtr<ID3DBlob> shader;
+        ComPtr<ID3DBlob> compile_error;
+        result = D3DCompile(kHlslShaderSource, std::strlen(kHlslShaderSource), "renderer.hlsl",
+                            nullptr, nullptr, "render_camera_profile", "cs_5_0",
+                            D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3 |
+                                D3DCOMPILE_IEEE_STRICTNESS,
+                            0, &shader, &compile_error);
+        if (FAILED(result)) {
+            error = hresult_text("Could not compile the D3D12 camera profile shader", result);
+            if (compile_error && compile_error->GetBufferPointer()) {
+                error += ": ";
+                error.append(static_cast<const char *>(compile_error->GetBufferPointer()),
+                             compile_error->GetBufferSize());
+            }
+            return false;
+        }
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_description{};
+        pipeline_description.pRootSignature = camera_profile_root_signature_.Get();
+        pipeline_description.CS.pShaderBytecode = shader->GetBufferPointer();
+        pipeline_description.CS.BytecodeLength = shader->GetBufferSize();
+        result = device_->CreateComputePipelineState(&pipeline_description,
+                                                      IID_PPV_ARGS(&camera_profile_pipeline_));
+        if (FAILED(result)) return record_failure(error, "Could not create the D3D12 camera profile pipeline", result);
+        return true;
+    }
+
+    bool initialize_warp_pipeline(std::string &error) {
+        D3D12_ROOT_PARAMETER parameters[3]{};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[0].Constants.ShaderRegister = 2;
+        parameters[0].Constants.RegisterSpace = 0;
+        parameters[0].Constants.Num32BitValues = 28;
+        parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        parameters[1].Descriptor.ShaderRegister = 8;
+        parameters[1].Descriptor.RegisterSpace = 0;
+        parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        parameters[2].Descriptor.ShaderRegister = 2;
+        parameters[2].Descriptor.RegisterSpace = 0;
+        parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC description{};
+        description.NumParameters = static_cast<UINT>(std::size(parameters));
+        description.pParameters = parameters;
+        ComPtr<ID3DBlob> serialized;
+        ComPtr<ID3DBlob> serialization_error;
+        HRESULT result = D3D12SerializeRootSignature(&description, D3D_ROOT_SIGNATURE_VERSION_1,
+                                                      &serialized, &serialization_error);
+        if (FAILED(result)) {
+            error = hresult_text("Could not serialize the D3D12 WarpRectilinear root signature", result);
+            if (serialization_error && serialization_error->GetBufferPointer()) {
+                error += ": ";
+                error.append(static_cast<const char *>(serialization_error->GetBufferPointer()),
+                             serialization_error->GetBufferSize());
+            }
+            return false;
+        }
+        result = device_->CreateRootSignature(0, serialized->GetBufferPointer(),
+                                              serialized->GetBufferSize(),
+                                              IID_PPV_ARGS(&warp_root_signature_));
+        if (FAILED(result)) return record_failure(error, "Could not create the D3D12 WarpRectilinear root signature", result);
+
+        ComPtr<ID3DBlob> shader;
+        ComPtr<ID3DBlob> compile_error;
+        result = D3DCompile(kHlslShaderSource, std::strlen(kHlslShaderSource), "renderer.hlsl",
+                            nullptr, nullptr, "warp_rectilinear_rgb16", "cs_5_0",
+                            D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3 |
+                                D3DCOMPILE_IEEE_STRICTNESS,
+                            0, &shader, &compile_error);
+        if (FAILED(result)) {
+            error = hresult_text("Could not compile the D3D12 WarpRectilinear shader", result);
+            if (compile_error && compile_error->GetBufferPointer()) {
+                error += ": ";
+                error.append(static_cast<const char *>(compile_error->GetBufferPointer()),
+                             compile_error->GetBufferSize());
+            }
+            return false;
+        }
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_description{};
+        pipeline_description.pRootSignature = warp_root_signature_.Get();
+        pipeline_description.CS.pShaderBytecode = shader->GetBufferPointer();
+        pipeline_description.CS.BytecodeLength = shader->GetBufferSize();
+        result = device_->CreateComputePipelineState(&pipeline_description,
+                                                      IID_PPV_ARGS(&warp_pipeline_));
+        if (FAILED(result)) return record_failure(error, "Could not create the D3D12 WarpRectilinear pipeline", result);
+        return true;
+    }
+
     bool initialize_commands(std::string &error) {
         D3D12_COMMAND_QUEUE_DESC queue_description{};
         queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -912,6 +1351,10 @@ private:
     ComPtr<ID3D12RootSignature> root_signature_;
     ComPtr<ID3D12PipelineState> pipeline_;
     ComPtr<ID3D12PipelineState> physical_pipeline_;
+    ComPtr<ID3D12RootSignature> warp_root_signature_;
+    ComPtr<ID3D12PipelineState> warp_pipeline_;
+    ComPtr<ID3D12RootSignature> camera_profile_root_signature_;
+    ComPtr<ID3D12PipelineState> camera_profile_pipeline_;
     std::array<ComPtr<ID3D12Resource>, 3> sources_{};
     std::array<uint32_t, 3> widths_{};
     std::array<uint32_t, 3> heights_{};
@@ -919,7 +1362,21 @@ private:
     ComPtr<ID3D12Resource> lut_;
     ComPtr<ID3D12Resource> output_;
     ComPtr<ID3D12Resource> readback_;
+    ComPtr<ID3D12Resource> profile_source_;
+    ComPtr<ID3D12Resource> profile_look_;
+    ComPtr<ID3D12Resource> profile_tone_;
+    ComPtr<ID3D12Resource> profile_output_;
+    ComPtr<ID3D12Resource> profile_readback_;
+    ComPtr<ID3D12Resource> warp_output_;
+    ComPtr<ID3D12Resource> warp_readback_;
+    std::vector<float> profile_look_values_;
+    std::vector<float> profile_tone_values_;
     size_t output_capacity_ = 0;
+    size_t profile_source_values_ = 0;
+    size_t profile_output_capacity_ = 0;
+    size_t warp_output_capacity_ = 0;
+    uint32_t profile_width_ = 0;
+    uint32_t profile_height_ = 0;
     im_filter_params filter_{};
     uint32_t lut_edge_ = 0;
 };
