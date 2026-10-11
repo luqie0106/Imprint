@@ -2,9 +2,12 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import AdjustmentPanel from "./AdjustmentPanel.vue";
 import { BASE_URL } from "../stores/api";
+import { getDecodedPreview, getPreviewHistogram, rememberPreviewHistogram } from "../stores/previewCache";
 
 interface PhotoMetadata {
   focal_length: number | null;
+  focal_length_35mm: number | null;
+  lens_focal_range_35mm: [number, number] | null;
   lens_focal_range: [number, number] | null;
   aperture: number | null;
   exposure_time: number | null;
@@ -14,8 +17,12 @@ const props = defineProps<{ src: string; sessionId: string; photoId: string }>()
 const paths = ref<string[]>([]);
 const status = ref("选择照片后显示");
 const metadata = ref<PhotoMetadata | null>(null);
+const focalLength = computed(() => metadata.value?.focal_length_35mm ?? metadata.value?.focal_length ?? null);
+const lensFocalRange = computed(() => metadata.value?.lens_focal_range_35mm ?? metadata.value?.lens_focal_range ?? null);
+const focalLabel = computed(() => metadata.value?.focal_length_35mm ? "等效焦距" : "焦距");
+const lensLabel = computed(() => metadata.value?.lens_focal_range_35mm ? "等效焦段" : "镜头焦段");
 const showLensFocalRange = computed(() => {
-  const range = metadata.value?.lens_focal_range;
+  const range = lensFocalRange.value;
   return Boolean(range && range[0] !== range[1]);
 });
 const channels = [
@@ -36,18 +43,29 @@ function cancelLoad() {
   pendingImage = null;
 }
 
+watch([() => BASE_URL.value, () => props.sessionId, () => props.photoId], () => {
+  generation++;
+  cancelLoad();
+  paths.value = [];
+}, { flush: "sync" });
+
 watch(() => props.src, (src) => {
   const token = ++generation;
   cancelLoad();
-  paths.value = [];
+  if (!src) paths.value = [];
   status.value = src ? "正在读取直方图…" : "选择照片后显示";
   if (!src) return;
 
-  const image = new Image();
-  pendingImage = image;
+  const cached = getPreviewHistogram(src);
+  if (cached) {
+    paths.value = cached;
+    status.value = "";
+    return;
+  }
+  const decoded = getDecodedPreview(src);
+  const image = decoded ?? new Image();
   // Reuse the existing preview; no additional backend processing or preview requests.
-  image.crossOrigin = "anonymous";
-  image.onload = () => {
+  const updateHistogram = () => {
     if (token !== generation) return;
     pendingImage = null;
     try {
@@ -68,14 +86,24 @@ watch(() => props.src, (src) => {
       const peak = Math.max(1, ...bins.flatMap(bin => Array.from(bin)));
       paths.value = bins.map(bin => `M 0 100 ${Array.from(bin, (count, x) =>
         `L ${x} ${(100 - count / peak * 94).toFixed(2)}`).join(" ")} L 255 100 Z`);
+      rememberPreviewHistogram(src, paths.value);
       status.value = "";
     } catch {
+      paths.value = [];
       status.value = "暂时无法读取直方图";
     }
   };
+  if (decoded) {
+    updateHistogram();
+    return;
+  }
+  pendingImage = image;
+  image.crossOrigin = "anonymous";
+  image.onload = updateHistogram;
   image.onerror = () => {
     if (token !== generation) return;
     pendingImage = null;
+    paths.value = [];
     status.value = "暂时无法读取直方图";
   };
   image.src = src;
@@ -102,6 +130,8 @@ watch(
       if (token !== metadataGeneration) return;
       metadata.value = {
         focal_length: finiteNumber(data.focal_length),
+        focal_length_35mm: finiteNumber(data.focal_length_35mm),
+        lens_focal_range_35mm: formatFocalRangeValue(data.lens_focal_range_35mm),
         lens_focal_range: formatFocalRangeValue(data.lens_focal_range),
         aperture: finiteNumber(data.aperture),
         exposure_time: finiteNumber(data.exposure_time),
@@ -175,13 +205,13 @@ onBeforeUnmount(() => {
       <p v-else class="absolute inset-0 flex items-center justify-center text-[11px] text-slate-400 dark:text-zinc-200" role="status">{{ status }}</p>
     </div>
     <div class="mt-2 grid h-9 items-center gap-1 text-[10px] text-slate-600 dark:text-zinc-200" :class="showLensFocalRange ? 'grid-cols-4' : 'grid-cols-3'">
-      <div class="min-w-0 whitespace-nowrap text-center" title="焦距">
-        <span class="block">焦距</span>
-        <span class="block truncate font-medium">{{ formatFocalLength(metadata?.focal_length ?? null) }}</span>
+      <div class="min-w-0 whitespace-nowrap text-center" :title="focalLabel">
+        <span class="block">{{ focalLabel }}</span>
+        <span class="block truncate font-medium">{{ formatFocalLength(focalLength) }}</span>
       </div>
-      <div v-if="showLensFocalRange" class="min-w-0 whitespace-nowrap text-center" title="镜头焦段">
-        <span class="block">镜头焦段</span>
-        <span class="block truncate font-medium">{{ formatLensFocalRange(metadata?.lens_focal_range ?? null) }}</span>
+      <div v-if="showLensFocalRange" class="min-w-0 whitespace-nowrap text-center" :title="lensLabel">
+        <span class="block">{{ lensLabel }}</span>
+        <span class="block truncate font-medium">{{ formatLensFocalRange(lensFocalRange) }}</span>
       </div>
       <div class="min-w-0 whitespace-nowrap text-center" title="光圈">
         <span class="block">光圈</span>

@@ -74,7 +74,7 @@ def scan_photo_directory(directory: Path) -> list[Path]:
     if not directory.is_dir():
         raise NotADirectoryError(str(directory))
     files: list[Path] = []
-    for path in directory.rglob("*"):
+    for path in directory.iterdir():
         if OUTPUT_DIR_NAME in path.parts:
             continue
         if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES:
@@ -248,6 +248,39 @@ def _photo_lens_focal_range(exif: dict[str, Any]) -> list[int | float] | None:
     return None
 
 
+def _photo_focal_length_35mm(exif: dict[str, Any]) -> int | float | None:
+    """Read the positive 35 mm equivalent focal length, if the camera records it."""
+    for key in ("FocalLengthIn35mmFilm", "FocalLengthIn35mmFormat"):
+        value = _metadata_number(exif.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _photo_lens_focal_range_35mm(
+    focal_length: int | float | None,
+    focal_length_35mm: int | float | None,
+    lens_focal_range: list[int | float] | None,
+) -> list[int | float] | None:
+    """Scale a physical lens range only when it agrees with this exposure's focal length."""
+    if focal_length is None or focal_length_35mm is None or lens_focal_range is None:
+        return None
+    minimum, maximum = lens_focal_range
+    if not minimum <= focal_length <= maximum:
+        return None
+
+    scale = focal_length_35mm / focal_length
+    if not math.isfinite(scale) or scale <= 0:
+        return None
+    # Cameras often round the equivalent focal length to whole millimetres.
+    # Avoid presenting that rounding as a crop factor.
+    if abs(scale - 1.0) <= 0.05:
+        return list(lens_focal_range)
+
+    converted = [minimum * scale, maximum * scale]
+    return [int(value) if value.is_integer() else value for value in converted]
+
+
 def read_photo_metadata(path: str | Path) -> dict[str, Any]:
     """Read compact capture metadata without decoding image pixels.
 
@@ -298,6 +331,17 @@ def read_photo_metadata(path: str | Path) -> dict[str, Any]:
     else:
         camera_model = camera_model.strip()
 
+    focal_length = _metadata_number(exif.get("FocalLength"))
+    focal_length_35mm = _photo_focal_length_35mm(exif)
+    if source.suffix.lower() in RAW_SUFFIXES and focal_length_35mm is None:
+        # Supplement missing RAW metadata only in this compact metadata reader;
+        # image decoding keeps its existing lens-only ExifTool path.
+        supplemental = _exiftool_lens_metadata(
+            source, include_focal_length_35mm=True,
+        )
+        focal_length_35mm = _photo_focal_length_35mm(supplemental)
+    lens_focal_range = _photo_lens_focal_range(exif)
+
     return {
         "filename": source.name,
         "size_bytes": int(stat.st_size),
@@ -308,8 +352,12 @@ def read_photo_metadata(path: str | Path) -> dict[str, Any]:
         ),
         "aperture": _metadata_number(exif.get("FNumber")),
         "exposure_time": _metadata_number(exif.get("ExposureTime")),
-        "focal_length": _metadata_number(exif.get("FocalLength")),
-        "lens_focal_range": _photo_lens_focal_range(exif),
+        "focal_length": focal_length,
+        "lens_focal_range": lens_focal_range,
+        "focal_length_35mm": focal_length_35mm,
+        "lens_focal_range_35mm": _photo_lens_focal_range_35mm(
+            focal_length, focal_length_35mm, lens_focal_range,
+        ),
         "camera_model": camera_model,
     }
 
@@ -335,6 +383,9 @@ def _find_exiftool() -> str | None:
 def _lens_metadata_from_exiftool_record(record: dict[str, Any]) -> dict[str, Any]:
     """Map vendor lens tags to portable standard Exif fields."""
     result: dict[str, Any] = {}
+    focal_length_35mm = _photo_focal_length_35mm(record)
+    if focal_length_35mm is not None:
+        result["FocalLengthIn35mmFilm"] = focal_length_35mm
     lens_model = next(
         (
             record.get(key)
@@ -405,27 +456,31 @@ def _fill_lens_specification(exif: dict[str, Any]) -> None:
         exif["LensSpecification"] = specification
 
 
-def _exiftool_lens_metadata(path: Path) -> dict[str, Any]:
+def _exiftool_lens_metadata(
+    path: Path, *, include_focal_length_35mm: bool = False,
+) -> dict[str, Any]:
     """Read Nikon/Sony/etc. private lens identity using optional ExifTool."""
     executable = _find_exiftool()
     if executable is None:
         return {}
     try:
+        arguments = [
+            executable,
+            "-json",
+            "-Make",
+            "-LensMake",
+            "-LensModel",
+            "-LensID",
+            "-LensSpec",
+            "-LensInfo",
+            "-LensSpecification",
+            "-Lens",
+            "-LensSerialNumber",
+        ]
+        if include_focal_length_35mm:
+            arguments.extend(("-n", "-FocalLengthIn35mmFormat"))
         completed = subprocess.run(
-            [
-                executable,
-                "-json",
-                "-Make",
-                "-LensMake",
-                "-LensModel",
-                "-LensID",
-                "-LensSpec",
-                "-LensInfo",
-                "-LensSpecification",
-                "-Lens",
-                "-LensSerialNumber",
-                str(path),
-            ],
+            [*arguments, str(path)],
             check=True,
             capture_output=True,
             text=True,

@@ -9,6 +9,7 @@ import { photoExportRunning } from "../stores/photoExport";
 import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
 import { BASE_URL } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
+import { cachePreviewResponse, getCachedPreview, hasCachedPreview, createPreviewUrl, releasePreviewUrl } from "../stores/previewCache";
 import {
   autoSaveError, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
   sharedDehazeAutoByPhoto, sharedDehazeAutoExposureByPhoto,
@@ -132,6 +133,7 @@ let fullResolutionTimer: number | undefined;
 let previewGeneration = 0;
 const previewClientId = crypto.randomUUID();
 let previewController: AbortController | undefined;
+let previewOriginalController: AbortController | undefined;
 const displayedPhotoId = ref("");
 const displayedSessionId = ref("");
 let sliderAdjusting = false;
@@ -272,7 +274,7 @@ function setThumbnailState(photoId: string, state: ThumbnailState) {
 }
 
 function releaseUrl(url: string) {
-  if (url) URL.revokeObjectURL(url);
+  if (url) releasePreviewUrl(url);
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -459,6 +461,7 @@ function updateViewportSize() {
   devicePixelRatio.value = window.devicePixelRatio || 1;
   if (!previewViewport.value) return;
   const rect = previewViewport.value.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
   viewportWidth.value = rect.width;
   viewportHeight.value = rect.height;
 }
@@ -537,6 +540,7 @@ interface PreviewAsset {
 }
 interface PreviewRequestContext {
   generation: number;
+  baseUrl: string;
   sessionId: string;
   photoId: string;
   params: EnhanceParams;
@@ -553,6 +557,7 @@ interface PreviewRequestContext {
 function capturePreviewContext(): PreviewRequestContext {
   return {
     generation: previewGeneration,
+    baseUrl: BASE_URL.value,
     sessionId: sessionId.value,
     photoId: selectedId.value,
     params: cloneParams(params.value),
@@ -567,6 +572,26 @@ function capturePreviewContext(): PreviewRequestContext {
   };
 }
 
+function createPreviewBody(
+  mode: "original" | "dehazed",
+  context: PreviewRequestContext,
+  previewLevel: 0 | 2,
+  fullResolution: boolean,
+): Record<string, unknown> {
+  return {
+    session_id: context.sessionId, photo_id: context.photoId, algorithm: "physical", params: context.params,
+    preview_client_id: previewClientId, preview_generation: context.generation,
+    auto_mode: context.autoMode,
+    auto_exposure: context.autoExposure,
+    nonlocal_mode: context.nonlocalMode,
+    basic_params: context.basicParams,
+    ricoh_preset_id: context.ricohPresetId,
+    max_edge: 1800, preview_level: previewLevel, full_resolution: fullResolution,
+    mode, color_manage_srgb: true, render_backend: context.renderBackend,
+    basic_backend: context.basicBackend, ricoh_backend: context.ricohBackend,
+  };
+}
+
 async function fetchPreview(
   mode: "original" | "dehazed",
   context: PreviewRequestContext,
@@ -574,39 +599,39 @@ async function fetchPreview(
   fullResolution: boolean,
   signal: AbortSignal,
 ): Promise<PreviewAsset> {
-  const response = await fetch(`${BASE_URL.value}/api/enhance/preview`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session_id: context.sessionId, photo_id: context.photoId, algorithm: "physical", params: context.params,
-      preview_client_id: previewClientId, preview_generation: context.generation,
-      auto_mode: context.autoMode,
-      auto_exposure: context.autoExposure,
-      nonlocal_mode: context.nonlocalMode,
-      basic_params: context.basicParams,
-      ricoh_preset_id: context.ricohPresetId,
-      max_edge: 1800, preview_level: previewLevel, full_resolution: fullResolution,
-      mode, color_manage_srgb: true, render_backend: context.renderBackend,
-      basic_backend: context.basicBackend, ricoh_backend: context.ricohBackend,
-    }),
-    signal,
-  });
-  if (response.status === 204) throw new DOMException("预览已被更新请求替代", "AbortError");
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || "预览生成失败");
+  const body = createPreviewBody(mode, context, previewLevel, fullResolution);
+  const cached = getCachedPreview(context.baseUrl, body);
+  let blob: Blob;
+  let headers: Headers;
+  if (cached) {
+    blob = cached.blob;
+    headers = new Headers(cached.headers);
+  } else {
+    const response = await fetch(`${context.baseUrl}/api/enhance/preview`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal,
+    });
+    if (response.status === 204) throw new DOMException("预览已被更新请求替代", "AbortError");
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "预览生成失败");
+    }
+    blob = await response.blob();
+    cachePreviewResponse(context.baseUrl, body, response, blob);
+    headers = response.headers;
   }
-  const width = response.headers.get("X-Image-Width");
-  const height = response.headers.get("X-Image-Height");
-  const status = response.headers.get("X-Dehaze-Nonlocal-Status");
+  const width = headers.get("X-Image-Width");
+  const height = headers.get("X-Image-Height");
+  const status = headers.get("X-Dehaze-Nonlocal-Status");
   const nonlocalStatus = status === "active" || status === "fallback" ? status : "off";
-  const nonlocalReason = response.headers.get("X-Dehaze-Nonlocal-Reason") ?? "";
-  const exposureHeader = response.headers.get("X-Auto-Exposure-EV");
+  const nonlocalReason = headers.get("X-Dehaze-Nonlocal-Reason") ?? "";
+  const exposureHeader = headers.get("X-Auto-Exposure-EV");
   const parsedExposure = exposureHeader === null ? Number.NaN : Number(exposureHeader);
   const autoExposureEV = Number.isFinite(parsedExposure) ? parsedExposure : null;
-  const exposureReasonHeader = response.headers.get("X-Auto-Exposure-Reason") ?? "off";
+  const exposureReasonHeader = headers.get("X-Auto-Exposure-Reason") ?? "off";
   const autoExposureReason: AutoExposureReason = ["off", "target_reached", "highlight_limited", "applied", "black"]
     .includes(exposureReasonHeader) ? exposureReasonHeader as AutoExposureReason : "off";
-  const url = URL.createObjectURL(await response.blob());
+  const url = createPreviewUrl(blob);
   return {
     url, width: Number(width) || 0, height: Number(height) || 0,
     nonlocalStatus, nonlocalReason, autoExposureEV, autoExposureReason,
@@ -620,7 +645,8 @@ async function refreshPreview(
   previewLevel: 0 | 2,
   fullResolution: boolean,
 ) {
-  if (!props.active || !context.sessionId || !context.photoId || !BASE_URL.value || generation !== previewGeneration) return;
+  if (!props.active || !context.sessionId || !context.photoId || !context.baseUrl
+    || BASE_URL.value !== context.baseUrl || generation !== previewGeneration) return;
   const controller = new AbortController();
   previewController = controller;
   previewLoading.value = true;
@@ -630,14 +656,14 @@ async function refreshPreview(
     if (includeOriginal) {
       original = await fetchPreview("original", context, previewLevel, fullResolution, controller.signal);
       stagedAssets.push(original);
-      if (generation !== previewGeneration) {
+      if (generation !== previewGeneration || BASE_URL.value !== context.baseUrl) {
         releaseUrl(original.url);
         return;
       }
     }
     const enhanced = await fetchPreview("dehazed", context, previewLevel, fullResolution, controller.signal);
     stagedAssets.push(enhanced);
-    if (generation !== previewGeneration) {
+    if (generation !== previewGeneration || BASE_URL.value !== context.baseUrl) {
       for (const asset of stagedAssets) releaseUrl(asset.url);
       return;
     }
@@ -689,6 +715,42 @@ async function refreshPreview(
   } finally {
     if (previewController === controller) previewController = undefined;
     if (generation === previewGeneration) previewLoading.value = false;
+  }
+}
+
+async function refreshOriginalPreview(
+  generation: number,
+  context: PreviewRequestContext,
+  previewLevel: 0 | 2,
+  fullResolution: boolean,
+) {
+  if (!props.active || generation !== previewGeneration || BASE_URL.value !== context.baseUrl) return;
+  const controller = new AbortController();
+  previewOriginalController?.abort();
+  previewOriginalController = controller;
+  try {
+    const original = await fetchPreview("original", context, previewLevel, fullResolution, controller.signal);
+    if (generation !== previewGeneration || BASE_URL.value !== context.baseUrl) {
+      releaseUrl(original.url);
+      return;
+    }
+    releaseUrl(originalUrl.value);
+    originalUrl.value = original.url;
+    originalPhotoId.value = context.photoId;
+    originalSessionId.value = context.sessionId;
+    originalFullResolution.value = fullResolution;
+    if (fullResolution && original.width && original.height) {
+      sourceImageWidth.value = original.width;
+      sourceImageHeight.value = original.height;
+    }
+    await nextTick();
+    if (generation === previewGeneration) updateViewportSize();
+  } catch (error) {
+    if (generation === previewGeneration && !(error instanceof DOMException && error.name === "AbortError")) {
+      previewError.value = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (previewOriginalController === controller) previewOriginalController = undefined;
   }
 }
 
@@ -769,6 +831,7 @@ function scheduleDraggingPreview(includeOriginal = false) {
     window.clearTimeout(fullResolutionTimer);
     window.clearTimeout(draggingPreviewTimer);
     previewController?.abort();
+    previewOriginalController?.abort();
     const generation = ++previewGeneration;
     draggingPreviewActive = true;
     draggingPreviewGeneration = generation;
@@ -809,6 +872,7 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
   window.clearTimeout(intermediatePreviewTimer);
   window.clearTimeout(fullResolutionTimer);
   previewController?.abort();
+  previewOriginalController?.abort();
   const generation = ++previewGeneration;
   nonlocalRenderStatus.value = "off";
   nonlocalRenderReason.value = "";
@@ -820,6 +884,16 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
   const { shouldFetchOriginal, shouldUpgradeOriginal } = previewOriginalRequestPlan(context, includeOriginal);
   previewError.value = "";
   previewLoading.value = true;
+
+  const cachedFullEffect = hasCachedPreview(context.baseUrl,
+    createPreviewBody("dehazed", context, 0, true));
+  if (cachedFullEffect) {
+    void refreshPreview(generation, context, false, 0, true);
+    if (shouldUpgradeOriginal)
+      void refreshOriginalPreview(generation, context, 0, true);
+    return;
+  }
+
   if (shouldFetchOriginal && originalUrl.value) {
     imageSize.value = "正在载入低分辨率预览，暂显上一张照片";
   }
@@ -870,6 +944,7 @@ function cancelPendingPreview() {
   window.clearTimeout(intermediatePreviewTimer);
   window.clearTimeout(fullResolutionTimer);
   previewController?.abort();
+  previewOriginalController?.abort();
   previewLoading.value = false;
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
   void fetch(`${BASE_URL.value}/api/enhance/preview`, {
@@ -904,6 +979,7 @@ function endSliderInteraction() {
     clearDraggingPreviewState();
     previewGeneration += 1;
     previewController?.abort();
+    previewOriginalController?.abort();
   }
   // Let the range input's final value reach v-model before capturing parameters.
   void nextTick(() => {
@@ -932,7 +1008,10 @@ function syncParamsToAll() {
 }
 
 watch(() => props.active, (active) => {
-  if (active) schedulePreview(false, "settled");
+  if (active) void nextTick(() => {
+    updateViewportSize();
+    schedulePreview(false, "settled");
+  });
   else cancelPendingPreview();
 });
 watch(selectedId, () => {
@@ -997,6 +1076,7 @@ onBeforeUnmount(() => {
   clearDraggingPreviewState();
   previewGeneration += 1;
   previewController?.abort();
+  previewOriginalController?.abort();
   window.clearTimeout(previewTimer); window.clearTimeout(intermediatePreviewTimer);
   window.clearTimeout(fullResolutionTimer);
   resizeObserver?.disconnect();

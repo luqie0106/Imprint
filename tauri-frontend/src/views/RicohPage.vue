@@ -8,6 +8,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
 import { BASE_URL, isServerReady } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
+import { cachePreviewResponse, getCachedPreview, hasCachedPreview, createPreviewUrl, releasePreviewUrl } from "../stores/previewCache";
 import {
   autoSaveError, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
   sharedDehazeAutoByPhoto, sharedDehazeAutoExposureByPhoto,
@@ -207,7 +208,7 @@ function zoomBy(delta: number) {
 
 function onPreviewPointerDown(event: PointerEvent) {
   const target = event.target as HTMLElement | null;
-  if (target?.closest(".compare-split") || event.button !== 0 || !originalUrl.value || !canZoom.value) return;
+  if (target?.closest(".compare-split") || event.button !== 0 || !previewImageUrl.value || !canZoom.value) return;
   isScrubbing.value = true;
   pointerMoved = false;
   pointerDownX = event.clientX;
@@ -250,6 +251,7 @@ function updateViewportSize() {
   devicePixelRatio.value = window.devicePixelRatio || 1;
   if (!previewViewport.value) return;
   const rect = previewViewport.value.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
   viewportWidth.value = rect.width;
   viewportHeight.value = rect.height;
 }
@@ -343,107 +345,153 @@ function isPhotoListLayout(layout: PhotoListLayout) {
   return photoListLayout.value === layout;
 }
 function releasePreview() {
-  if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
-  if (effectUrl.value) URL.revokeObjectURL(effectUrl.value);
+  if (originalUrl.value) releasePreviewUrl(originalUrl.value);
+  if (effectUrl.value) releasePreviewUrl(effectUrl.value);
   originalUrl.value = "";
   originalFullResolution.value = false;
   effectUrl.value = "";
 }
 interface PreviewAsset { url: string; width: number; height: number }
+interface PreviewRequestContext {
+  baseUrl: string;
+  token: number;
+  sessionId: string;
+  photoId: string;
+  params: object;
+  autoMode: boolean;
+  autoExposure: boolean;
+  nonlocalMode: string;
+  basicParams: BasicParams;
+  presetId: string | null;
+  renderBackend: string;
+  basicBackend: string;
+  ricohBackend: string;
+  previewLevel: 0 | 2;
+  fullResolution: boolean;
+}
 
-async function requestPreview(endpoint: string, body: object, token: number): Promise<PreviewAsset> {
-  const response = await fetch(`${BASE_URL.value}${endpoint}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
-  if (response.status === 204) throw new DOMException("预览已被更新请求替代", "AbortError");
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || "预览失败");
-  }
-  const width = response.headers.get("X-Image-Width");
-  const height = response.headers.get("X-Image-Height");
-  const url = URL.createObjectURL(await response.blob());
-  if (token !== generation) URL.revokeObjectURL(url);
+function capturePreviewContext(token: number, fullResolution: boolean): PreviewRequestContext {
   return {
-    url: token === generation ? url : "",
+    baseUrl: BASE_URL.value,
+    token,
+    sessionId: sessionId.value,
+    photoId: selectedId.value,
+    params: { ...(dehazeParams.value ?? {}) },
+    autoMode: sharedDehazeAutoByPhoto.value[selectedId.value] ?? false,
+    autoExposure: sharedDehazeAutoExposureByPhoto.value[selectedId.value] ?? false,
+    nonlocalMode: sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off",
+    basicParams: cloneBasicParams(basicParams.value),
+    presetId: selectedPreset.value || null,
+    renderBackend: renderBackend.value,
+    basicBackend: basicBackend.value,
+    ricohBackend: ricohBackend.value,
+    previewLevel: fullResolution ? 0 : 2,
+    fullResolution,
+  };
+}
+
+function createPreviewBody(context: PreviewRequestContext, mode: "original" | "dehazed"): Record<string, unknown> {
+  return {
+    session_id: context.sessionId, photo_id: context.photoId, algorithm: "physical", params: context.params,
+    preview_client_id: previewClientId, preview_generation: context.token,
+    auto_mode: context.autoMode, auto_exposure: context.autoExposure,
+    nonlocal_mode: context.nonlocalMode, basic_params: context.basicParams,
+    ricoh_preset_id: context.presetId,
+    max_edge: 1800, preview_level: context.previewLevel, full_resolution: context.fullResolution,
+    mode, color_manage_srgb: true, render_backend: context.renderBackend,
+    basic_backend: context.basicBackend, ricoh_backend: context.ricohBackend,
+  };
+}
+
+async function requestPreview(body: Record<string, unknown>, context: PreviewRequestContext): Promise<PreviewAsset> {
+  const cached = getCachedPreview(context.baseUrl, body);
+  let blob: Blob;
+  let headers: Headers;
+  if (cached) {
+    blob = cached.blob;
+    headers = new Headers(cached.headers);
+  } else {
+    const response = await fetch(`${context.baseUrl}/api/enhance/preview`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (response.status === 204) throw new DOMException("预览已被更新请求替代", "AbortError");
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "预览失败");
+    }
+    blob = await response.blob();
+    cachePreviewResponse(context.baseUrl, body, response, blob);
+    headers = response.headers;
+  }
+  const width = headers.get("X-Image-Width");
+  const height = headers.get("X-Image-Height");
+  const url = createPreviewUrl(blob);
+  if (context.token !== generation) releasePreviewUrl(url);
+  return {
+    url: context.token === generation ? url : "",
     width: Number(width) || 0,
     height: Number(height) || 0,
   };
 }
-async function refreshPreview(includeOriginal = false, fullResolution = false, token = ++generation) {
-  if (!props.active || token !== generation) return;
-  if (!sessionId.value || !selectedId.value || !BASE_URL.value) {
+
+function applyOriginalPreview(asset: PreviewAsset, context: PreviewRequestContext) {
+  if (context.token !== generation || BASE_URL.value !== context.baseUrl) {
+    if (asset.url) releasePreviewUrl(asset.url);
+    return;
+  }
+  if (originalUrl.value) releasePreviewUrl(originalUrl.value);
+  originalUrl.value = asset.url;
+  originalFullResolution.value = context.fullResolution;
+  if (context.fullResolution && asset.width && asset.height) {
+    sourceImageWidth.value = asset.width;
+    sourceImageHeight.value = asset.height;
+  }
+  void nextTick(updateViewportSize);
+}
+
+async function refreshOriginalPreview(context: PreviewRequestContext) {
+  if (!props.active || context.token !== generation || BASE_URL.value !== context.baseUrl) return;
+  try {
+    const original = await requestPreview(createPreviewBody(context, "original"), context);
+    applyOriginalPreview(original, context);
+  } catch (cause) {
+    if (context.token === generation && !(cause instanceof DOMException && cause.name === "AbortError"))
+      error.value = cause instanceof Error ? cause.message : "原图预览失败";
+  }
+}
+
+async function refreshPreview(includeOriginal: boolean, context: PreviewRequestContext) {
+  if (!props.active || context.token !== generation || BASE_URL.value !== context.baseUrl) return;
+  if (!context.sessionId || !context.photoId || !context.baseUrl) {
     releasePreview();
     return;
   }
   error.value = "";
+  const originalNeeded = mode.value !== "effect";
+  const requestOriginal = originalNeeded && (includeOriginal || !originalUrl.value
+    || (context.fullResolution && !originalFullResolution.value));
+  if (requestOriginal) void refreshOriginalPreview(context);
+
   try {
-    const common = {
-      session_id: sessionId.value, photo_id: selectedId.value, max_edge: 1800,
-      preview_client_id: previewClientId, preview_generation: token,
-      render_backend: renderBackend.value,
-      preview_level: fullResolution ? 0 : 2, full_resolution: fullResolution,
-    };
-    const autoMode = sharedDehazeAutoByPhoto.value[selectedId.value] ?? false;
-    const autoExposure = sharedDehazeAutoExposureByPhoto.value[selectedId.value] ?? false;
-    const nonlocalMode = sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off";
-    const dehazeContext = { ...common, auto_mode: autoMode, auto_exposure: autoExposure, nonlocal_mode: nonlocalMode };
-    const requests: Array<Promise<PreviewAsset>> = [];
-    const requestOriginal = includeOriginal || !originalUrl.value
-      || (fullResolution && !originalFullResolution.value);
-    if (requestOriginal) requests.push(requestPreview("/api/enhance/preview", {
-      ...dehazeContext, mode: "original", color_manage_srgb: true,
-    }, token));
-    requests.push(requestPreview("/api/enhance/preview", {
-      ...dehazeContext, mode: "dehazed", color_manage_srgb: true,
-      params: dehazeParams.value,
-      basic_params: cloneBasicParams(basicParams.value),
-      ricoh_preset_id: selectedPreset.value || null,
-      render_backend: renderBackend.value,
-      basic_backend: basicBackend.value, ricoh_backend: ricohBackend.value,
-    }, token));
-    const results = await Promise.allSettled(requests);
-    if (token !== generation) {
-      for (const result of results) {
-        if (result.status === "fulfilled" && result.value.url) URL.revokeObjectURL(result.value.url);
-      }
+    const effect = await requestPreview(createPreviewBody(context, "dehazed"), context);
+    if (context.token !== generation || BASE_URL.value !== context.baseUrl) {
+      if (effect.url) releasePreviewUrl(effect.url);
       return;
     }
-    const rejected = results.find(result => result.status === "rejected");
-    if (rejected?.status === "rejected") {
-      for (const result of results) {
-        if (result.status === "fulfilled" && result.value.url) URL.revokeObjectURL(result.value.url);
+    if (effectUrl.value) releasePreviewUrl(effectUrl.value);
+    effectUrl.value = effect.url;
+    if (effect.width && effect.height) {
+      if (context.fullResolution) {
+        sourceImageWidth.value = effect.width;
+        sourceImageHeight.value = effect.height;
       }
-      throw rejected.reason;
-    }
-    let resultIndex = 0;
-    if (requestOriginal) {
-      const result = results[resultIndex++];
-      if (result?.status === "fulfilled" && result.value.url) {
-        if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
-        originalUrl.value = result.value.url;
-        originalFullResolution.value = fullResolution;
-      }
-    }
-    const effectResult = results[resultIndex];
-    if (effectResult?.status === "fulfilled" && effectResult.value.url) {
-      if (effectUrl.value) URL.revokeObjectURL(effectUrl.value);
-      effectUrl.value = effectResult.value.url;
-      const dimensions = effectResult.value.width && effectResult.value.height
-        ? effectResult.value
-        : requestOriginal && results[0]?.status === "fulfilled" ? results[0].value : null;
-      if (dimensions?.width && dimensions.height) {
-        if (fullResolution) {
-          sourceImageWidth.value = dimensions.width;
-          sourceImageHeight.value = dimensions.height;
-        }
-        imageWidth.value = dimensions.width;
-        imageHeight.value = dimensions.height;
-        await nextTick(updateViewportSize);
-      }
+      imageWidth.value = effect.width;
+      imageHeight.value = effect.height;
+      await nextTick(updateViewportSize);
     }
   } catch (cause) {
-    if (token === generation) error.value = cause instanceof Error ? cause.message : "预览失败";
+    if (context.token === generation && !(cause instanceof DOMException && cause.name === "AbortError"))
+      error.value = cause instanceof Error ? cause.message : "预览失败";
   }
 }
 
@@ -452,15 +500,24 @@ function schedulePreview(includeOriginal = false, immediate = false) {
   window.clearTimeout(previewTimer);
   window.clearTimeout(fullResolutionTimer);
   const token = ++generation;
+  if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
+  const fastContext = capturePreviewContext(token, false);
+  const fullContext = capturePreviewContext(token, true);
+
+  if (hasCachedPreview(fullContext.baseUrl, createPreviewBody(fullContext, "dehazed"))) {
+    void refreshPreview(false, fullContext);
+    return;
+  }
+
   previewTimer = window.setTimeout(() => {
     if (token !== generation) return;
-    scheduledPreviewTask = refreshPreview(includeOriginal, false, token);
+    scheduledPreviewTask = refreshPreview(includeOriginal, fastContext);
   }, immediate ? 0 : 180);
   fullResolutionTimer = window.setTimeout(() => {
     void (async () => {
       if (token !== generation) return;
       await scheduledPreviewTask;
-      if (token === generation) await refreshPreview(false, true, token);
+      if (token === generation) await refreshPreview(false, fullContext);
     })();
   }, 500);
 }
@@ -478,7 +535,10 @@ function cancelPendingPreview() {
 }
 
 watch(() => props.active, (active) => {
-  if (active) schedulePreview(false, true);
+  if (active) void nextTick(() => {
+    updateViewportSize();
+    schedulePreview(false, true);
+  });
   else cancelPendingPreview();
 });
 watch([isServerReady, BASE_URL], () => { void loadPresets(); }, { immediate: true });
@@ -512,6 +572,10 @@ watch(() => ({
     schedulePreview();
 });
 watch([renderBackend, basicBackend, ricohBackend], () => schedulePreview());
+watch(mode, (nextMode) => {
+  if (nextMode !== "effect" && (!originalUrl.value || !originalFullResolution.value))
+    schedulePreview(true, true);
+});
 watch(basicParams, (next, previous) => {
   schedulePreview();
   if (selectedId.value && next === previous) {
@@ -601,8 +665,8 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="originalUrl ? (isScrubbing ? 'cursor-ew-resize' : (!canZoom ? 'cursor-default' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'))) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel">
-            <template v-if="originalUrl">
+          <div ref="previewViewport" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-100 dark:bg-black" :class="previewImageUrl ? (isScrubbing ? 'cursor-ew-resize' : (!canZoom ? 'cursor-default' : (zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'))) : 'cursor-default'" @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove" @pointerup="onPreviewPointerUp" @pointercancel="onPreviewPointerCancel">
+            <template v-if="previewImageUrl">
               <PreviewCanvas :src="previewImageUrl" :alt="mode === 'effect' && effectReady ? '综合效果' : '原图'"
                 :viewport-width="viewportWidth" :viewport-height="viewportHeight"
                 :stage-width="fitWidth * zoom" :stage-height="fitHeight * zoom"

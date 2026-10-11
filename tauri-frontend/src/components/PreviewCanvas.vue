@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { getDecodedPreview, rememberDecodedPreview } from '../stores/previewCache'
 
 const props = defineProps<{
   src: string
@@ -129,12 +130,21 @@ function loadSource(src: string): void {
     return
   }
 
+  const decoded = getDecodedPreview(src)
+  if (decoded) {
+    sourceImage.value = decoded
+    emit('loaded', { width: decoded.naturalWidth, height: decoded.naturalHeight })
+    scheduleDraw()
+    return
+  }
+
   const image = new Image()
   pendingImage = image
   image.onload = () => {
     if (generation !== loadGeneration) return
     pendingImage = null
     sourceImage.value = image
+    rememberDecodedPreview(src, image)
     emit('loaded', { width: image.naturalWidth, height: image.naturalHeight })
     scheduleDraw()
   }

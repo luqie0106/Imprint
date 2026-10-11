@@ -780,7 +780,7 @@ def _collect_photos(paths: Iterable[str]) -> tuple[list[Path], list[dict[str, st
                 if OUTPUT_DIR_NAME in path.parts:
                     continue
                 try:
-                    for candidate in path.rglob("*"):
+                    for candidate in sorted(path.iterdir(), key=lambda item: str(item).casefold()):
                         if (
                             OUTPUT_DIR_NAME not in candidate.parts
                             and candidate.is_file()
