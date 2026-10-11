@@ -228,6 +228,26 @@ def _metadata_number(value: Any) -> int | float | None:
     return int(number) if number.is_integer() else number
 
 
+def _photo_lens_focal_range(exif: dict[str, Any]) -> list[int | float] | None:
+    """Read the lens range independently of the focal length used for this shot."""
+    specification = exif.get("LensSpecification", exif.get("LensInfo"))
+    if isinstance(specification, (list, tuple)) and len(specification) >= 2:
+        minimum = _metadata_number(specification[0])
+        maximum = _metadata_number(specification[1])
+        if minimum is not None and maximum is not None and 0 < minimum <= maximum:
+            return [minimum, maximum]
+    match = re.search(
+        r"(?P<min>\d+(?:\.\d+)?)\s*(?:[-–]\s*(?P<max>\d+(?:\.\d+)?))?\s*mm",
+        str(exif.get("LensModel") or ""), re.IGNORECASE,
+    )
+    if match:
+        minimum = _metadata_number(match.group("min"))
+        maximum = _metadata_number(match.group("max") or match.group("min"))
+        if minimum is not None and maximum is not None and 0 < minimum <= maximum:
+            return [minimum, maximum]
+    return None
+
+
 def read_photo_metadata(path: str | Path) -> dict[str, Any]:
     """Read compact capture metadata without decoding image pixels.
 
@@ -289,6 +309,7 @@ def read_photo_metadata(path: str | Path) -> dict[str, Any]:
         "aperture": _metadata_number(exif.get("FNumber")),
         "exposure_time": _metadata_number(exif.get("ExposureTime")),
         "focal_length": _metadata_number(exif.get("FocalLength")),
+        "lens_focal_range": _photo_lens_focal_range(exif),
         "camera_model": camera_model,
     }
 

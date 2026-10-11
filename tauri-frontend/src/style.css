@@ -44,6 +44,14 @@ html, body, #app {
   scrollbar-gutter: stable;
 }
 
+/* 调整卡片折叠时也保留滚动条宽度；scroll 同时兼容不支持 gutter 的 WebView。 */
+.adjustment-sidebar {
+  min-width: 0;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+
 /* 高分辨率桌面屏上，10–12px 的辅助文字可读性不足。 */
 .workspace-readable .text-\[10px\] {
   font-size: 11.5px;

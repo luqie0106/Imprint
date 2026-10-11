@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import PreviewCanvas from "../components/PreviewCanvas.vue";
+import AdjustmentPanel from "../components/AdjustmentPanel.vue";
+import RgbHistogram from "../components/RgbHistogram.vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { photoExportRunning } from "../stores/photoExport";
@@ -17,7 +19,7 @@ import {
 } from "../stores/photoSource";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
-  LoaderCircle, RotateCcw, SlidersHorizontal,
+  LoaderCircle, RotateCcw,
   Maximize2, Minus, Plus, Rows2, Sparkles,
 } from "lucide-vue-next";
 
@@ -1002,7 +1004,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="enhance-scroll h-full bg-slate-50 p-5 dark:bg-zinc-950">
+  <div class="editor-page enhance-scroll h-full bg-slate-50 p-5 dark:bg-zinc-950 dark:text-white">
     <div class="enhance-layout mx-auto grid h-full min-h-0 max-w-[1500px] gap-4">
       <aside class="enhance-left-column min-h-0 space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -1011,7 +1013,7 @@ onBeforeUnmount(() => {
             <button @click="chooseMultiple" :disabled="photoExportRunning" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs hover:border-blue-400 dark:border-zinc-700"><Images class="mr-2 inline h-3.5 w-3.5" />选择照片</button>
             <button @click="chooseFolder" :disabled="photoExportRunning" class="rounded-xl border border-slate-200 px-3 py-2 text-left text-xs hover:border-blue-400 dark:border-zinc-700"><FolderOpen class="mr-2 inline h-3.5 w-3.5" />选择照片文件夹</button>
           </div>
-          <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-zinc-800 dark:text-zinc-400">
+          <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-zinc-800 dark:text-zinc-200">
             <LoaderCircle v-if="sessionLoading" class="mr-1 inline h-3 w-3 animate-spin" />
             {{ files.length ? `当前共 ${files.length} 张` : "尚未选择照片" }}
           </div>
@@ -1021,8 +1023,8 @@ onBeforeUnmount(() => {
           <div class="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-zinc-800">
             <h2 class="text-xs font-semibold">照片列表</h2>
             <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="照片列表布局">
-              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
-              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-200 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-200 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
             </div>
           </div>
           <div class="photo-list min-h-0 overflow-y-auto p-2">
@@ -1031,7 +1033,7 @@ onBeforeUnmount(() => {
               class="photo-list-card flex min-w-0 w-full items-center gap-2 rounded-lg p-1.5 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
               :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
               <span class="relative block h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100 dark:bg-zinc-800">
-                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-500">
+                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-200">
                   <ImageIcon class="h-4 w-4" />
                 </span>
                 <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async"
@@ -1041,7 +1043,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="min-w-0 flex-1">
                 <span class="block truncate">{{ compactFileName(file.name) }}</span>
-                <span v-if="photoChangeSummary(file.photo_id)" class="block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ photoChangeSummary(file.photo_id) }}</span>
+                <span v-if="photoChangeSummary(file.photo_id)" class="block truncate text-[10px] text-slate-500 dark:text-zinc-200">{{ photoChangeSummary(file.photo_id) }}</span>
               </span>
             </button>
           </div>
@@ -1052,12 +1054,12 @@ onBeforeUnmount(() => {
       <main class="enhance-center-column min-h-0 min-w-0">
         <section class="enhance-preview-card min-h-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-zinc-800">
-            <div class="min-w-0"><div class="truncate text-sm font-semibold">{{ currentFile?.name || "去朦胧预览" }}</div><div class="mt-0.5 text-[11px] text-slate-400">{{ imageSize || "选择照片后生成参数化预览" }}</div></div>
+            <div class="min-w-0"><div class="truncate text-sm font-semibold">{{ currentFile?.name || "去朦胧预览" }}</div><div class="mt-0.5 text-[11px] text-slate-400 dark:text-zinc-200">{{ imageSize || "选择照片后生成参数化预览" }}</div></div>
             <div class="flex shrink-0 items-center gap-2">
               <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="预览模式">
-                <button type="button" @click="previewMode = 'original'" :aria-pressed="previewMode === 'original'" title="仅原图" aria-label="仅原图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'original' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><ImageIcon class="h-3.5 w-3.5" /></button>
-                <button type="button" @click="previewMode = 'compare'" :aria-pressed="previewMode === 'compare'" title="原图/效果图对比" aria-label="原图/效果图对比" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'compare' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
-                <button type="button" @click="previewMode = 'enhanced'" :aria-pressed="previewMode === 'enhanced'" title="仅效果图" aria-label="仅效果图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'enhanced' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Sparkles class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="previewMode = 'original'" :aria-pressed="previewMode === 'original'" title="仅原图" aria-label="仅原图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'original' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-200 dark:hover:bg-zinc-700'"><ImageIcon class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="previewMode = 'compare'" :aria-pressed="previewMode === 'compare'" title="原图/效果图对比" aria-label="原图/效果图对比" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'compare' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-200 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+                <button type="button" @click="previewMode = 'enhanced'" :aria-pressed="previewMode === 'enhanced'" title="仅效果图" aria-label="仅效果图" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="previewMode === 'enhanced' ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-200 dark:hover:bg-zinc-700'"><Sparkles class="h-3.5 w-3.5" /></button>
               </div>
               <div class="flex shrink-0 items-center gap-1 rounded-lg bg-slate-50 p-1 dark:bg-zinc-800">
                 <button @click="zoomBy(-0.25)" :disabled="!canZoom || zoom <= 1.001" title="缩小" aria-label="缩小" class="rounded p-1.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-zinc-700"><Minus class="h-3.5 w-3.5" /></button>
@@ -1093,7 +1095,7 @@ onBeforeUnmount(() => {
                 <FolderOpen class="h-3.5 w-3.5 shrink-0" />{{ revealMenuLabel }}
               </button>
             </div>
-            <div v-if="!previewImageUrl" class="text-center text-slate-400"><Images class="mx-auto mb-3 h-10 w-10" /><p class="text-sm">选择照片开始预览</p></div>
+            <div v-if="!previewImageUrl" class="text-center text-slate-400 dark:text-zinc-200"><Images class="mx-auto mb-3 h-10 w-10" /><p class="text-sm">选择照片开始预览</p></div>
             <div v-if="previewLoading && !hasCurrentPreview" class="absolute inset-0 flex items-center justify-center bg-white/45 backdrop-blur-[1px] dark:bg-black/35"><LoaderCircle class="h-7 w-7 animate-spin text-blue-600" /></div>
           </div>
           <div v-if="previewError" class="flex items-center gap-2 border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs text-rose-600 dark:border-rose-950 dark:bg-rose-950/30 dark:text-rose-300"><AlertCircle class="h-4 w-4" />{{ previewError }}</div>
@@ -1103,8 +1105,8 @@ onBeforeUnmount(() => {
           <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-zinc-800">
             <h2 class="text-xs font-semibold">照片列表</h2>
             <div class="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-zinc-700 dark:bg-zinc-800" role="group" aria-label="照片列表布局">
-              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
-              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-400 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'vertical'" :aria-pressed="isPhotoListLayout('vertical')" title="竖向列表" aria-label="竖向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('vertical') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-200 dark:hover:bg-zinc-700'"><Rows2 class="h-3.5 w-3.5" /></button>
+              <button type="button" @click="photoListLayout = 'horizontal'" :aria-pressed="isPhotoListLayout('horizontal')" title="横向列表" aria-label="横向列表" class="flex h-7 w-7 items-center justify-center rounded-md p-1.5 transition" :class="isPhotoListLayout('horizontal') ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500' : 'text-slate-500 hover:bg-white dark:text-zinc-200 dark:hover:bg-zinc-700'"><Columns2 class="h-3.5 w-3.5" /></button>
             </div>
           </div>
           <div class="photo-grid overflow-x-auto overflow-y-hidden p-2">
@@ -1113,7 +1115,7 @@ onBeforeUnmount(() => {
               class="photo-card min-w-0 shrink-0 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
               :class="selectedId === file.photo_id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'hover:bg-slate-50 dark:hover:bg-zinc-800'">
               <span class="relative mb-1.5 block h-20 w-full overflow-hidden rounded-lg bg-slate-100 dark:bg-zinc-800">
-                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-500">
+                <span v-if="thumbnailState(file.photo_id) !== 'loaded'" class="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-zinc-200">
                   <ImageIcon class="h-6 w-6" />
                 </span>
                 <img v-if="thumbnailUrl(file)" :src="thumbnailUrl(file)" :alt="file.name" loading="lazy" decoding="async"
@@ -1122,56 +1124,61 @@ onBeforeUnmount(() => {
                   @load="setThumbnailState(file.photo_id, 'loaded')" @error="setThumbnailState(file.photo_id, 'error')" />
               </span>
               <span class="block truncate" :title="file.name">{{ compactFileName(file.name) }}</span>
-              <span v-if="photoChangeSummary(file.photo_id)" class="mt-0.5 block truncate text-[10px] text-slate-500 dark:text-zinc-400">{{ photoChangeSummary(file.photo_id) }}</span>
+              <span v-if="photoChangeSummary(file.photo_id)" class="mt-0.5 block truncate text-[10px] text-slate-500 dark:text-zinc-200">{{ photoChangeSummary(file.photo_id) }}</span>
             </button>
           </div>
         </section>
       </main>
 
-      <aside class="enhance-right-column space-y-4">
-        <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-semibold">基础参数</h2><button type="button" @click="basicByPhoto[selectedId] = { ...basicDefaults }" :disabled="!selectedId" class="text-xs text-slate-500 hover:text-blue-600 disabled:opacity-40">重置</button></div>
-          <p class="mb-3 text-[11px] text-slate-500">调整后自动保存到 XMP。去朦胧会转换为 Camera Raw 可编辑的近似曲线，局部效果可能有差异。</p>
-          <label v-for="item in basicControls" :key="item.key" class="mb-3 block text-[11px]">
-            <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-500">{{ basicParams[item.key] > 0 ? '+' : '' }}{{ basicParams[item.key] }}</span></span>
-            <input v-model.number="basicParams[item.key]" class="app-range mt-1 w-full" :style="rangeChangeStyle(basicParams[item.key], item.min, item.max, 0)" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" @pointerdown="beginSliderInteraction" @input="showParameterEffect" />
+      <aside class="enhance-right-column adjustment-sidebar space-y-3">
+        <RgbHistogram :src="previewImageUrl" :session-id="sessionId" :photo-id="selectedId" />
+        <AdjustmentPanel title="基础参数">
+          <template #actions>
+            <button type="button" @click="basicByPhoto[selectedId] = { ...basicDefaults }" :disabled="!selectedId" class="rounded px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 hover:text-blue-600 disabled:opacity-40 dark:hover:bg-zinc-800 dark:text-zinc-200">重置</button>
+          </template>
+          <p class="mb-2 text-[11px] leading-4 text-slate-500 dark:text-zinc-200">调整后自动保存到 XMP。去朦胧会转换为 Camera Raw 可编辑的近似曲线，局部效果可能有差异。</p>
+          <label v-for="item in basicControls" :key="item.key" class="mb-1 block text-[11px] leading-4">
+            <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-500 dark:text-zinc-200">{{ basicParams[item.key] > 0 ? '+' : '' }}{{ basicParams[item.key] }}</span></span>
+            <input v-model.number="basicParams[item.key]" class="app-range mt-0.5 block w-full" :style="rangeChangeStyle(basicParams[item.key], item.min, item.max, 0)" type="range" :min="item.min" :max="item.max" :step="item.step" :disabled="!selectedId" :aria-label="item.label" @pointerdown="beginSliderInteraction" @input="showParameterEffect" />
           </label>
-        </section>
-        <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div class="mb-4 flex items-center justify-between"><div class="flex items-center gap-2"><SlidersHorizontal class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">去朦胧参数</h2></div><button type="button" @click="resetParams" :disabled="!selectedId" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button></div>
+        </AdjustmentPanel>
+        <AdjustmentPanel title="去朦胧参数">
+          <template #actions>
+            <button type="button" @click="resetParams" :disabled="!selectedId" title="重置当前照片参数" aria-label="重置当前照片参数" class="rounded p-1.5 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-zinc-800"><RotateCcw class="h-3.5 w-3.5" /></button>
+          </template>
           <div v-if="selectedId">
-            <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-400">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
+            <p class="mb-3 text-[11px] text-slate-500 dark:text-zinc-200">参数作用于当前照片：{{ currentFile?.name || "尚未选择照片" }}</p>
             <div class="mb-3 rounded-xl border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/70 dark:bg-amber-950/20">
               <h3 class="mb-2 text-xs font-semibold text-slate-800 dark:text-zinc-200">实验去朦胧</h3>
               <div class="grid grid-cols-3 gap-1 rounded-lg bg-white p-1 dark:bg-zinc-900">
-                <button v-for="item in nonlocalModes" :key="item.value" type="button" :aria-pressed="dehazeNonlocalMode === item.value" :disabled="!selectedId" @click="dehazeNonlocalMode = item.value" class="rounded-md px-2 py-1.5 text-[11px] font-medium transition" :class="dehazeNonlocalMode === item.value ? 'bg-amber-500 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 dark:text-zinc-400 dark:hover:bg-zinc-800'">{{ item.label }}</button>
+                <button v-for="item in nonlocalModes" :key="item.value" type="button" :aria-pressed="dehazeNonlocalMode === item.value" :disabled="!selectedId" @click="dehazeNonlocalMode = item.value" class="rounded-md px-2 py-1.5 text-[11px] font-medium transition" :class="dehazeNonlocalMode === item.value ? 'bg-amber-500 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 dark:text-zinc-200 dark:hover:bg-zinc-800'">{{ item.label }}</button>
               </div>
-              <p v-if="nonlocalRenderStatusText" class="mt-2 text-[10px] leading-4 text-slate-600 dark:text-zinc-300" role="status">{{ nonlocalRenderStatusText }}</p>
-              <p class="mt-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">实验模式会开启自动处理</p>
+              <p v-if="nonlocalRenderStatusText" class="mt-2 text-[10px] leading-4 text-slate-600 dark:text-zinc-200" role="status">{{ nonlocalRenderStatusText }}</p>
+              <p class="mt-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-200">实验模式会开启自动处理</p>
             </div>
             <label class="mb-3 flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2.5 text-xs dark:border-zinc-700">
               <span class="font-medium">自动处理</span>
               <input v-model="dehazeAutoMode" type="checkbox" class="h-4 w-4 accent-blue-600" />
             </label>
-            <p v-if="dehazeAutoMode" class="mb-3 text-[11px] leading-5 text-slate-500 dark:text-zinc-400">自动分析照片并调整去朦胧效果。关闭后可手动微调高级参数。</p>
+            <p v-if="dehazeAutoMode" class="mb-3 text-[11px] leading-5 text-slate-500 dark:text-zinc-200">自动分析照片并调整去朦胧效果。关闭后可手动微调高级参数。</p>
             <div class="mb-3 rounded-xl border border-slate-200 px-3 py-2.5 dark:border-zinc-700">
               <label class="flex items-center justify-between text-xs">
                 <span class="font-medium">自动曝光</span>
                 <input v-model="dehazeAutoExposure" type="checkbox" class="h-4 w-4 accent-blue-600" />
               </label>
-              <p class="mt-1.5 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">统一提高整张照片曝光，高光余量不足时限制增益</p>
-              <p v-if="autoExposureStatusText" class="mt-1.5 text-[10px] leading-4 text-slate-700 dark:text-zinc-300" role="status">{{ autoExposureStatusText }}</p>
+              <p class="mt-1.5 text-[10px] leading-4 text-slate-500 dark:text-zinc-200">统一提高整张照片曝光，高光余量不足时限制增益</p>
+              <p v-if="autoExposureStatusText" class="mt-1.5 text-[10px] leading-4 text-slate-700 dark:text-zinc-200" role="status">{{ autoExposureStatusText }}</p>
             </div>
             <label class="block text-xs"><span class="flex justify-between"><span>去朦胧强度</span><span class="font-mono text-blue-600">{{ Math.round(params.strength * 100) }}</span></span><input v-model.number="params.strength" class="app-range mt-2 w-full" :style="{ '--range-progress': `${params.strength * 100}%` }" type="range" min="0" max="1" step="0.01" @pointerdown="beginSliderInteraction" /></label>
             <template v-if="!dehazeAutoMode">
               <button type="button" @click="advancedOpen = !advancedOpen" :aria-expanded="advancedOpen" class="mt-4 flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-medium dark:border-zinc-800">高级参数<ChevronDown class="h-3.5 w-3.5 transition" :class="advancedOpen ? 'rotate-180' : ''" /></button>
               <div v-if="advancedOpen" class="mt-3 space-y-3">
                 <label v-for="item in advancedParameters" :key="item.key" class="block text-[11px]">
-                  <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400">{{ Math.round(params[item.key] * 100) }}</span></span>
-                  <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{{ item.description }}</span>
+                  <span class="flex justify-between"><span>{{ item.label }}</span><span class="font-mono text-slate-400 dark:text-zinc-200">{{ Math.round(params[item.key] * 100) }}</span></span>
+                  <span v-if="item.description" class="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-200">{{ item.description }}</span>
                   <input v-model.number="params[item.key]" class="app-range mt-1 w-full" :style="{ '--range-progress': `${params[item.key] * 100}%` }" type="range" min="0" max="1" step="0.01" @pointerdown="beginSliderInteraction" />
                 </label>
-                <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-blue-400">
+                <button type="button" @click="advancedOpen = false" class="flex w-full items-center justify-center gap-1.5 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-500 transition hover:text-blue-600 dark:border-zinc-800 dark:text-zinc-200 dark:hover:text-blue-400">
                   收起高级参数 <ChevronUp class="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -1180,17 +1187,21 @@ onBeforeUnmount(() => {
               同步到全部照片（{{ files.length }}）
             </button>
           </div>
-          <p v-else class="text-[11px] leading-5 text-slate-500 dark:text-zinc-400">载入照片后可调整去朦胧参数。</p>
-        </section>
+          <p v-else class="text-[11px] leading-5 text-slate-500 dark:text-zinc-200">载入照片后可调整去朦胧参数。</p>
+        </AdjustmentPanel>
 
         <p v-if="autoSaveError" class="text-[11px] text-rose-600">{{ autoSaveError }}</p>
-        <div v-if="actionMessage" class="flex items-start gap-2 px-1 text-[11px] text-slate-500"><CheckCircle2 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />{{ actionMessage }}</div>
+        <div v-if="actionMessage" class="flex items-start gap-2 px-1 text-[11px] text-slate-500 dark:text-zinc-200"><CheckCircle2 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />{{ actionMessage }}</div>
       </aside>
     </div>
   </div>
 </template>
 
 <style scoped>
+:global(.dark) .editor-page button {
+  color: #fff;
+}
+
 .enhance-scroll {
   overflow: hidden;
 }
@@ -1229,10 +1240,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 1 1 0%;
   flex-direction: column;
-}
-
-.enhance-right-column {
-  overflow-y: auto;
 }
 
 .photo-grid {
