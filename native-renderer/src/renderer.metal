@@ -842,3 +842,69 @@ kernel void render_camera_profile(device const ushort *source [[buffer(0)]],
     destination[at + 1] = profile_quantize_rgb8(projected_g);
     destination[at + 2] = profile_quantize_rgb8(projected_b);
 }
+
+kernel void render_camera_profile_transfer(device const ushort *camera [[buffer(0)]],
+                                            device const ushort *reference [[buffer(1)]],
+                                            device const ushort *processed [[buffer(2)]],
+                                            constant float *inverse_matrix [[buffer(3)]],
+                                            device ushort *destination [[buffer(4)]],
+                                            constant uint &pixel_count [[buffer(5)]],
+                                            uint pixel [[thread_position_in_grid]]) {
+#pragma clang fp contract(off)
+#pragma clang fp reassociate(off)
+    if (pixel >= pixel_count) return;
+    uint at = pixel * 3;
+    float pr = float(processed[at]);
+    float pg = float(processed[at + 1]);
+    float pb = float(processed[at + 2]);
+    float rr = float(reference[at]);
+    float rg = float(reference[at + 1]);
+    float rb = float(reference[at + 2]);
+
+    float processed_r = pr * 0.2126f;
+    float processed_g = pg * 0.7152f;
+    float processed_b = pb * 0.0722f;
+    float processed_rg = processed_r + processed_g;
+    float processed_luma = max(processed_rg + processed_b, 0.0f);
+    float reference_r = rr * 0.2126f;
+    float reference_g = rg * 0.7152f;
+    float reference_b = rb * 0.0722f;
+    float reference_rg = reference_r + reference_g;
+    float reference_luma = max(reference_rg + reference_b, 0.0f);
+    float ratio = processed_luma / max(reference_luma, 1.0f);
+    float residual_r = pr - rr * ratio;
+    float residual_g = pg - rg * ratio;
+    float residual_b = pb - rb * ratio;
+    if (reference_luma < 1.0f) {
+        residual_r = 0.0f;
+        residual_g = 0.0f;
+        residual_b = 0.0f;
+        ratio = 0.0f;
+    }
+
+    float camera_r = float(camera[at]) * ratio;
+    float camera_g = float(camera[at + 1]) * ratio;
+    float camera_b = float(camera[at + 2]) * ratio;
+    float transformed_r0 = residual_r * inverse_matrix[0];
+    float transformed_r1 = residual_g * inverse_matrix[3];
+    float transformed_r2 = residual_b * inverse_matrix[6];
+    float transformed_r01 = transformed_r0 + transformed_r1;
+    float transformed_r = transformed_r01 + transformed_r2;
+    float transformed_g0 = residual_r * inverse_matrix[1];
+    float transformed_g1 = residual_g * inverse_matrix[4];
+    float transformed_g2 = residual_b * inverse_matrix[7];
+    float transformed_g01 = transformed_g0 + transformed_g1;
+    float transformed_g = transformed_g01 + transformed_g2;
+    float transformed_b0 = residual_r * inverse_matrix[2];
+    float transformed_b1 = residual_g * inverse_matrix[5];
+    float transformed_b2 = residual_b * inverse_matrix[8];
+    float transformed_b01 = transformed_b0 + transformed_b1;
+    float transformed_b = transformed_b01 + transformed_b2;
+
+    float output_r = camera_r + transformed_r;
+    float output_g = camera_g + transformed_g;
+    float output_b = camera_b + transformed_b;
+    destination[at] = ushort(clamp(rint(output_r), 0.0f, 65535.0f));
+    destination[at + 1] = ushort(clamp(rint(output_g), 0.0f, 65535.0f));
+    destination[at + 2] = ushort(clamp(rint(output_b), 0.0f, 65535.0f));
+}

@@ -45,6 +45,7 @@ STANDARD_SUFFIXES = {
 SUPPORTED_SUFFIXES = RAW_SUFFIXES | STANDARD_SUFFIXES
 OUTPUT_DIR_NAME = "去朦胧输出"
 _PROFILE_DNG_CACHE_LIMIT = 32
+_PROFILE_DNG_METADATA_BATCH_SIZE = 32
 _profile_dng_cache: OrderedDict[tuple[Any, ...], Path | None] = OrderedDict()
 _profile_dng_cache_lock = threading.Lock()
 
@@ -1268,6 +1269,91 @@ def _profile_dng_cache_snapshot(
     return candidates, key
 
 
+def _profile_dng_source_file_key(value: Any) -> str | None:
+    """Normalize ExifTool's SourceFile field for explicit candidate mapping."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return str(Path(value).expanduser().absolute())
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _read_profile_dng_metadata_batches(
+    executable: str,
+    candidates: list[Path],
+) -> tuple[dict[Path, dict[str, Any]], bool]:
+    """Read candidate identity/profile tags in bounded calls with strict mapping."""
+    metadata_by_candidate: dict[Path, dict[str, Any]] = {}
+    cacheable = True
+    for offset in range(0, len(candidates), _PROFILE_DNG_METADATA_BATCH_SIZE):
+        batch = candidates[offset:offset + _PROFILE_DNG_METADATA_BATCH_SIZE]
+        expected_by_source: dict[str, Path] = {}
+        duplicate_expected_source = False
+        for candidate in batch:
+            source_file = str(candidate.expanduser().absolute())
+            source_key = _profile_dng_source_file_key(source_file)
+            if source_key is None or source_key in expected_by_source:
+                duplicate_expected_source = True
+                break
+            expected_by_source[source_key] = candidate
+        if duplicate_expected_source:
+            cacheable = False
+            continue
+
+        try:
+            details = subprocess.run(
+                [
+                    executable, "-json", "-n", "-Make", "-Model", "-ProfileName",
+                    "-ProfileEmbedPolicy", *expected_by_source.keys(),
+                ],
+                check=True, capture_output=True, text=True, timeout=10,
+            )
+            records = json.loads(details.stdout)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, UnicodeError):
+            cacheable = False
+            continue
+
+        # ExifTool must return exactly one well-formed record for each file.
+        # Reject the entire batch on missing, duplicate, or unexpected paths so
+        # a malformed response can neither select the wrong DNG nor be cached.
+        if not isinstance(records, list) or len(records) != len(expected_by_source):
+            cacheable = False
+            continue
+        records_by_source: dict[str, dict[str, Any]] = {}
+        valid_batch = True
+        for record in records:
+            if not isinstance(record, dict):
+                valid_batch = False
+                break
+            source_key = _profile_dng_source_file_key(record.get("SourceFile"))
+            if (
+                source_key is None or source_key not in expected_by_source
+                or source_key in records_by_source
+            ):
+                valid_batch = False
+                break
+            records_by_source[source_key] = record
+        if not valid_batch or records_by_source.keys() != expected_by_source.keys():
+            cacheable = False
+            continue
+        for source_key, record in records_by_source.items():
+            if "Error" in record:
+                cacheable = False
+                continue
+            if any(
+                tag not in record or _metadata_candidate(record.get(tag)) is None
+                for tag in ("Make", "Model", "ProfileName", "ProfileEmbedPolicy")
+            ):
+                # A valid file can lack an optional profile tag. Keep its
+                # SourceFile mapping so it is safely skipped, but do not cache
+                # a negative lookup based on an incomplete metadata record.
+                cacheable = False
+            metadata_by_candidate[expected_by_source[source_key]] = record
+
+    return metadata_by_candidate, cacheable
+
+
 _PROFILE_DNG_CACHE_MISS = object()
 
 
@@ -1299,6 +1385,29 @@ def matching_embedded_profile_dng(
                 _profile_dng_cache.move_to_end(cache_key)
                 return cached
 
+    if candidates == []:
+        if cache_key is not None:
+            with _profile_dng_cache_lock:
+                _profile_dng_cache[cache_key] = None
+                _profile_dng_cache.move_to_end(cache_key)
+                while len(_profile_dng_cache) > _PROFILE_DNG_CACHE_LIMIT:
+                    _profile_dng_cache.popitem(last=False)
+        return None
+
+    if candidates is None:
+        try:
+            candidates = sorted(
+                (
+                    path for path in source.parent.iterdir()
+                    if path.is_file() and path.suffix.lower() == ".dng"
+                ),
+                key=lambda path: path.name,
+            )
+        except OSError:
+            return None
+        if not candidates:
+            return None
+
     cacheable = True
     match: Path | None = None
     try:
@@ -1313,35 +1422,22 @@ def matching_embedded_profile_dng(
                 [executable, "-b", "-Nikon:ContrastCurve", str(source)],
                 check=True, capture_output=True, timeout=10,
             ).stdout
-            if candidates is None:
-                candidates = sorted(
-                    (
-                        path for path in source.parent.iterdir()
-                        if path.is_file() and path.suffix.lower() == ".dng"
-                    ),
-                    key=lambda path: path.name,
-                )
+            metadata_by_candidate, metadata_cacheable = _read_profile_dng_metadata_batches(
+                executable, candidates,
+            )
+            cacheable = cacheable and metadata_cacheable
             for candidate in candidates:
+                record = metadata_by_candidate.get(candidate)
+                if record is None:
+                    continue
+                if (
+                    _metadata_candidate(record.get("Make")) != make
+                    or _metadata_candidate(record.get("Model")) != model
+                    or _metadata_candidate(record.get("ProfileName")) != selected
+                    or str(record.get("ProfileEmbedPolicy")) != "0"
+                ):
+                    continue
                 try:
-                    details = subprocess.run(
-                        [executable, "-json", "-n", "-Make", "-Model", "-ProfileName", "-ProfileEmbedPolicy", str(candidate)],
-                        check=True, capture_output=True, text=True, timeout=10,
-                    )
-                    records = json.loads(details.stdout)
-                    if (
-                        not isinstance(records, list) or not records
-                        or not isinstance(records[0], dict)
-                    ):
-                        cacheable = False
-                        continue
-                    record = records[0]
-                    if (
-                        _metadata_candidate(record.get("Make")) != make
-                        or _metadata_candidate(record.get("Model")) != model
-                        or _metadata_candidate(record.get("ProfileName")) != selected
-                        or str(record.get("ProfileEmbedPolicy")) != "0"
-                    ):
-                        continue
                     candidate_control = subprocess.run(
                         [executable, "-b", "-Nikon:PictureControlData", str(candidate)],
                         check=True, capture_output=True, timeout=10,

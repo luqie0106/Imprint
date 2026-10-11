@@ -56,6 +56,120 @@ def _check(status, name):
         raise NativeRendererError(f"C++ {name} rejected input or failed (status {status})")
 
 
+def _integer_rgb_source(image, dtype, label):
+    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError(f"{label} source must have shape HxWx3")
+    if image.dtype != dtype:
+        raise TypeError(f"{label} source must use {np.dtype(dtype).name}")
+    h, w = image.shape[:2]
+    if not h or not w or h > 65535 or w > 65535 or image.size > (1 << 29):
+        raise ValueError(f"invalid {label} dimensions")
+    return np.ascontiguousarray(image), w, h
+
+
+def rgb8_to_linear_float(source):
+    """Normalize interleaved linear RGB8 into caller-owned float32 storage."""
+    image, w, h = _integer_rgb_source(source, np.uint8, "RGB8")
+    u8 = ct.POINTER(ct.c_uint8)
+    fn = _function("im_native_rgb8_to_linear_float", [ct.c_uint32, ct.c_uint32,
+        u8, ct.c_size_t, _F, ct.c_size_t])
+    output = np.empty(image.shape, dtype=np.float32)
+    _check(fn(w, h, image.ctypes.data_as(u8), image.size,
+              _pointer(output), output.size), "RGB8 normalization")
+    return output
+
+
+def rgb16_to_linear_float(source):
+    """Normalize interleaved linear RGB16 into caller-owned float32 storage."""
+    image, w, h = _integer_rgb_source(source, np.uint16, "RGB16")
+    u16 = ct.POINTER(ct.c_uint16)
+    fn = _function("im_native_rgb16_to_linear_float", [ct.c_uint32, ct.c_uint32,
+        u16, ct.c_size_t, _F, ct.c_size_t])
+    output = np.empty(image.shape, dtype=np.float32)
+    _check(fn(w, h, image.ctypes.data_as(u16), image.size,
+              _pointer(output), output.size), "RGB16 normalization")
+    return output
+
+
+def _validate_destination(destination, shape, dtype, label):
+    if not isinstance(destination, np.ndarray):
+        raise TypeError(f"{label} destination must be a NumPy array")
+    if destination.dtype != np.dtype(dtype):
+        raise TypeError(f"{label} destination must use {np.dtype(dtype).name}")
+    if destination.shape != tuple(shape):
+        raise ValueError(f"{label} destination shape mismatch")
+    if not destination.flags.c_contiguous:
+        raise ValueError(f"{label} destination must be C-contiguous")
+    if not destination.flags.writeable:
+        raise ValueError(f"{label} destination must be writable")
+    return destination
+
+
+def linear_float_to_rgb16(source, destination=None):
+    """Quantize finite float32 linear RGB to RGB16 with ties-to-even rounding."""
+    image, w, h = _source(source)
+    output = (np.empty(image.shape, dtype=np.uint16) if destination is None else
+              _validate_destination(destination, image.shape, np.uint16, "RGB16 quantization"))
+    u16 = ct.POINTER(ct.c_uint16)
+    fn = _function("im_native_linear_float_to_rgb16", [ct.c_uint32, ct.c_uint32,
+        _F, ct.c_size_t, u16, ct.c_size_t])
+    _check(fn(w, h, _pointer(image), image.size,
+              output.ctypes.data_as(u16), output.size), "RGB16 quantization")
+    return output
+
+
+def expand_rgb8_to_rgb16(source):
+    """Expand RGB8 samples with the exact integer mapping value*257."""
+    image, w, h = _integer_rgb_source(source, np.uint8, "RGB8")
+    u8 = ct.POINTER(ct.c_uint8)
+    u16 = ct.POINTER(ct.c_uint16)
+    fn = _function("im_native_expand_rgb8_to_rgb16", [ct.c_uint32, ct.c_uint32,
+        u8, ct.c_size_t, u16, ct.c_size_t])
+    output = np.empty(image.shape, dtype=np.uint16)
+    _check(fn(w, h, image.ctypes.data_as(u8), image.size,
+              output.ctypes.data_as(u16), output.size), "RGB8 expansion")
+    return output
+
+
+def compact_rgb16_to_rgb8(source):
+    """Compact RGB16 samples with integer (value+128)//257 rounding."""
+    image, w, h = _integer_rgb_source(source, np.uint16, "RGB16")
+    u16 = ct.POINTER(ct.c_uint16)
+    u8 = ct.POINTER(ct.c_uint8)
+    fn = _function("im_native_compact_rgb16_to_rgb8", [ct.c_uint32, ct.c_uint32,
+        u16, ct.c_size_t, u8, ct.c_size_t])
+    output = np.empty(image.shape, dtype=np.uint8)
+    _check(fn(w, h, image.ctypes.data_as(u16), image.size,
+              output.ctypes.data_as(u8), output.size), "RGB16 compaction")
+    return output
+
+
+def float_range_valid(source, minimum=0.0, maximum=1.0):
+    """Check a float32 array's finite inclusive range in one native scan."""
+    if not isinstance(source, np.ndarray):
+        raise ValueError("range source must be a NumPy array")
+    if source.dtype != np.float32:
+        raise TypeError("range source must use float32")
+    if source.size == 0 or source.size > (1 << 29):
+        raise ValueError("invalid range source size")
+    try:
+        low = float(minimum)
+        high = float(maximum)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("range bounds must be finite numbers") from exc
+    if not np.isfinite(low) or not np.isfinite(high) or low > high:
+        raise ValueError("range bounds must be finite and ordered")
+    with np.errstate(over="ignore", invalid="ignore"):
+        low32 = np.float32(low)
+        high32 = np.float32(high)
+    if not np.isfinite(low32) or not np.isfinite(high32):
+        raise ValueError("range bounds must fit float32")
+
+    image = np.ascontiguousarray(source)
+    fn = _function("im_native_float_range_valid", [_F, ct.c_size_t, ct.c_float, ct.c_float])
+    return bool(fn(_pointer(image), image.size, float(low32), float(high32)))
+
+
 def physical_pixels(source, transmission, atmosphere, params):
     image, w, h = _source(source)
     t = np.ascontiguousarray(transmission, dtype=np.float32)
@@ -134,7 +248,7 @@ def _lens_interpolation_mode(optimized: bool, ipp_enabled: bool) -> int:
     raise NativeRendererError("Unsupported OpenCV lens interpolation semantics")
 
 
-def lens_remap(source, maps):
+def lens_remap(source, maps, destination=None):
     if not isinstance(source, np.ndarray) or source.dtype != np.uint16 or source.ndim != 3 or source.shape[2] != 3:
         raise ValueError("lens source must be RGB uint16")
     image = np.ascontiguousarray(source)
@@ -148,10 +262,12 @@ def lens_remap(source, maps):
         raise ValueError("lens map must have shape strip_height x width x [3 x] 2")
     if not 0 < coordinates.shape[0] <= h or not 0 < w < 32767 or not 0 < h < 32767 or image.size > (1 << 29):
         raise ValueError("invalid lens dimensions")
+    output_shape = (coordinates.shape[0], w, 3)
+    out = (np.empty(output_shape, dtype=np.uint16) if destination is None else
+           _validate_destination(destination, output_shape, np.uint16, "lens remap"))
     u16 = ct.POINTER(ct.c_uint16)
     fn = _function("im_native_lens_remap_rgb16", [ct.c_uint32, ct.c_uint32, u16, ct.c_size_t,
                    _F, ct.c_size_t, ct.c_uint32, ct.c_uint32, u16, ct.c_size_t, ct.c_uint32])
-    out = np.empty((coordinates.shape[0], w, 3), dtype=np.uint16)
     _check(fn(w, h, image.ctypes.data_as(u16), image.size, _pointer(coordinates), coordinates.size,
               coordinates.shape[0], channels, out.ctypes.data_as(u16), out.size,
               _lens_interpolation_mode(cv2.useOptimized(),

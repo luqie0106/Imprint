@@ -850,7 +850,9 @@ struct EditorView: View, Equatable {
             }
             Slider(value: value, in: adjustment.range, step: adjustment.step) { editing in
                 sliderEditing = editing
-                if !editing {
+                if editing {
+                    beginSliderEditing()
+                } else {
                     previewThrottleTask?.cancel()
                     previewThrottleTask = nil
                     previewRefinementTask?.cancel()
@@ -863,6 +865,23 @@ struct EditorView: View, Equatable {
         }
     }
 
+    private func beginSliderEditing() {
+        // Invalidate responses from the previous settled/full-resolution render
+        // once per gesture. Keeping this ID stable lets the leading L2 complete
+        // while later slider values replace only the queued request.
+        previewRequestID = UUID()
+        pendingPreviewLevel = nil
+        pendingPreviewFullResolution = false
+        previewIdleTask?.cancel()
+        previewIdleTask = nil
+        previewIdleRequestID = nil
+        previewThrottleTask?.cancel()
+        previewThrottleTask = nil
+        previewRefinementTask?.cancel()
+        previewRefinementTask = nil
+        sliderPreviewPending = false
+    }
+
     private func loadPresets() async {
         do {
             let result = try await engine.api.json("/api/ricoh/presets")
@@ -872,13 +891,8 @@ struct EditorView: View, Equatable {
     }
 
     private func scheduleSliderPreview() {
-        // Invalidate any response rendered from an older slider value immediately,
-        // while keeping the throttled L2/L1 requests on the existing fast path.
-        previewRequestID = UUID()
         nonlocalRenderStatus = "off"
         nonlocalRenderReason = ""
-        pendingPreviewLevel = nil
-        pendingPreviewFullResolution = false
         sliderPreviewPending = true
         scheduleFullResolutionPreview()
         previewRefinementTask?.cancel()
@@ -895,9 +909,15 @@ struct EditorView: View, Equatable {
         }
 
         guard previewThrottleTask == nil else { return }
+        sliderPreviewPending = false
+        refreshPreview(previewLevel: 2, invalidatingInFlight: false, schedulesFullResolution: false)
+        scheduleNextSliderPreview()
+    }
+
+    private func scheduleNextSliderPreview() {
         previewThrottleTask = Task {
             do {
-                try await Task.sleep(for: .milliseconds(80))
+                try await Task.sleep(for: .milliseconds(16))
             } catch {
                 return
             }
@@ -906,6 +926,7 @@ struct EditorView: View, Equatable {
             guard sliderEditing, sliderPreviewPending else { return }
             sliderPreviewPending = false
             refreshPreview(previewLevel: 2, invalidatingInFlight: false, schedulesFullResolution: false)
+            scheduleNextSliderPreview()
         }
     }
 

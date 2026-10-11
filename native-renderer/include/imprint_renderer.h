@@ -19,6 +19,7 @@ extern "C" {
 #endif
 
 typedef struct im_renderer im_renderer;
+typedef struct im_shared_buffer im_shared_buffer;
 
 typedef enum im_status {
     IM_STATUS_OK = 0,
@@ -130,6 +131,50 @@ IMPRINT_API im_status im_native_dehaze_spatial_run(const uint16_t *rgb16,
 
 /* Renderer-independent CPU dense operators. All RGB float inputs use
    interleaved normalized linear RGB. */
+/* Convert interleaved RGB integer samples to normalized float32 linear RGB.
+   Sample counts must equal width*height*3; source and destination buffers
+   must not overlap. The caller owns both buffers. */
+IMPRINT_API im_status im_native_rgb8_to_linear_float(uint32_t width,
+                                                    uint32_t height,
+                                                    const uint8_t *source,
+                                                    size_t source_samples,
+                                                    float *destination,
+                                                    size_t destination_values);
+IMPRINT_API im_status im_native_rgb16_to_linear_float(uint32_t width,
+                                                     uint32_t height,
+                                                     const uint16_t *source,
+                                                     size_t source_samples,
+                                                     float *destination,
+                                                     size_t destination_values);
+/* Quantize interleaved finite linear float32 RGB using NumPy-compatible
+   float32 multiplication by 65535, ties-to-even rounding, and clipping.
+   Sample counts must equal width*height*3; buffers must not overlap. */
+IMPRINT_API im_status im_native_linear_float_to_rgb16(uint32_t width,
+                                                      uint32_t height,
+                                                      const float *source,
+                                                      size_t source_values,
+                                                      uint16_t *destination,
+                                                      size_t destination_samples);
+/* Expand RGB8 to RGB16 with the exact x*257 mapping, or compact RGB16 to RGB8
+   with integer (x+128)/257 rounding. Sample counts must equal width*height*3. */
+IMPRINT_API im_status im_native_expand_rgb8_to_rgb16(uint32_t width,
+                                                     uint32_t height,
+                                                     const uint8_t *source,
+                                                     size_t source_samples,
+                                                     uint16_t *destination,
+                                                     size_t destination_samples);
+IMPRINT_API im_status im_native_compact_rgb16_to_rgb8(uint32_t width,
+                                                     uint32_t height,
+                                                     const uint16_t *source,
+                                                     size_t source_samples,
+                                                     uint8_t *destination,
+                                                     size_t destination_samples);
+/* Return 1 only when every sample is finite and within the inclusive range.
+   Returns 0 for invalid arguments or for the first invalid sample. */
+IMPRINT_API int im_native_float_range_valid(const float *source,
+                                            size_t source_values,
+                                            float minimum,
+                                            float maximum);
 /* source_values must equal width*height*3. maps interleave absolute source
    (x,y) float coordinates for strip_height*width output pixels, with one
    coordinate pair shared by RGB or three pairs for per-channel correction.
@@ -314,6 +359,49 @@ IMPRINT_API im_status im_renderer_render_camera_profile(
     uint8_t *destination, size_t destination_values);
 IMPRINT_API im_status im_renderer_clear_camera_profile_source(im_renderer *renderer);
 IMPRINT_API int im_renderer_supports_camera_profile_render(const im_renderer *renderer);
+
+/* Dense enhancement transfer in camera space. Source pairs are copied into
+   renderer-owned GPU storage; each render preserves uint16 quantization. */
+IMPRINT_API im_status im_renderer_set_camera_profile_transfer_source(
+    im_renderer *renderer, uint32_t width, uint32_t height,
+    const uint16_t *camera_rgb, const uint16_t *reference_rgb, size_t source_values);
+IMPRINT_API im_status im_renderer_render_camera_profile_transfer(
+    im_renderer *renderer, const uint16_t *processed_rgb, size_t processed_values,
+    const float *inverse_matrix9, size_t inverse_count,
+    uint16_t *destination, size_t destination_values);
+IMPRINT_API int im_renderer_supports_camera_profile_transfer(const im_renderer *renderer);
+
+/* Metal shared-memory owners. byte_count is in bytes, must be nonzero, and
+   is limited to 1 GiB. The owner remains valid after its renderer is destroyed. */
+IMPRINT_API im_status im_renderer_create_shared_buffer(im_renderer *renderer,
+                                                       size_t byte_count,
+                                                       im_shared_buffer **out_buffer);
+IMPRINT_API void *im_shared_buffer_data(const im_shared_buffer *buffer);
+IMPRINT_API size_t im_shared_buffer_size(const im_shared_buffer *buffer);
+IMPRINT_API void im_shared_buffer_destroy(im_shared_buffer *buffer);
+
+/* Transfer RGB16 samples directly between Metal shared buffers. Both owners
+   must be compatible with renderer, have exact source dimensions, and not
+   overlap. inverse_matrix9 must contain nine finite values. */
+IMPRINT_API im_status im_renderer_render_camera_profile_transfer_shared(
+    im_renderer *renderer, const im_shared_buffer *processed,
+    const float *inverse_matrix9, size_t inverse_count,
+    im_shared_buffer *destination);
+
+/* Retain the RGB16 source owner on this renderer until it is replaced or
+   cleared. Its byte size must equal width*height*3*sizeof(uint16_t). */
+IMPRINT_API im_status im_renderer_set_camera_profile_source_shared(
+    im_renderer *renderer, uint32_t width, uint32_t height,
+    const im_shared_buffer *source);
+
+/* Render to the supplied independent shared RGB8 destination owner. Its byte
+   size must equal the retained source's width*height*3 sample count. */
+IMPRINT_API im_status im_renderer_render_camera_profile_shared(
+    im_renderer *renderer, const float *constants22, size_t constants_count,
+    const float *look_table, size_t look_values,
+    uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+    uint32_t look_encoding, const float *tone_curve, size_t tone_values,
+    im_shared_buffer *destination);
 
 /* Same physical float contract, with the shared dark-background guard fused
    into the GPU pass. dark_floor must be finite and within [0, 2]. */

@@ -14,6 +14,7 @@
 namespace {
 
 thread_local std::string g_create_error;
+constexpr uint64_t kMaxSharedBufferBytes = 1ull << 30;
 
 bool valid_dehaze(const im_dehaze_params &p) {
     const float values[] = {p.strength, p.naturalness, p.fog_retention, p.local_contrast,
@@ -167,8 +168,16 @@ struct im_renderer {
     bool has_camera_profile_source = false;
     uint32_t camera_profile_source_width = 0;
     uint32_t camera_profile_source_height = 0;
+    std::shared_ptr<imprint::SharedBuffer> camera_profile_source_shared;
+    bool has_camera_profile_transfer_source = false;
+    uint32_t camera_profile_transfer_width = 0;
+    uint32_t camera_profile_transfer_height = 0;
     mutable std::mutex mutex;
     mutable std::string error;
+};
+
+struct im_shared_buffer {
+    std::shared_ptr<imprint::SharedBuffer> owner;
 };
 
 extern "C" {
@@ -380,6 +389,56 @@ im_status im_renderer_create(im_backend_kind backend, im_renderer **out_renderer
 
 void im_renderer_destroy(im_renderer *renderer) { delete renderer; }
 
+im_status im_renderer_create_shared_buffer(im_renderer *renderer, size_t byte_count,
+                                           im_shared_buffer **out_buffer) {
+    if (!out_buffer) return IM_STATUS_INVALID_ARGUMENT;
+    *out_buffer = nullptr;
+    if (!renderer || byte_count == 0 || static_cast<uint64_t>(byte_count) > kMaxSharedBufferBytes) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->supports_shared_buffers()) {
+            renderer->error = "Metal shared buffers are unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        std::shared_ptr<imprint::SharedBuffer> owner;
+        std::string error;
+        if (!renderer->backend->create_shared_buffer(byte_count, owner, error) || !owner ||
+            owner->size() != byte_count || !owner->data()) {
+            renderer->error = error.empty() ? "Could not allocate a Metal shared buffer" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        auto handle = std::make_unique<im_shared_buffer>();
+        handle->owner = std::move(owner);
+        *out_buffer = handle.release();
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while creating a shared buffer";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while creating a shared buffer";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+void *im_shared_buffer_data(const im_shared_buffer *buffer) {
+    return buffer && buffer->owner ? buffer->owner->data() : nullptr;
+}
+
+size_t im_shared_buffer_size(const im_shared_buffer *buffer) {
+    return buffer && buffer->owner ? buffer->owner->size() : 0;
+}
+
+void im_shared_buffer_destroy(im_shared_buffer *buffer) { delete buffer; }
+
 const char *im_renderer_last_error(const im_renderer *renderer) {
     if (!renderer) return g_create_error.empty() ? "Renderer handle is null" : g_create_error.c_str();
     return renderer->error.c_str();
@@ -495,12 +554,14 @@ im_status im_renderer_set_camera_profile_source(im_renderer *renderer,
                                                           source_values, error)) {
             renderer->has_camera_profile_source = false;
             renderer->camera_profile_source_width = renderer->camera_profile_source_height = 0;
+            renderer->camera_profile_source_shared.reset();
             renderer->error = error.empty() ? "Could not upload camera profile source" : std::move(error);
             return IM_STATUS_RUNTIME_ERROR;
         }
         renderer->has_camera_profile_source = true;
         renderer->camera_profile_source_width = width;
         renderer->camera_profile_source_height = height;
+        renderer->camera_profile_source_shared.reset();
         renderer->error.clear();
         return IM_STATUS_OK;
     } catch (const std::bad_alloc &) {
@@ -604,6 +665,7 @@ im_status im_renderer_clear_camera_profile_source(im_renderer *renderer) {
         }
         renderer->has_camera_profile_source = false;
         renderer->camera_profile_source_width = renderer->camera_profile_source_height = 0;
+        renderer->camera_profile_source_shared.reset();
         renderer->error.clear();
         return IM_STATUS_OK;
     } catch (const std::exception &exception) {
@@ -613,6 +675,337 @@ im_status im_renderer_clear_camera_profile_source(im_renderer *renderer) {
     } catch (...) {
         std::lock_guard<std::mutex> lock(renderer->mutex);
         renderer->error = "Unknown error while clearing camera profile GPU resources";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_set_camera_profile_source_shared(
+    im_renderer *renderer, uint32_t width, uint32_t height,
+    const im_shared_buffer *source) {
+    if (!renderer || !source || !source->owner || !width || !height ||
+        width > 65535 || height > 65535) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    const uint64_t pixels = static_cast<uint64_t>(width) * height;
+    size_t source_bytes = 0;
+    if (pixels > (1ull << 29) / 3 ||
+        !camera_profile_byte_length<uint16_t>(static_cast<size_t>(pixels * 3), &source_bytes) ||
+        source->owner->size() != source_bytes) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->supports_shared_buffers() ||
+            !renderer->backend->supports_camera_profile_render()) {
+            renderer->error = "Shared camera profile sources are unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        if (!renderer->backend->is_shared_buffer_compatible(source->owner.get())) {
+            renderer->error = "Shared camera profile source belongs to another GPU device";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        std::string error;
+        if (!renderer->backend->set_camera_profile_source_shared(width, height,
+                                                                 source->owner, error)) {
+            renderer->has_camera_profile_source = false;
+            renderer->camera_profile_source_width = renderer->camera_profile_source_height = 0;
+            renderer->camera_profile_source_shared.reset();
+            renderer->error = error.empty() ? "Could not retain shared camera profile source" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->has_camera_profile_source = true;
+        renderer->camera_profile_source_width = width;
+        renderer->camera_profile_source_height = height;
+        renderer->camera_profile_source_shared = source->owner;
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while retaining shared camera profile source";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while retaining shared camera profile source";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_render_camera_profile_shared(
+    im_renderer *renderer, const float *constants22, size_t constants_count,
+    const float *look_table, size_t look_values,
+    uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+    uint32_t look_encoding, const float *tone_curve, size_t tone_values,
+    im_shared_buffer *destination) {
+    if (!renderer || !destination || !destination->owner ||
+        !valid_camera_profile_config(constants22, constants_count, look_table, look_values,
+                                     hue_count, saturation_count, value_count, look_encoding,
+                                     tone_curve, tone_values)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t constants_bytes = 0, look_bytes = 0, tone_bytes = 0;
+    if (!camera_profile_byte_length<float>(constants_count, &constants_bytes) ||
+        !camera_profile_byte_length<float>(look_values, &look_bytes) ||
+        !camera_profile_byte_length<float>(tone_values, &tone_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->has_camera_profile_source) {
+            renderer->error = "No camera profile source has been uploaded";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        const uint64_t expected64 = static_cast<uint64_t>(renderer->camera_profile_source_width) *
+                                    renderer->camera_profile_source_height * 3;
+        if (expected64 > (1ull << 29) || destination->owner->size() != expected64) {
+            renderer->error = "Shared camera profile destination size does not match the source";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        if (!renderer->backend->supports_shared_buffers() ||
+            !renderer->backend->supports_camera_profile_render()) {
+            renderer->error = "Shared camera profile rendering is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        if (!renderer->backend->is_shared_buffer_compatible(destination->owner.get())) {
+            renderer->error = "Shared camera profile destination belongs to another GPU device";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        const void *destination_data = destination->owner->data();
+        if (camera_profile_ranges_overlap(destination_data, static_cast<size_t>(expected64),
+                                          constants22, constants_bytes) ||
+            camera_profile_ranges_overlap(destination_data, static_cast<size_t>(expected64),
+                                          look_table, look_bytes) ||
+            camera_profile_ranges_overlap(destination_data, static_cast<size_t>(expected64),
+                                          tone_curve, tone_bytes) ||
+            (renderer->camera_profile_source_shared &&
+             camera_profile_ranges_overlap(destination_data, static_cast<size_t>(expected64),
+                                           renderer->camera_profile_source_shared->data(),
+                                           renderer->camera_profile_source_shared->size()))) {
+            renderer->error = "Shared camera profile destination overlaps an input";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        std::string error;
+        if (!renderer->backend->render_camera_profile_shared(
+                constants22, look_table, look_values, hue_count, saturation_count, value_count,
+                look_encoding, tone_curve, tone_values, destination->owner.get(), error)) {
+            renderer->error = error.empty() ? "Shared camera profile GPU render failed" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while rendering shared camera profile";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while rendering shared camera profile";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+int im_renderer_supports_camera_profile_transfer(const im_renderer *renderer) {
+    return renderer && renderer->backend &&
+                   renderer->backend->supports_camera_profile_transfer() ? 1 : 0;
+}
+
+im_status im_renderer_set_camera_profile_transfer_source(
+    im_renderer *renderer, uint32_t width, uint32_t height,
+    const uint16_t *camera_rgb, const uint16_t *reference_rgb, size_t source_values) {
+    if (!renderer || !camera_rgb || !reference_rgb || !width || !height ||
+        width > 65535 || height > 65535) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    const uint64_t pixels = static_cast<uint64_t>(width) * height;
+    if (pixels > (1ull << 29) / 3 || source_values != pixels * 3) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Camera profile transfer source count does not match its dimensions";
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->supports_camera_profile_transfer()) {
+            renderer->error = "Camera profile enhancement transfer is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        std::string error;
+        if (!renderer->backend->set_camera_profile_transfer_source(
+                width, height, camera_rgb, reference_rgb, source_values, error)) {
+            renderer->has_camera_profile_transfer_source = false;
+            renderer->camera_profile_transfer_width = renderer->camera_profile_transfer_height = 0;
+            renderer->error = error.empty() ? "Could not upload camera profile transfer sources"
+                                            : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->has_camera_profile_transfer_source = true;
+        renderer->camera_profile_transfer_width = width;
+        renderer->camera_profile_transfer_height = height;
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->has_camera_profile_transfer_source = false;
+        renderer->camera_profile_transfer_width = renderer->camera_profile_transfer_height = 0;
+        renderer->error = "Insufficient memory while uploading camera profile transfer sources";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->has_camera_profile_transfer_source = false;
+        renderer->camera_profile_transfer_width = renderer->camera_profile_transfer_height = 0;
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->has_camera_profile_transfer_source = false;
+        renderer->camera_profile_transfer_width = renderer->camera_profile_transfer_height = 0;
+        renderer->error = "Unknown error while uploading camera profile transfer sources";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_render_camera_profile_transfer(
+    im_renderer *renderer, const uint16_t *processed_rgb, size_t processed_values,
+    const float *inverse_matrix9, size_t inverse_count,
+    uint16_t *destination, size_t destination_values) {
+    if (!renderer || !processed_rgb || !inverse_matrix9 || !destination || inverse_count != 9) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t index = 0; index < inverse_count; ++index) {
+        if (!std::isfinite(inverse_matrix9[index]) || std::abs(inverse_matrix9[index]) > 1.0e6f) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    size_t matrix_bytes = 0;
+    if (!camera_profile_byte_length<float>(inverse_count, &matrix_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->has_camera_profile_transfer_source) {
+            renderer->error = "No camera profile transfer sources have been uploaded";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        const uint64_t expected64 = static_cast<uint64_t>(renderer->camera_profile_transfer_width) *
+                                    renderer->camera_profile_transfer_height * 3;
+        if (expected64 > (1ull << 29) || processed_values != expected64 ||
+            destination_values != expected64) {
+            renderer->error = "Camera profile transfer sample count does not match its sources";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        size_t image_bytes = 0;
+        if (!camera_profile_byte_length<uint16_t>(processed_values, &image_bytes) ||
+            camera_profile_ranges_overlap(destination, image_bytes, processed_rgb, image_bytes) ||
+            camera_profile_ranges_overlap(destination, image_bytes, inverse_matrix9, matrix_bytes)) {
+            renderer->error = "Camera profile transfer destination overlaps an input";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        if (!renderer->backend->supports_camera_profile_transfer()) {
+            renderer->error = "Camera profile enhancement transfer is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        std::string error;
+        if (!renderer->backend->render_camera_profile_transfer(
+                processed_rgb, processed_values, inverse_matrix9, inverse_count,
+                destination, destination_values, error)) {
+            renderer->error = error.empty() ? "Camera profile GPU transfer failed" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while transferring camera profile enhancement";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while transferring camera profile enhancement";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_render_camera_profile_transfer_shared(
+    im_renderer *renderer, const im_shared_buffer *processed,
+    const float *inverse_matrix9, size_t inverse_count,
+    im_shared_buffer *destination) {
+    if (!renderer || !processed || !processed->owner || !destination || !destination->owner ||
+        !inverse_matrix9 || inverse_count != 9) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t index = 0; index < inverse_count; ++index) {
+        if (!std::isfinite(inverse_matrix9[index]) || std::abs(inverse_matrix9[index]) > 1.0e6f) {
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    size_t matrix_bytes = 0;
+    if (!camera_profile_byte_length<float>(inverse_count, &matrix_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->has_camera_profile_transfer_source) {
+            renderer->error = "No camera profile transfer sources have been uploaded";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        const uint64_t expected64 = static_cast<uint64_t>(renderer->camera_profile_transfer_width) *
+                                    renderer->camera_profile_transfer_height * 3;
+        size_t expected_bytes = 0;
+        if (expected64 > (1ull << 29) ||
+            !camera_profile_byte_length<uint16_t>(static_cast<size_t>(expected64), &expected_bytes) ||
+            processed->owner->size() != expected_bytes ||
+            destination->owner->size() != expected_bytes) {
+            renderer->error = "Shared camera profile transfer buffer size does not match its sources";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        if (!renderer->backend->supports_camera_profile_transfer()) {
+            renderer->error = "Camera profile enhancement transfer is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        if (!renderer->backend->is_shared_buffer_compatible(processed->owner.get()) ||
+            !renderer->backend->is_shared_buffer_compatible(destination->owner.get())) {
+            renderer->error = "Shared camera profile transfer buffers belong to another GPU device";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        if (camera_profile_ranges_overlap(destination->owner->data(), expected_bytes,
+                                          processed->owner->data(), expected_bytes) ||
+            camera_profile_ranges_overlap(destination->owner->data(), expected_bytes,
+                                          inverse_matrix9, matrix_bytes)) {
+            renderer->error = "Shared camera profile transfer destination overlaps an input";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+        std::string error;
+        if (!renderer->backend->render_camera_profile_transfer_shared(
+                processed->owner.get(), inverse_matrix9, inverse_count,
+                destination->owner.get(), error)) {
+            renderer->error = error.empty() ? "Shared camera profile GPU transfer failed" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while transferring shared camera profile enhancement";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while transferring shared camera profile enhancement";
         return IM_STATUS_RUNTIME_ERROR;
     }
 }

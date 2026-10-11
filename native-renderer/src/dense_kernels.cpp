@@ -273,6 +273,92 @@ uint16_t remap_sample_channel(const uint16_t *source, uint32_t width,
     return static_cast<uint16_t>(std::min<uint32_t>(rounded, 65535u));
 }
 
+template <typename Integer>
+im_status rgb_integer_to_linear_float(uint32_t width, uint32_t height,
+                                      const Integer *source, size_t source_samples,
+                                      float *destination, size_t destination_values,
+                                      float maximum) {
+    size_t pixels = 0, rgb_values = 0;
+    if (!source || !destination || !image_extent(width, height, &pixels, &rgb_values) ||
+        source_samples != rgb_values || destination_values != rgb_values) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t source_bytes = 0, destination_bytes = 0;
+    if (!byte_length<Integer>(source_samples, &source_bytes) ||
+        !byte_length<float>(destination_values, &destination_bytes) ||
+        ranges_overlap(source, source_bytes, destination, destination_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    const bool completed = parallel_for(rgb_values, [&](size_t value) {
+        // Keep the cast and float32 division separate to match NumPy's
+        // `samples.astype(np.float32) / maximum` result exactly.
+        destination[value] = static_cast<float>(source[value]) / maximum;
+    });
+    return completed ? IM_STATUS_OK : IM_STATUS_RUNTIME_ERROR;
+}
+
+uint16_t quantize_linear_float(float value) {
+    if (value <= 0.0f) return 0;
+    if (value >= 1.0f) return 65535;
+
+    // NumPy evaluates image * 65535.0 in float32 before np.rint. Keep this
+    // multiplication in float32, then apply ties-to-even to that exact value.
+    const float scaled = value * 65535.0f;
+    return static_cast<uint16_t>(round_nonnegative_ties_even(
+        static_cast<double>(scaled)));
+}
+
+template <typename Source, typename Destination, typename Transform>
+im_status map_rgb_samples(uint32_t width, uint32_t height,
+                          const Source *source, size_t source_samples,
+                          Destination *destination, size_t destination_samples,
+                          Transform &&transform) {
+    size_t pixels = 0, rgb_values = 0;
+    if (!source || !destination || !image_extent(width, height, &pixels, &rgb_values) ||
+        source_samples != rgb_values || destination_samples != rgb_values) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t source_bytes = 0, destination_bytes = 0;
+    if (!byte_length<Source>(source_samples, &source_bytes) ||
+        !byte_length<Destination>(destination_samples, &destination_bytes) ||
+        ranges_overlap(source, source_bytes, destination, destination_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    const bool completed = parallel_for(rgb_values, [&](size_t value) {
+        destination[value] = transform(source[value]);
+    });
+    return completed ? IM_STATUS_OK : IM_STATUS_RUNTIME_ERROR;
+}
+
+im_status linear_float_to_rgb16(uint32_t width, uint32_t height,
+                                const float *source, size_t source_values,
+                                uint16_t *destination, size_t destination_samples) {
+    size_t pixels = 0, rgb_values = 0;
+    if (!source || !destination || !image_extent(width, height, &pixels, &rgb_values) ||
+        source_values != rgb_values || destination_samples != rgb_values) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t source_bytes = 0, destination_bytes = 0;
+    if (!byte_length<float>(source_values, &source_bytes) ||
+        !byte_length<uint16_t>(destination_samples, &destination_bytes) ||
+        ranges_overlap(source, source_bytes, destination, destination_bytes)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t value = 0; value < rgb_values; ++value) {
+        if (!std::isfinite(source[value])) return IM_STATUS_INVALID_ARGUMENT;
+    }
+
+    const bool completed = parallel_for(rgb_values, [&](size_t value) {
+        destination[value] = quantize_linear_float(source[value]);
+    });
+    return completed ? IM_STATUS_OK : IM_STATUS_RUNTIME_ERROR;
+}
+
 bool finite_rgb(RGB value) {
     return std::isfinite(value.r) && std::isfinite(value.g) && std::isfinite(value.b);
 }
@@ -563,6 +649,82 @@ size_t cube_values(uint32_t edge) {
 }
 
 } // namespace
+
+extern "C" IMPRINT_API im_status im_native_rgb8_to_linear_float(
+    uint32_t width, uint32_t height, const uint8_t *source,
+    size_t source_samples, float *destination, size_t destination_values) {
+    try {
+        return rgb_integer_to_linear_float(width, height, source, source_samples,
+                                           destination, destination_values, 255.0f);
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_rgb16_to_linear_float(
+    uint32_t width, uint32_t height, const uint16_t *source,
+    size_t source_samples, float *destination, size_t destination_values) {
+    try {
+        return rgb_integer_to_linear_float(width, height, source, source_samples,
+                                           destination, destination_values, 65535.0f);
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_linear_float_to_rgb16(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    uint16_t *destination, size_t destination_samples) {
+    try {
+        return linear_float_to_rgb16(width, height, source, source_values,
+                                     destination, destination_samples);
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_expand_rgb8_to_rgb16(
+    uint32_t width, uint32_t height, const uint8_t *source,
+    size_t source_samples, uint16_t *destination, size_t destination_samples) {
+    try {
+        return map_rgb_samples(width, height, source, source_samples, destination,
+                               destination_samples, [](uint8_t sample) {
+                                   return static_cast<uint16_t>(sample * 257u);
+                               });
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API im_status im_native_compact_rgb16_to_rgb8(
+    uint32_t width, uint32_t height, const uint16_t *source,
+    size_t source_samples, uint8_t *destination, size_t destination_samples) {
+    try {
+        return map_rgb_samples(width, height, source, source_samples, destination,
+                               destination_samples, [](uint16_t sample) {
+                                   return static_cast<uint8_t>((
+                                       static_cast<uint32_t>(sample) + 128u) / 257u);
+                               });
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+extern "C" IMPRINT_API int im_native_float_range_valid(
+    const float *source, size_t source_values, float minimum, float maximum) {
+    if (!source || source_values == 0 || source_values > kAbiMaxDenseValues ||
+        !std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum) {
+        return 0;
+    }
+    size_t source_bytes = 0;
+    if (!byte_length<float>(source_values, &source_bytes)) return 0;
+
+    for (size_t value = 0; value < source_values; ++value) {
+        const float sample = source[value];
+        if (!std::isfinite(sample) || sample < minimum || sample > maximum) return 0;
+    }
+    return 1;
+}
 
 extern "C" IMPRINT_API im_status im_native_lens_remap_rgb16(
     uint32_t width, uint32_t height, const uint16_t *source, size_t source_values,

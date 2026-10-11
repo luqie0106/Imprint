@@ -84,6 +84,20 @@ _cached_library: ctypes.CDLL | None = None
 _cached_library_path: str | None = None
 _last_native_physical_backend: str | None = None
 
+
+def _float_range_valid(array: np.ndarray, minimum: float = 0.0,
+                       maximum: float = 1.0) -> bool:
+    """Validate float pixels without allocating three full-image masks."""
+    if array.dtype == np.float32 and array.size:
+        try:
+            from native_dense import float_range_valid as native_valid_float
+
+            return native_valid_float(array, minimum, maximum)
+        except (ImportError, NativeRendererError):
+            pass
+    return bool(np.isfinite(array).all()
+                and not np.any(array < minimum) and not np.any(array > maximum))
+
 # One camera source on the GPU, with no retained Python full-image reference.
 # Preview cache eviction explicitly destroys this renderer and its allocations.
 _camera_profile_gpu_lock = threading.Lock()
@@ -94,9 +108,14 @@ def clear_camera_profile_gpu_cache() -> None:
     global _camera_profile_gpu_state
     with _camera_profile_gpu_lock:
         if _camera_profile_gpu_state is not None:
-            library, renderer, _, _ = _camera_profile_gpu_state
+            library, renderer, *_ = _camera_profile_gpu_state
             _camera_profile_gpu_state = None
             library.im_renderer_destroy(renderer)
+    # Keep lock ordering independent and release the transfer renderer too.
+    clear_camera_profile_transfer_gpu_cache()
+    # Shared arrays own their handles independently of this allocator renderer.
+    from native_shared import clear_shared_allocator_cache
+    clear_shared_allocator_cache()
 
 
 def native_camera_profile(source, matrix, white, gain, look, dims, encoding, tone, projection):
@@ -108,25 +127,43 @@ def native_camera_profile(source, matrix, white, gain, look, dims, encoding, ton
     """
     global _camera_profile_gpu_state
     import weakref
+    from native_shared import allocate_shared_rgb, shared_buffer_owner, shared_memory_eligible
     from native_dense import _camera_profile_arguments
 
     if os.environ.get("IMPRINT_NATIVE_CAMERA_PROFILE") == "0":
         raise NativeRendererError("Camera profile GPU operator is disabled")
     image, width, height, constants, table, (hue, saturation, value), curve = _camera_profile_arguments(
         source, matrix, white, gain, look, dims, encoding, tone, projection)
+    source_owner = (shared_buffer_owner(image) if
+                    shared_memory_eligible(image.shape, np.uint16) else None)
     library, _ = _get_library()
     upload = getattr(library, "im_renderer_set_camera_profile_source", None)
     render = getattr(library, "im_renderer_render_camera_profile", None)
-    if upload is None or render is None:
+    upload_shared = getattr(library, "im_renderer_set_camera_profile_source_shared", None)
+    render_shared = getattr(library, "im_renderer_render_camera_profile_shared", None)
+    if render is None or (upload is None and (source_owner is None or upload_shared is None)):
         raise NativeRendererError("Camera profile GPU ABI is unavailable")
     u16, u8, fp = (ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_uint8),
                    ctypes.POINTER(ctypes.c_float))
-    upload.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, u16, ctypes.c_size_t]
-    upload.restype = ctypes.c_int
+    if upload is not None:
+        upload.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, u16, ctypes.c_size_t]
+        upload.restype = ctypes.c_int
+    if upload_shared is not None:
+        upload_shared.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                                  ctypes.c_void_p]
+        upload_shared.restype = ctypes.c_int
     render.argtypes = [ctypes.c_void_p, fp, ctypes.c_size_t, fp, ctypes.c_size_t,
                       ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
                       fp, ctypes.c_size_t, u8, ctypes.c_size_t]
     render.restype = ctypes.c_int
+    if render_shared is not None:
+        render_shared.argtypes = [
+            ctypes.c_void_p, fp, ctypes.c_size_t, fp, ctypes.c_size_t,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            fp, ctypes.c_size_t, ctypes.c_void_p,
+        ]
+        render_shared.restype = ctypes.c_int
+
     with _camera_profile_gpu_lock:
         if _camera_profile_gpu_state is None:
             renderer, backend = _create_renderer(library)
@@ -134,20 +171,43 @@ def native_camera_profile(source, matrix, white, gain, look, dims, encoding, ton
             if backend not in ("Metal", "D3D12") or not enabled:
                 library.im_renderer_destroy(renderer)
                 raise NativeRendererError("Camera profile GPU backend is unavailable or disabled")
-            _camera_profile_gpu_state = (library, renderer, backend, None)
-        cached_library, renderer, backend, uploaded = _camera_profile_gpu_state
+            _camera_profile_gpu_state = (library, renderer, backend, None, None)
+        cached_library, renderer, backend, uploaded, uploaded_mode = _camera_profile_gpu_state
         if cached_library is not library:
             raise NativeRendererError("Camera profile renderer library changed; clear the GPU cache first")
         try:
-            if image.flags.writeable or uploaded is None or uploaded() is not image:
-                status = upload(renderer, width, height, image.ctypes.data_as(u16), image.size)
+            source_mode = "shared" if source_owner is not None and upload_shared is not None else "copy"
+            if (image.flags.writeable or uploaded is None or uploaded() is not image
+                    or uploaded_mode != source_mode):
+                if source_mode == "shared":
+                    status = upload_shared(renderer, width, height, source_owner.handle)
+                else:
+                    if upload is None:
+                        raise NativeRendererError("Camera profile source upload ABI is unavailable")
+                    status = upload(renderer, width, height, image.ctypes.data_as(u16), image.size)
                 if status != 0:
                     raise NativeRendererError(f"Camera profile upload failed: {_native_error(library, renderer)}")
-                _camera_profile_gpu_state = (library, renderer, backend, weakref.ref(image))
-            output = np.empty(image.shape, dtype=np.uint8)
-            status = render(renderer, constants.ctypes.data_as(fp), constants.size,
-                            table.ctypes.data_as(fp), table.size, hue, saturation, value, int(encoding),
-                            curve.ctypes.data_as(fp), curve.size, output.ctypes.data_as(u8), output.size)
+                _camera_profile_gpu_state = (library, renderer, backend, weakref.ref(image), source_mode)
+            output_owner = None
+            if render_shared is not None and shared_memory_eligible(image.shape, np.uint8):
+                try:
+                    output = allocate_shared_rgb(image.shape, np.uint8)
+                    output_owner = shared_buffer_owner(output)
+                except NativeRendererError:
+                    output = None
+            else:
+                output = None
+            if output_owner is not None:
+                status = render_shared(
+                    renderer, constants.ctypes.data_as(fp), constants.size,
+                    table.ctypes.data_as(fp), table.size, hue, saturation, value, int(encoding),
+                    curve.ctypes.data_as(fp), curve.size, output_owner.handle,
+                )
+            else:
+                output = np.empty(image.shape, dtype=np.uint8)
+                status = render(renderer, constants.ctypes.data_as(fp), constants.size,
+                                table.ctypes.data_as(fp), table.size, hue, saturation, value, int(encoding),
+                                curve.ctypes.data_as(fp), curve.size, output.ctypes.data_as(u8), output.size)
             if status != 0:
                 raise NativeRendererError(f"Camera profile GPU render failed: {_native_error(library, renderer)}")
             return output, backend.lower()
@@ -158,6 +218,166 @@ def native_camera_profile(source, matrix, white, gain, look, dims, encoding, ton
 
 
 atexit.register(clear_camera_profile_gpu_cache)
+
+
+_camera_profile_transfer_gpu_lock = threading.Lock()
+_camera_profile_transfer_gpu_state: tuple | None = None
+
+
+def clear_camera_profile_transfer_gpu_cache() -> None:
+    """Release the transfer renderer and all Metal buffers it owns."""
+    global _camera_profile_transfer_gpu_state
+    with _camera_profile_transfer_gpu_lock:
+        if _camera_profile_transfer_gpu_state is not None:
+            library, renderer, *_ = _camera_profile_transfer_gpu_state
+            _camera_profile_transfer_gpu_state = None
+            library.im_renderer_destroy(renderer)
+
+
+def native_camera_profile_transfer(camera, reference, processed, inverse_matrix):
+    """Run camera-space enhancement transfer on a supported GPU backend.
+
+    Read-only camera/reference arrays are retained by weak identity and reused.
+    Mutable sources are uploaded on every invocation to prevent stale pixels.
+    The returned uint16 array owns its storage; inputs remain alive until the
+    synchronous native call and GPU command have completed.
+    """
+    global _camera_profile_transfer_gpu_state
+    transfer_setting = os.environ.get("IMPRINT_NATIVE_CAMERA_PROFILE_TRANSFER")
+    if transfer_setting == "0" or (sys.platform != "darwin" and transfer_setting != "1"):
+        raise NativeRendererError("Camera profile GPU transfer is disabled")
+    if not isinstance(camera, np.ndarray) or not isinstance(reference, np.ndarray) or \
+            not isinstance(processed, np.ndarray):
+        raise TypeError("Camera profile GPU transfer sources must be NumPy arrays")
+    images = (camera, reference, processed)
+    if any(image.dtype != np.dtype(np.uint16) or image.ndim != 3 or image.shape[2] != 3
+           for image in images):
+        raise ValueError("Camera profile GPU transfer requires uint16 RGB images")
+    if camera.shape != reference.shape or camera.shape != processed.shape:
+        raise ValueError("Camera profile GPU transfer images must have identical shapes")
+    height, width, _ = camera.shape
+    if not height or not width or width > 65535 or height > 65535 or camera.size > _MAX_IMAGE_VALUES:
+        raise ValueError("Camera profile GPU transfer dimensions exceed the ABI limits")
+    inverse = np.asarray(inverse_matrix, dtype=np.float32)
+    if inverse.shape != (3, 3) or not np.isfinite(inverse).all() or np.any(np.abs(inverse) > 1e6):
+        raise ValueError("Camera profile GPU transfer matrix must be finite 3x3 RGB")
+
+    camera_image = np.ascontiguousarray(camera)
+    reference_image = np.ascontiguousarray(reference)
+    processed_image = np.ascontiguousarray(processed)
+    inverse_image = np.ascontiguousarray(inverse)
+    library, _ = _get_library()
+    upload = getattr(library, "im_renderer_set_camera_profile_transfer_source", None)
+    render = getattr(library, "im_renderer_render_camera_profile_transfer", None)
+    render_shared = getattr(library, "im_renderer_render_camera_profile_transfer_shared", None)
+    supports = getattr(library, "im_renderer_supports_camera_profile_transfer", None)
+    if upload is None or supports is None:
+        raise NativeRendererError("Camera profile GPU transfer ABI is unavailable")
+    u16 = ctypes.POINTER(ctypes.c_uint16)
+    fp = ctypes.POINTER(ctypes.c_float)
+    upload.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                       u16, u16, ctypes.c_size_t]
+    upload.restype = ctypes.c_int
+    if render is not None:
+        render.argtypes = [ctypes.c_void_p, u16, ctypes.c_size_t,
+                           fp, ctypes.c_size_t, u16, ctypes.c_size_t]
+        render.restype = ctypes.c_int
+    supports.argtypes = [ctypes.c_void_p]
+    supports.restype = ctypes.c_int
+
+    from native_shared import (
+        allocate_shared_rgb, shared_buffer_owner, shared_memory_eligible,
+    )
+    use_shared = False
+    shared_processed = None
+    shared_processed_owner = None
+    shared_output = None
+    shared_output_owner = None
+    if render_shared is not None and shared_memory_eligible(processed_image.shape, np.uint16):
+        render_shared.argtypes = [ctypes.c_void_p, ctypes.c_void_p, fp,
+                                  ctypes.c_size_t, ctypes.c_void_p]
+        render_shared.restype = ctypes.c_int
+        try:
+            # Reuse an already-owned input. Ordinary NumPy inputs require one
+            # explicit copy into a shareable allocation before the GPU call.
+            shared_processed_owner = shared_buffer_owner(processed_image)
+            if shared_processed_owner is None:
+                shared_processed = allocate_shared_rgb(processed_image.shape, np.uint16)
+                np.copyto(shared_processed, processed_image)
+                shared_processed_owner = shared_buffer_owner(shared_processed)
+            shared_output = allocate_shared_rgb(camera_image.shape, np.uint16)
+            shared_output_owner = shared_buffer_owner(shared_output)
+            use_shared = shared_processed_owner is not None and shared_output_owner is not None
+        except NativeRendererError:
+            use_shared = False
+            shared_processed = None
+            shared_processed_owner = None
+            shared_output = None
+            shared_output_owner = None
+    if not use_shared and render is None:
+        raise NativeRendererError("Camera profile GPU transfer ABI is unavailable")
+
+    import weakref
+    with _camera_profile_transfer_gpu_lock:
+        if (_camera_profile_transfer_gpu_state is not None and
+                _camera_profile_transfer_gpu_state[0] is not library):
+            old_library, old_renderer, *_ = _camera_profile_transfer_gpu_state
+            _camera_profile_transfer_gpu_state = None
+            old_library.im_renderer_destroy(old_renderer)
+        if _camera_profile_transfer_gpu_state is None:
+            renderer, backend = _create_renderer(library)
+            if backend.lower() != "metal" or not supports(renderer):
+                library.im_renderer_destroy(renderer)
+                raise NativeRendererError("Camera profile GPU transfer is unavailable on this backend")
+            _camera_profile_transfer_gpu_state = (library, renderer, backend, None, None, width, height)
+
+        cached_library, renderer, backend, camera_ref, reference_ref, cached_width, cached_height = (
+            _camera_profile_transfer_gpu_state
+        )
+        try:
+            cacheable = not camera_image.flags.writeable and not reference_image.flags.writeable
+            cached_sources_match = (
+                cacheable and cached_width == width and cached_height == height and
+                camera_ref is not None and reference_ref is not None and
+                camera_ref() is camera_image and reference_ref() is reference_image
+            )
+            if not cached_sources_match:
+                status = upload(renderer, width, height,
+                                camera_image.ctypes.data_as(u16),
+                                reference_image.ctypes.data_as(u16), camera_image.size)
+                if status != 0:
+                    raise NativeRendererError(
+                        f"Camera profile GPU transfer source upload failed: "
+                        f"{_native_error(library, renderer)}"
+                    )
+                _camera_profile_transfer_gpu_state = (
+                    library, renderer, backend,
+                    weakref.ref(camera_image) if cacheable else None,
+                    weakref.ref(reference_image) if cacheable else None,
+                    width, height,
+                )
+            if use_shared:
+                output = shared_output
+                status = render_shared(renderer, shared_processed_owner.handle,
+                                       inverse_image.ctypes.data_as(fp), inverse_image.size,
+                                       shared_output_owner.handle)
+            else:
+                output = np.empty(camera_image.shape, dtype=np.uint16)
+                status = render(renderer, processed_image.ctypes.data_as(u16), processed_image.size,
+                                inverse_image.ctypes.data_as(fp), inverse_image.size,
+                                output.ctypes.data_as(u16), output.size)
+            if status != 0:
+                raise NativeRendererError(
+                    f"Camera profile GPU transfer failed: {_native_error(library, renderer)}"
+                )
+            return output, backend.lower()
+        except Exception:
+            _camera_profile_transfer_gpu_state = None
+            library.im_renderer_destroy(renderer)
+            raise
+
+
+atexit.register(clear_camera_profile_transfer_gpu_cache)
 
 
 _warp_gpu_lock = threading.Lock()
@@ -355,6 +575,26 @@ def _configure_library(library: ctypes.CDLL) -> None:
         supports_guarded.argtypes = [renderer]
         supports_guarded.restype = ctypes.c_int
 
+    # Camera-profile transfer is optional in older packaged renderer builds.
+    transfer_upload = getattr(library, "im_renderer_set_camera_profile_transfer_source", None)
+    transfer_render = getattr(library, "im_renderer_render_camera_profile_transfer", None)
+    transfer_supports = getattr(library, "im_renderer_supports_camera_profile_transfer", None)
+    if transfer_upload is not None:
+        uint16_pointer = ctypes.POINTER(ctypes.c_uint16)
+        transfer_upload.argtypes = [renderer, ctypes.c_uint32, ctypes.c_uint32,
+                                    uint16_pointer, uint16_pointer, ctypes.c_size_t]
+        transfer_upload.restype = ctypes.c_int
+    if transfer_render is not None:
+        uint16_pointer = ctypes.POINTER(ctypes.c_uint16)
+        float_pointer = ctypes.POINTER(ctypes.c_float)
+        transfer_render.argtypes = [renderer, uint16_pointer, ctypes.c_size_t,
+                                    float_pointer, ctypes.c_size_t,
+                                    uint16_pointer, ctypes.c_size_t]
+        transfer_render.restype = ctypes.c_int
+    if transfer_supports is not None:
+        transfer_supports.argtypes = [renderer]
+        transfer_supports.restype = ctypes.c_int
+
 
 def _supports_physical_float(library: object, renderer: object, backend: str) -> bool:
     query = getattr(library, "im_renderer_supports_physical_float", None)
@@ -393,7 +633,7 @@ def native_physical_dehaze(
     value_count = int(image.size)
     if value_count > _MAX_IMAGE_VALUES:
         raise ValueError("Physical dehaze source exceeds the C ABI size limit")
-    if not np.isfinite(image).all() or np.any(image < 0.0) or np.any(image > 1.0):
+    if not _float_range_valid(image):
         raise ValueError("Physical dehaze source must be finite and within [0, 1]")
 
     values = _values(params, _DEHAZE_FIELDS, ((0.0, 1.0),) * len(_DEHAZE_FIELDS), "dehaze")
@@ -405,11 +645,9 @@ def native_physical_dehaze(
         raise ValueError("Physical dehaze airlight must contain three channels")
     if not np.issubdtype(atmosphere.dtype, np.floating):
         raise TypeError("Physical dehaze airlight must use a floating-point dtype")
-    if (not np.isfinite(transmission).all() or np.any(transmission < 0.0) or
-            np.any(transmission > 1.0)):
+    if not _float_range_valid(transmission):
         raise ValueError("Physical dehaze transmission must be finite and within [0, 1]")
-    if (not np.isfinite(atmosphere).all() or np.any(atmosphere < 0.0) or
-            np.any(atmosphere > 1.0)):
+    if not _float_range_valid(atmosphere):
         raise ValueError("Physical dehaze airlight must be finite and within [0, 1]")
 
     # Own the buffers passed through the const C ABI, even if the caller's
@@ -533,7 +771,7 @@ def native_gpu_spatial_dehaze(
     finally:
         library.im_renderer_destroy(renderer)
     if was_uint8:
-        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+        return _compact_native_rgb8(output16)
     return output16
 
 
@@ -569,7 +807,7 @@ def native_spatial_dehaze(
     if status != 0:
         raise NativeRendererError(f"Native spatial dehaze failed (status {status})")
     if was_uint8:
-        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+        return _compact_native_rgb8(output16)
     return output16
 
 
@@ -674,6 +912,16 @@ def _values(params: object, fields: tuple[str, ...], limits: tuple[tuple[float, 
     return values
 
 
+def _compact_native_rgb8(output16: np.ndarray) -> np.ndarray:
+    """Pack GPU output in one CPU pass, with the original integer fallback."""
+    try:
+        from native_dense import compact_rgb16_to_rgb8
+
+        return compact_rgb16_to_rgb8(output16)
+    except (ImportError, NativeRendererError):
+        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+
+
 def _prepare_image(image: object) -> tuple[np.ndarray, int, int, bool]:
     array = np.asarray(image)
     if array.ndim != 3 or array.shape[2] != 3:
@@ -689,6 +937,15 @@ def _prepare_image(image: object) -> tuple[np.ndarray, int, int, bool]:
 
     was_uint8 = array.dtype == np.dtype(np.uint8)
     if was_uint8:
+        try:
+            from native_dense import expand_rgb8_to_rgb16
+
+            # The fused conversion already owns contiguous storage. Keep the
+            # caller protected without copying this fresh allocation again.
+            rgb16 = expand_rgb8_to_rgb16(array)
+            return rgb16, int(width), int(height), was_uint8
+        except (ImportError, NativeRendererError):
+            pass
         # Exact full-range expansion: 0 -> 0 and 255 -> 65535.
         rgb16 = array.astype(np.uint16) * np.uint16(257)
     else:
@@ -770,7 +1027,7 @@ def _render_one_stage(image: object, params: object, *, stage: str) -> np.ndarra
     if was_uint8:
         # Integer round-to-nearest while mapping the native 16-bit full range
         # back to all 256 uint8 codes.
-        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+        return _compact_native_rgb8(output16)
     return output16
 
 
@@ -853,7 +1110,7 @@ def _render_preview_entry(
             f"{_native_error(library, renderer)}"
         )
     if entry.was_uint8:
-        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+        return _compact_native_rgb8(output16)
     return output16
 
 
@@ -1095,7 +1352,7 @@ def native_ricoh(
         library.im_renderer_destroy(renderer)
 
     if was_uint8:
-        return ((output16.astype(np.uint32) + 128) // 257).astype(np.uint8)
+        return _compact_native_rgb8(output16)
     return output16
 
 

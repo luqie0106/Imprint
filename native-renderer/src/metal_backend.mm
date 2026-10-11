@@ -13,6 +13,26 @@
 
 namespace imprint {
 
+class MetalSharedBuffer final : public SharedBuffer {
+public:
+    MetalSharedBuffer(id<MTLBuffer> buffer, id<MTLDevice> device)
+        : buffer_(buffer), device_(device) {}
+
+    void *data() const noexcept override { return buffer_.contents; }
+    size_t size() const noexcept override { return buffer_.length; }
+    id<MTLBuffer> buffer() const noexcept { return buffer_; }
+    bool compatible_with(id<MTLDevice> device) const noexcept {
+        return buffer_ && device_ && device &&
+               buffer_.storageMode == MTLStorageModeShared && buffer_.contents &&
+               buffer_.device.registryID == device.registryID &&
+               device_.registryID == device.registryID;
+    }
+
+private:
+    __strong id<MTLBuffer> buffer_ = nil;
+    __strong id<MTLDevice> device_ = nil;
+};
+
 class MetalBackend final : public Backend {
 public:
     explicit MetalBackend(std::string &error) {
@@ -88,6 +108,12 @@ public:
             camera_profile_pipeline_ = [device_ newComputePipelineStateWithFunction:camera_profile
                                                                               error:&nativeError];
         }
+        id<MTLFunction> camera_profile_transfer =
+            [library_ newFunctionWithName:@"render_camera_profile_transfer"];
+        if (camera_profile_transfer) {
+            camera_profile_transfer_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:camera_profile_transfer error:&nativeError];
+        }
         id<MTLFunction> warp_rectilinear = [library_ newFunctionWithName:@"warp_rectilinear_rgb16"];
         if (warp_rectilinear) {
             warp_pipeline_ = [device_ newComputePipelineStateWithFunction:warp_rectilinear
@@ -108,6 +134,30 @@ public:
     bool supports_camera_profile_render() const override {
         return ready() && camera_profile_pipeline_ != nil;
     }
+    bool create_shared_buffer(size_t byte_count,
+                              std::shared_ptr<SharedBuffer> &buffer,
+                              std::string &error) override {
+        if (!ready() || !byte_count) {
+            error = "Metal shared buffer size or backend is invalid";
+            return false;
+        }
+        id<MTLBuffer> metal_buffer = [device_ newBufferWithLength:byte_count
+                                                           options:MTLResourceStorageModeShared];
+        if (!metal_buffer) {
+            error = "Could not allocate the Metal shared buffer";
+            return false;
+        }
+        buffer = std::make_shared<MetalSharedBuffer>(metal_buffer, device_);
+        return true;
+    }
+    bool is_shared_buffer_compatible(const SharedBuffer *buffer) const override {
+        const auto *metal_buffer = dynamic_cast<const MetalSharedBuffer *>(buffer);
+        return metal_buffer && metal_buffer->compatible_with(device_);
+    }
+    bool supports_camera_profile_transfer() const override {
+        return ready() && camera_profile_transfer_pipeline_ != nil;
+    }
+    bool supports_shared_buffers() const override { return ready(); }
 
     bool warp_rectilinear_rgb16(uint32_t width, uint32_t height,
                                 const uint16_t *source, size_t source_values,
@@ -181,7 +231,8 @@ public:
             return false;
         }
         const size_t bytes = source_values * sizeof(uint16_t);
-        if (profile_source_buffer_ && profile_width_ == width && profile_height_ == height &&
+        if (profile_source_buffer_ && !profile_shared_source_ &&
+            profile_width_ == width && profile_height_ == height &&
             profile_source_buffer_.length == bytes) {
             std::memcpy(profile_source_buffer_.contents, source, bytes);
         } else {
@@ -197,6 +248,144 @@ public:
         profile_width_ = width;
         profile_height_ = height;
         profile_source_values_ = source_values;
+        profile_shared_source_.reset();
+        return true;
+    }
+
+    bool set_camera_profile_source_shared(
+        uint32_t width, uint32_t height, std::shared_ptr<SharedBuffer> source,
+        std::string &error) override {
+        const size_t pixels = static_cast<size_t>(width) * height;
+        const size_t values = pixels * 3;
+        const size_t bytes = values * sizeof(uint16_t);
+        const auto *metal_source = dynamic_cast<const MetalSharedBuffer *>(source.get());
+        if (!supports_camera_profile_render() || !width || !height ||
+            pixels > (1ull << 29) / 3 || !metal_source ||
+            !metal_source->compatible_with(device_) || metal_source->size() != bytes) {
+            error = "Metal shared camera profile source dimensions or buffer are invalid";
+            return false;
+        }
+        profile_source_buffer_ = metal_source->buffer();
+        profile_shared_source_ = std::move(source);
+        profile_width_ = width;
+        profile_height_ = height;
+        profile_source_values_ = values;
+        return true;
+    }
+
+    bool set_camera_profile_transfer_source(uint32_t width, uint32_t height,
+                                            const uint16_t *camera,
+                                            const uint16_t *reference,
+                                            size_t values,
+                                            std::string &error) override {
+        if (!supports_camera_profile_transfer() || !camera || !reference || !width || !height ||
+            static_cast<uint64_t>(width) * height * 3 != values ||
+            values > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) {
+            error = "Metal camera profile transfer source dimensions or count are invalid";
+            return false;
+        }
+        const size_t bytes = values * sizeof(uint16_t);
+        if (transfer_camera_buffer_ && transfer_reference_buffer_ &&
+            transfer_width_ == width && transfer_height_ == height &&
+            transfer_camera_buffer_.length == bytes && transfer_reference_buffer_.length == bytes) {
+            std::memcpy(transfer_camera_buffer_.contents, camera, bytes);
+            std::memcpy(transfer_reference_buffer_.contents, reference, bytes);
+        } else {
+            id<MTLBuffer> next_camera = [device_ newBufferWithLength:bytes
+                                                              options:MTLResourceStorageModeShared];
+            id<MTLBuffer> next_reference = [device_ newBufferWithLength:bytes
+                                                                 options:MTLResourceStorageModeShared];
+            if (!next_camera || !next_reference) {
+                error = "Could not allocate Metal camera profile transfer source buffers";
+                return false;
+            }
+            std::memcpy(next_camera.contents, camera, bytes);
+            std::memcpy(next_reference.contents, reference, bytes);
+            transfer_camera_buffer_ = next_camera;
+            transfer_reference_buffer_ = next_reference;
+        }
+        transfer_width_ = width;
+        transfer_height_ = height;
+        transfer_source_values_ = values;
+        return true;
+    }
+
+    bool render_camera_profile_transfer(const uint16_t *processed,
+                                        size_t processed_values,
+                                        const float *inverse_matrix9,
+                                        size_t inverse_count,
+                                        uint16_t *destination,
+                                        size_t destination_values,
+                                        std::string &error) override {
+        const size_t pixels = static_cast<size_t>(transfer_width_) * transfer_height_;
+        if (!supports_camera_profile_transfer() || !transfer_camera_buffer_ ||
+            !transfer_reference_buffer_ || !transfer_width_ || !transfer_height_ ||
+            !processed || !inverse_matrix9 || !destination || inverse_count != 9 ||
+            processed_values != transfer_source_values_ ||
+            destination_values != transfer_source_values_ ||
+            pixels > std::numeric_limits<uint32_t>::max()) {
+            error = "Metal camera profile transfer buffers or dimensions are invalid";
+            return false;
+        }
+        for (size_t i = 0; i < inverse_count; ++i) {
+            if (!std::isfinite(inverse_matrix9[i]) || std::abs(inverse_matrix9[i]) > 1.0e6f) {
+                error = "Metal camera profile transfer matrix is invalid";
+                return false;
+            }
+        }
+        const size_t image_bytes = transfer_source_values_ * sizeof(uint16_t);
+        if (!transfer_processed_buffer_ || transfer_processed_buffer_.length != image_bytes) {
+            transfer_processed_buffer_ = [device_ newBufferWithLength:image_bytes
+                                                                 options:MTLResourceStorageModeShared];
+            if (!transfer_processed_buffer_) {
+                error = "Could not allocate the Metal camera profile processed buffer";
+                return false;
+            }
+        }
+        if (!transfer_output_buffer_ || transfer_output_buffer_.length != image_bytes) {
+            transfer_output_buffer_ = [device_ newBufferWithLength:image_bytes
+                                                             options:MTLResourceStorageModeShared];
+            if (!transfer_output_buffer_) {
+                error = "Could not allocate the Metal camera profile transfer output buffer";
+                return false;
+            }
+        }
+        std::memcpy(transfer_processed_buffer_.contents, processed, image_bytes);
+
+        if (!dispatch_camera_profile_transfer(transfer_processed_buffer_, inverse_matrix9,
+                                              transfer_output_buffer_, pixels, error)) return false;
+        std::memcpy(destination, transfer_output_buffer_.contents, image_bytes);
+        return true;
+    }
+
+    bool render_camera_profile_transfer_shared(
+        const SharedBuffer *processed, const float *inverse_matrix9, size_t inverse_count,
+        SharedBuffer *destination, std::string &error) override {
+        const size_t pixels = static_cast<size_t>(transfer_width_) * transfer_height_;
+        const size_t image_bytes = transfer_source_values_ * sizeof(uint16_t);
+        const auto *metal_processed = dynamic_cast<const MetalSharedBuffer *>(processed);
+        auto *metal_destination = dynamic_cast<MetalSharedBuffer *>(destination);
+        if (!supports_camera_profile_transfer() || !transfer_camera_buffer_ ||
+            !transfer_reference_buffer_ || !transfer_width_ || !transfer_height_ ||
+            !metal_processed || !metal_destination || inverse_count != 9 ||
+            !metal_processed->compatible_with(device_) || !metal_destination->compatible_with(device_) ||
+            metal_processed->size() != image_bytes || metal_destination->size() != image_bytes ||
+            pixels > std::numeric_limits<uint32_t>::max()) {
+            error = "Metal shared camera profile transfer buffers or dimensions are invalid";
+            return false;
+        }
+        if (!inverse_matrix9) {
+            error = "Metal camera profile transfer matrix is missing";
+            return false;
+        }
+        for (size_t i = 0; i < inverse_count; ++i) {
+            if (!std::isfinite(inverse_matrix9[i]) || std::abs(inverse_matrix9[i]) > 1.0e6f) {
+                error = "Metal camera profile transfer matrix is invalid";
+                return false;
+            }
+        }
+        if (!dispatch_camera_profile_transfer(metal_processed->buffer(), inverse_matrix9,
+                                              metal_destination->buffer(), pixels, error)) return false;
         return true;
     }
 
@@ -228,37 +417,35 @@ public:
             }
         }
 
-        id<MTLCommandBuffer> command = [queue_ commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-        if (!command || !encoder) {
-            error = "Could not create a Metal camera profile command";
-            return false;
-        }
-        const uint32_t look_dimensions[4] = {hue_count, saturation_count,
-                                             value_count, look_encoding};
-        const uint32_t profile_counts[2] = {static_cast<uint32_t>(pixels),
-                                            static_cast<uint32_t>(tone_values / 2)};
-        [encoder setComputePipelineState:camera_profile_pipeline_];
-        [encoder setBuffer:profile_source_buffer_ offset:0 atIndex:0];
-        [encoder setBytes:constants22 length:22 * sizeof(float) atIndex:1];
-        [encoder setBuffer:profile_look_buffer_ offset:0 atIndex:2];
-        [encoder setBuffer:profile_tone_buffer_ offset:0 atIndex:3];
-        [encoder setBuffer:profile_output_buffer_ offset:0 atIndex:4];
-        [encoder setBytes:&look_dimensions length:sizeof(look_dimensions) atIndex:5];
-        [encoder setBytes:&profile_counts length:sizeof(profile_counts) atIndex:6];
-        const NSUInteger width = camera_profile_pipeline_.threadExecutionWidth;
-        const NSUInteger threads = width ? width : 256;
-        [encoder dispatchThreadgroups:MTLSizeMake((pixels + threads - 1) / threads, 1, 1)
-                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
-        [encoder endEncoding];
-        [command commit];
-        [command waitUntilCompleted];
-        if (command.status != MTLCommandBufferStatusCompleted) {
-            error = describe_error("Metal camera profile render failed", command.error);
-            return false;
-        }
+        if (!dispatch_camera_profile_render(constants22, hue_count, saturation_count,
+                                            value_count, look_encoding, tone_values,
+                                            profile_output_buffer_, pixels, error)) return false;
         std::memcpy(destination, profile_output_buffer_.contents, output_bytes);
         return true;
+    }
+
+    bool render_camera_profile_shared(
+        const float *constants22, const float *look_table, size_t look_values,
+        uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+        uint32_t look_encoding, const float *tone_curve, size_t tone_values,
+        SharedBuffer *destination, std::string &error) override {
+        const size_t pixels = static_cast<size_t>(profile_width_) * profile_height_;
+        const size_t output_bytes = profile_source_values_;
+        auto *metal_destination = dynamic_cast<MetalSharedBuffer *>(destination);
+        if (!supports_camera_profile_render() || !profile_source_buffer_ || !profile_width_ ||
+            !profile_height_ || !constants22 || !look_table || !tone_curve ||
+            !metal_destination || !metal_destination->compatible_with(device_) ||
+            metal_destination->size() != output_bytes || pixels > std::numeric_limits<uint32_t>::max()) {
+            error = "Metal shared camera profile render buffers or dimensions are invalid";
+            return false;
+        }
+        if (!ensure_profile_table(look_table, look_values, cached_profile_look_,
+                                  profile_look_buffer_, error, "look") ||
+            !ensure_profile_table(tone_curve, tone_values, cached_profile_tone_,
+                                  profile_tone_buffer_, error, "tone")) return false;
+        return dispatch_camera_profile_render(constants22, hue_count, saturation_count,
+                                              value_count, look_encoding, tone_values,
+                                              metal_destination->buffer(), pixels, error);
     }
 
     bool clear_camera_profile_source(std::string &error) override {
@@ -267,6 +454,7 @@ public:
             return false;
         }
         profile_source_buffer_ = nil;
+        profile_shared_source_.reset();
         profile_output_buffer_ = nil;
         profile_look_buffer_ = nil;
         profile_tone_buffer_ = nil;
@@ -446,6 +634,75 @@ public:
     }
 
 private:
+    bool dispatch_camera_profile_transfer(id<MTLBuffer> processed_buffer,
+                                          const float *inverse_matrix9,
+                                          id<MTLBuffer> output_buffer,
+                                          size_t pixels, std::string &error) {
+        id<MTLCommandBuffer> command = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (!command || !encoder) {
+            error = "Could not create a Metal camera profile transfer command";
+            return false;
+        }
+        const uint32_t pixel_count = static_cast<uint32_t>(pixels);
+        [encoder setComputePipelineState:camera_profile_transfer_pipeline_];
+        [encoder setBuffer:transfer_camera_buffer_ offset:0 atIndex:0];
+        [encoder setBuffer:transfer_reference_buffer_ offset:0 atIndex:1];
+        [encoder setBuffer:processed_buffer offset:0 atIndex:2];
+        [encoder setBytes:inverse_matrix9 length:9 * sizeof(float) atIndex:3];
+        [encoder setBuffer:output_buffer offset:0 atIndex:4];
+        [encoder setBytes:&pixel_count length:sizeof(pixel_count) atIndex:5];
+        const NSUInteger width = camera_profile_transfer_pipeline_.threadExecutionWidth;
+        const NSUInteger threads = width ? width : 256;
+        [encoder dispatchThreadgroups:MTLSizeMake((pixels + threads - 1) / threads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            error = describe_error("Metal camera profile transfer failed", command.error);
+            return false;
+        }
+        return true;
+    }
+
+    bool dispatch_camera_profile_render(const float *constants22,
+                                        uint32_t hue_count, uint32_t saturation_count,
+                                        uint32_t value_count, uint32_t look_encoding,
+                                        size_t tone_values, id<MTLBuffer> output_buffer,
+                                        size_t pixels, std::string &error) {
+        id<MTLCommandBuffer> command = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (!command || !encoder) {
+            error = "Could not create a Metal camera profile command";
+            return false;
+        }
+        const uint32_t look_dimensions[4] = {hue_count, saturation_count,
+                                             value_count, look_encoding};
+        const uint32_t profile_counts[2] = {static_cast<uint32_t>(pixels),
+                                            static_cast<uint32_t>(tone_values / 2)};
+        [encoder setComputePipelineState:camera_profile_pipeline_];
+        [encoder setBuffer:profile_source_buffer_ offset:0 atIndex:0];
+        [encoder setBytes:constants22 length:22 * sizeof(float) atIndex:1];
+        [encoder setBuffer:profile_look_buffer_ offset:0 atIndex:2];
+        [encoder setBuffer:profile_tone_buffer_ offset:0 atIndex:3];
+        [encoder setBuffer:output_buffer offset:0 atIndex:4];
+        [encoder setBytes:&look_dimensions length:sizeof(look_dimensions) atIndex:5];
+        [encoder setBytes:&profile_counts length:sizeof(profile_counts) atIndex:6];
+        const NSUInteger width = camera_profile_pipeline_.threadExecutionWidth;
+        const NSUInteger threads = width ? width : 256;
+        [encoder dispatchThreadgroups:MTLSizeMake((pixels + threads - 1) / threads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            error = describe_error("Metal camera profile render failed", command.error);
+            return false;
+        }
+        return true;
+    }
+
     bool ensure_profile_table(const float *source, size_t count,
                               std::vector<float> &cached, id<MTLBuffer> __strong &buffer,
                               std::string &error, const char *label) {
@@ -598,18 +855,27 @@ private:
     id<MTLComputePipelineState> physical_pipeline_ = nil;
     id<MTLComputePipelineState> warp_pipeline_ = nil;
     id<MTLComputePipelineState> camera_profile_pipeline_ = nil;
+    id<MTLComputePipelineState> camera_profile_transfer_pipeline_ = nil;
     std::array<id<MTLBuffer>, 3> source_buffers_{};
     id<MTLBuffer> curve_buffer_ = nil;
     id<MTLBuffer> lut_buffer_ = nil;
     id<MTLBuffer> profile_source_buffer_ = nil;
+    std::shared_ptr<SharedBuffer> profile_shared_source_;
     id<MTLBuffer> profile_output_buffer_ = nil;
     id<MTLBuffer> profile_look_buffer_ = nil;
     id<MTLBuffer> profile_tone_buffer_ = nil;
+    id<MTLBuffer> transfer_camera_buffer_ = nil;
+    id<MTLBuffer> transfer_reference_buffer_ = nil;
+    id<MTLBuffer> transfer_processed_buffer_ = nil;
+    id<MTLBuffer> transfer_output_buffer_ = nil;
     std::vector<float> cached_profile_look_;
     std::vector<float> cached_profile_tone_;
     size_t profile_source_values_ = 0;
     uint32_t profile_width_ = 0;
     uint32_t profile_height_ = 0;
+    size_t transfer_source_values_ = 0;
+    uint32_t transfer_width_ = 0;
+    uint32_t transfer_height_ = 0;
     std::array<ImageLevel, 3> levels_;
     im_filter_params filter_{};
     uint32_t lut_edge_ = 0;

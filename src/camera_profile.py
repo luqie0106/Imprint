@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import struct
+import sys
 import threading
 from typing import Any
 
@@ -22,7 +23,10 @@ import numpy as np
 import rawpy
 
 import native_dense
-from native_renderer import NativeRendererError, native_camera_profile, clear_camera_profile_gpu_cache
+from native_renderer import (
+    NativeRendererError, native_camera_profile, native_camera_profile_transfer,
+    clear_camera_profile_gpu_cache,
+)
 from dng_writer import _embedded_profile_tags
 from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profile_dng
 
@@ -459,8 +463,6 @@ def load_camera_rgb(
         raise ValueError("LibRaw did not return camera-space uint16 RGB")
     if rgb.shape[:2] != (height, width):
         rgb = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
-    if not np.isfinite(rgb).all():
-        raise ValueError("LibRaw returned non-finite camera-space pixels")
     return np.ascontiguousarray(rgb), tuple(float(value) for value in neutral)
 
 
@@ -488,6 +490,8 @@ def transfer_enhancement(
     camera_u16: np.ndarray,
     reference_u16: np.ndarray,
     processed_u16: np.ndarray,
+    *,
+    backend: str = "cpu",
 ) -> np.ndarray:
     """Transfer luma and color residual changes onto camera-native RGB."""
     images = (camera_u16, reference_u16, processed_u16)
@@ -500,6 +504,23 @@ def transfer_enhancement(
         return np.ascontiguousarray(camera_u16.copy())
 
     srgb_to_camera = _fit_transfer_matrix(camera_u16, reference_u16)
+    transfer_setting = os.environ.get("IMPRINT_NATIVE_CAMERA_PROFILE_TRANSFER")
+    use_gpu_transfer = (
+        backend in ("auto", "native") and transfer_setting != "0" and
+        (sys.platform == "darwin" or transfer_setting == "1") and
+        (transfer_setting == "1" or camera_u16.shape[0] * camera_u16.shape[1] >= 1_000_000)
+    )
+    if use_gpu_transfer:
+        try:
+            output, actual_backend = native_camera_profile_transfer(
+                camera_u16, reference_u16, processed_u16, srgb_to_camera,
+            )
+            _backend_context.transfer = actual_backend
+            return output
+        except NativeRendererError:
+            # Keep the existing CPU ABI and NumPy routes available when the
+            # selected GPU or its optional transfer symbols are unavailable.
+            pass
     try:
         output = native_dense.camera_profile_transfer(
             camera_u16, reference_u16, processed_u16, srgb_to_camera)

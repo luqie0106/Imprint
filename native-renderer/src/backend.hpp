@@ -26,6 +26,13 @@ struct ImageLevel {
     std::vector<uint16_t> pixels;
 };
 
+class SharedBuffer {
+public:
+    virtual ~SharedBuffer() = default;
+    virtual void *data() const noexcept = 0;
+    virtual size_t size() const noexcept = 0;
+};
+
 class Backend {
 public:
     virtual ~Backend() = default;
@@ -66,6 +73,65 @@ public:
     }
     virtual bool clear_camera_profile_source(std::string &error) {
         error = "Camera profile rendering is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool supports_camera_profile_transfer() const { return false; }
+    virtual bool supports_shared_buffers() const { return false; }
+    virtual bool create_shared_buffer(size_t byte_count,
+                                     std::shared_ptr<SharedBuffer> &buffer,
+                                     std::string &error) {
+        (void)byte_count; (void)buffer;
+        error = "Shared Metal buffers are unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool is_shared_buffer_compatible(const SharedBuffer *buffer) const {
+        (void)buffer;
+        return false;
+    }
+    virtual bool render_camera_profile_transfer_shared(
+        const SharedBuffer *processed, const float *inverse_matrix9, size_t inverse_count,
+        SharedBuffer *destination, std::string &error) {
+        (void)processed; (void)inverse_matrix9; (void)inverse_count; (void)destination;
+        error = "Shared camera profile enhancement transfer is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool set_camera_profile_source_shared(
+        uint32_t width, uint32_t height, std::shared_ptr<SharedBuffer> source,
+        std::string &error) {
+        (void)width; (void)height; (void)source;
+        error = "Shared camera profile sources are unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool render_camera_profile_shared(
+        const float *constants22, const float *look_table, size_t look_values,
+        uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+        uint32_t look_encoding, const float *tone_curve, size_t tone_values,
+        SharedBuffer *destination, std::string &error) {
+        (void)constants22; (void)look_table; (void)look_values; (void)hue_count;
+        (void)saturation_count; (void)value_count; (void)look_encoding; (void)tone_curve;
+        (void)tone_values; (void)destination;
+        error = "Shared camera profile rendering is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool set_camera_profile_transfer_source(uint32_t width, uint32_t height,
+                                                    const uint16_t *camera,
+                                                    const uint16_t *reference,
+                                                    size_t values,
+                                                    std::string &error) {
+        (void)width; (void)height; (void)camera; (void)reference; (void)values;
+        error = "Camera profile enhancement transfer is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool render_camera_profile_transfer(const uint16_t *processed,
+                                                size_t processed_values,
+                                                const float *inverse_matrix9,
+                                                size_t inverse_count,
+                                                uint16_t *destination,
+                                                size_t destination_values,
+                                                std::string &error) {
+        (void)processed; (void)processed_values; (void)inverse_matrix9; (void)inverse_count;
+        (void)destination; (void)destination_values;
+        error = "Camera profile enhancement transfer is unavailable on this GPU backend";
         return false;
     }
     virtual bool set_images(const std::array<ImageLevel, 3> &levels, std::string &error) = 0;

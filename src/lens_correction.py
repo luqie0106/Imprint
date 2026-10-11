@@ -582,7 +582,11 @@ def _apply_geometry(
             maps = _combined_map(_call_map(combined_method, y, width, strip_height), strip_height, width)
         if maps is not None:
             try:
-                corrected[y:y + strip_height] = native_dense.lens_remap(source, maps)
+                native_dense.lens_remap(
+                    source,
+                    maps,
+                    destination=corrected[y:y + strip_height],
+                )
                 combined_applied = True
                 geometry_applied = True
                 continue
@@ -609,7 +613,11 @@ def _apply_geometry(
         if coordinate_map is None:
             continue
         try:
-            corrected[y:y + strip_height] = native_dense.lens_remap(source, coordinate_map)
+            native_dense.lens_remap(
+                source,
+                coordinate_map,
+                destination=corrected[y:y + strip_height],
+            )
             geometry_applied = True
             continue
         except NativeRendererError:
@@ -669,6 +677,44 @@ def _failure(
     return image.copy(), _result_unapplied()
 
 
+def _lens_output_copy(image: np.ndarray) -> np.ndarray:
+    """Copy into an independent shared allocation when the input owns one."""
+
+    try:
+        # Keep the shared-memory bridge optional for older/native-free builds.
+        import native_shared
+    except ImportError:
+        return image.copy()
+
+    try:
+        if (
+            not native_shared.shared_memory_enabled()
+            or not native_shared.shared_memory_eligible(image.shape, np.uint16)
+            or native_shared.shared_buffer_owner(image) is None
+        ):
+            return image.copy()
+    except AttributeError:
+        # Older installed builds may not include the complete bridge API.
+        return image.copy()
+
+    try:
+        corrected = native_shared.allocate_shared_rgb(image.shape, dtype=np.uint16)
+    except NativeRendererError:
+        # Allocation failure alone falls back to the established NumPy copy.
+        return image.copy()
+
+    if (
+        not isinstance(corrected, np.ndarray)
+        or corrected.shape != image.shape
+        or corrected.dtype != np.uint16
+        or not corrected.flags.c_contiguous
+        or np.shares_memory(corrected, image)
+    ):
+        return image.copy()
+    np.copyto(corrected, image)
+    return corrected
+
+
 def apply_lens_correction(
     image_rgb16: np.ndarray,
     metadata: Any,
@@ -722,7 +768,7 @@ def apply_lens_correction(
         # A modifier may be shared by preview/export workers. Its calls remain
         # serialized, while callers hold only a small optical plan, not maps.
         with plan.lock:
-            corrected = image_rgb16.copy()
+            corrected = _lens_output_copy(image_rgb16)
             vignetting_enabled = bool(enabled & flags_by_name["VIGNETTING"]) and bool(
                 getattr(lens, "calib_vignetting", ())
             )

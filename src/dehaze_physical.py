@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import native_dense
-from native_renderer import NativeRendererError
+from native_renderer import NativeRendererError, _float_range_valid
 
 import cv2
 import numpy as np
@@ -34,7 +34,7 @@ def _linear_source(image: np.ndarray) -> np.ndarray:
     if image.dtype not in (np.uint8, np.uint16, np.float32):
         raise TypeError("linear RGB must use uint8, uint16 or float32 samples")
     if image.dtype == np.float32:
-        if not np.isfinite(image).all() or np.any(image < 0) or np.any(image > 1):
+        if not _float_range_valid(image):
             raise ValueError("linear float RGB must be finite and within [0, 1]")
         return image
     return image.astype(np.float32) / float(np.iinfo(image.dtype).max)

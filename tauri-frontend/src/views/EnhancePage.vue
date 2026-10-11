@@ -685,7 +685,7 @@ async function refreshPreview(
 }
 
 type PreviewSchedule = "progressive" | "dragging" | "settled";
-const draggingPreviewIntervalMs = 45;
+const draggingPreviewIntervalMs = 16;
 
 function previewOriginalRequestPlan(context: PreviewRequestContext, includeOriginal: boolean) {
   const originalNeeded = previewMode.value !== "enhanced";
@@ -743,11 +743,11 @@ function runDraggingPreview(generation: number) {
   draggingPreviewQueued = false;
   draggingPreviewRunning = true;
   draggingPreviewStarted = true;
+  draggingPreviewNotBefore = performance.now() + draggingPreviewIntervalMs;
   void refreshPreview(generation, context, shouldFetchOriginal, 2, false).then(() => {
     if (!draggingPreviewActive || generation !== previewGeneration
       || generation !== draggingPreviewGeneration) return;
     draggingPreviewRunning = false;
-    draggingPreviewNotBefore = performance.now() + draggingPreviewIntervalMs;
     if (sliderAdjusting && draggingPreviewQueued) queueDraggingPreview(generation);
   });
 }
@@ -823,8 +823,8 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
     if (generation === previewGeneration && !sliderAdjusting)
       await refreshPreview(generation, context, shouldUpgradeOriginal, 0, false);
   })();
-  if (schedule === "settled") {
-    // The final slider value must become visible immediately after release.
+  if (schedule === "settled" || includeOriginal) {
+    // Final slider values and newly selected photos both need the fast preview immediately.
     void ensureFastPreview();
   } else {
     previewTimer = window.setTimeout(() => {
