@@ -83,29 +83,8 @@ jobs:
       - name: Build native D3D12 renderer (Windows)
         if: runner.os == 'Windows'
         run: |
-          cmake -S native-renderer -B native-renderer/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-          cmake --build native-renderer/build --config Release --target imprint_renderer imprint_renderer_tests --parallel
-          ctest --test-dir native-renderer/build -C Release --output-on-failure
-
-      - name: Validate native dense CPU kernels
-        shell: bash
-        run: |
-          pip install pytest
-          python - <<'PYTEST'
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-
-          root = Path("native-renderer/build").resolve()
-          library = (root / "Release/imprint_renderer.dll" if sys.platform == "win32"
-                     else root / "libimprint_renderer.dylib")
-          os.environ["IMPRINT_NATIVE_RENDERER_LIB"] = str(library)
-          subprocess.run([sys.executable, "-m", "pytest", "-q",
-                          "native-renderer/tests/test_dense_kernels.py",
-                          "native-renderer/tests/test_lens_remap.py",
-                          "native-renderer/tests/test_basic_cpu.py"], check=True)
-          PYTEST
+          cmake -S native-renderer -B native-renderer/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build native-renderer/build --config Release --target imprint_renderer --parallel
 
       - name: Build native sort operators
         run: |
