@@ -22,6 +22,7 @@ import {
 } from "lucide-vue-next";
 
 interface SessionFile { photo_id: string; name: string; extension: string; dehaze_params?: Partial<DehazeParams> | null; dehaze_algorithm?: DehazeAlgorithm; dehaze_auto_mode?: boolean; dehaze_auto_exposure?: boolean; dehaze_nonlocal_mode?: NonlocalMode; ricoh_preset_id?: string | null; basic_params?: BasicParams | null }
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
 type EnhanceParams = DehazeParams;
 interface BasicParams { exposure: number; contrast: number; highlights: number; shadows: number; whites: number; blacks: number; vibrance: number; saturation: number }
 const basicDefaults: BasicParams = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, vibrance: 0, saturation: 0 };
@@ -127,6 +128,7 @@ let previewTimer: number | undefined;
 let intermediatePreviewTimer: number | undefined;
 let fullResolutionTimer: number | undefined;
 let previewGeneration = 0;
+const previewClientId = crypto.randomUUID();
 let previewController: AbortController | undefined;
 const displayedPhotoId = ref("");
 const displayedSessionId = ref("");
@@ -532,6 +534,7 @@ interface PreviewAsset {
   autoExposureReason: AutoExposureReason;
 }
 interface PreviewRequestContext {
+  generation: number;
   sessionId: string;
   photoId: string;
   params: EnhanceParams;
@@ -547,6 +550,7 @@ interface PreviewRequestContext {
 
 function capturePreviewContext(): PreviewRequestContext {
   return {
+    generation: previewGeneration,
     sessionId: sessionId.value,
     photoId: selectedId.value,
     params: cloneParams(params.value),
@@ -572,6 +576,7 @@ async function fetchPreview(
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       session_id: context.sessionId, photo_id: context.photoId, algorithm: "physical", params: context.params,
+      preview_client_id: previewClientId, preview_generation: context.generation,
       auto_mode: context.autoMode,
       auto_exposure: context.autoExposure,
       nonlocal_mode: context.nonlocalMode,
@@ -583,6 +588,7 @@ async function fetchPreview(
     }),
     signal,
   });
+  if (response.status === 204) throw new DOMException("预览已被更新请求替代", "AbortError");
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(data.error || "预览生成失败");
@@ -612,7 +618,7 @@ async function refreshPreview(
   previewLevel: 0 | 2,
   fullResolution: boolean,
 ) {
-  if (!context.sessionId || !context.photoId || !BASE_URL.value || generation !== previewGeneration) return;
+  if (!props.active || !context.sessionId || !context.photoId || !BASE_URL.value || generation !== previewGeneration) return;
   const controller = new AbortController();
   previewController = controller;
   previewLoading.value = true;
@@ -753,6 +759,7 @@ function runDraggingPreview(generation: number) {
 }
 
 function scheduleDraggingPreview(includeOriginal = false) {
+  if (!props.active) return;
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
   if (!draggingPreviewActive || draggingPreviewGeneration !== previewGeneration) {
     window.clearTimeout(previewTimer);
@@ -790,6 +797,7 @@ function scheduleDraggingPreview(includeOriginal = false) {
 }
 
 function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "progressive") {
+  if (!props.active) return;
   if (schedule === "dragging") {
     scheduleDraggingPreview(includeOriginal);
     return;
@@ -853,6 +861,22 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
   fullResolutionTimer = window.setTimeout(startFullResolutionUpgrade, 100);
 }
 
+function cancelPendingPreview() {
+  const generation = ++previewGeneration;
+  clearDraggingPreviewState();
+  window.clearTimeout(previewTimer);
+  window.clearTimeout(intermediatePreviewTimer);
+  window.clearTimeout(fullResolutionTimer);
+  previewController?.abort();
+  previewLoading.value = false;
+  if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
+  void fetch(`${BASE_URL.value}/api/enhance/preview`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId.value, photo_id: selectedId.value,
+      preview_client_id: previewClientId, preview_generation: generation, preview_cancel_only: true }),
+  }).catch(() => {});
+}
+
 function scheduleParameterPreview() {
   if (sliderAdjusting) {
     sliderChanged = true;
@@ -905,6 +929,10 @@ function syncParamsToAll() {
   actionMessage.value = `已将当前参数同步到全部 ${files.value.length} 张照片`;
 }
 
+watch(() => props.active, (active) => {
+  if (active) schedulePreview(false, "settled");
+  else cancelPendingPreview();
+});
 watch(selectedId, () => {
   if (selectedId.value && sharedPhotoSource.value?.session_id === sessionId.value)
     sharedSelectedPhotoId.value = selectedId.value;

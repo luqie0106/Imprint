@@ -172,6 +172,12 @@ struct im_renderer {
     bool has_camera_profile_transfer_source = false;
     uint32_t camera_profile_transfer_width = 0;
     uint32_t camera_profile_transfer_height = 0;
+    bool has_lens_remap_source = false;
+    uint32_t lens_remap_width = 0;
+    uint32_t lens_remap_height = 0;
+    const uint16_t *lens_remap_source_origin = nullptr;
+    size_t lens_remap_source_bytes = 0;
+    std::vector<uint8_t> lens_remap_covered_rows;
     mutable std::mutex mutex;
     mutable std::string error;
 };
@@ -446,6 +452,204 @@ const char *im_renderer_last_error(const im_renderer *renderer) {
 
 const char *im_renderer_backend_name(const im_renderer *renderer) {
     return renderer && renderer->backend ? renderer->backend->name() : "unavailable";
+}
+
+int im_renderer_supports_lens_remap(const im_renderer *renderer) {
+    if (!renderer || !renderer->backend) return 0;
+    std::lock_guard<std::mutex> lock(renderer->mutex);
+    return renderer->backend->supports_lens_remap() ? 1 : 0;
+}
+
+im_status im_renderer_lens_remap_begin(im_renderer *renderer, uint32_t width,
+                                       uint32_t height, const uint16_t *source,
+                                       size_t source_values) {
+    if (!renderer) return IM_STATUS_INVALID_ARGUMENT;
+    constexpr uint32_t kMaxLensRemapDimension = 32766;
+    constexpr uint64_t kMaxLensRemapValues = 1ull << 29;
+    if (!source || width == 0 || height == 0 || width > kMaxLensRemapDimension ||
+        height > kMaxLensRemapDimension) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    const uint64_t values64 = static_cast<uint64_t>(width) * height * 3u;
+    if (values64 > kMaxLensRemapValues ||
+        values64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        source_values != static_cast<size_t>(values64)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    size_t source_bytes = 0;
+    if (!camera_profile_byte_length<uint16_t>(source_values, &source_bytes) ||
+        camera_profile_ranges_overlap(source, source_bytes, source, 0)) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        if (!renderer->backend->supports_lens_remap()) {
+            renderer->error = "Streaming RGB16 lens remap is unavailable on this GPU backend";
+            return IM_STATUS_BACKEND_UNAVAILABLE;
+        }
+        std::string error;
+        if (!renderer->backend->begin_lens_remap_rgb16(width, height, source,
+                                                        source_values, error)) {
+            renderer->error = error.empty() ? "Could not upload streaming lens remap source"
+                                            : std::move(error);
+            renderer->has_lens_remap_source = false;
+            renderer->lens_remap_source_origin = nullptr;
+            renderer->lens_remap_source_bytes = 0;
+            renderer->lens_remap_covered_rows.clear();
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->lens_remap_width = width;
+        renderer->lens_remap_height = height;
+        renderer->lens_remap_source_origin = source;
+        renderer->lens_remap_source_bytes = source_bytes;
+        renderer->lens_remap_covered_rows.assign(height, 0);
+        renderer->has_lens_remap_source = true;
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Insufficient memory while starting streaming lens remap";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(renderer->mutex);
+        renderer->error = "Unknown error while starting streaming lens remap";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_lens_remap_strip(im_renderer *renderer, const float *maps,
+                                       size_t map_values, uint32_t strip_y,
+                                       uint32_t strip_height, uint32_t map_channels,
+                                       uint32_t interpolation_mode) {
+    if (!renderer || !maps || strip_height == 0 ||
+        (map_channels != 1 && map_channels != 3) || interpolation_mode > 1) {
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    constexpr uint64_t kMaxLensRemapValues = 1ull << 29;
+    constexpr float kMaxContinuousLensCoordinate = 1.0e9f;
+    std::lock_guard<std::mutex> lock(renderer->mutex);
+    if (!renderer->has_lens_remap_source) {
+        renderer->error = "Streaming lens remap source has not been uploaded";
+        return IM_STATUS_NOT_READY;
+    }
+    if (strip_y >= renderer->lens_remap_height ||
+        strip_height > renderer->lens_remap_height - strip_y) {
+        renderer->error = "Streaming lens remap strip lies outside the output image";
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    const uint64_t pixels64 = static_cast<uint64_t>(renderer->lens_remap_width) * strip_height;
+    const uint64_t map_values64 = pixels64 * map_channels * 2u;
+    if (map_values64 > kMaxLensRemapValues ||
+        map_values64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        map_values != static_cast<size_t>(map_values64)) {
+        renderer->error = "Streaming lens remap strip map count is invalid";
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    size_t map_bytes = 0;
+    if (!camera_profile_byte_length<float>(map_values, &map_bytes) ||
+        camera_profile_ranges_overlap(maps, map_bytes, renderer->lens_remap_source_origin,
+                                      renderer->lens_remap_source_bytes)) {
+        renderer->error = "Streaming lens remap maps overlap the uploaded source or overflow";
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t index = 0; index < map_values; ++index) {
+        const float coordinate = maps[index];
+        if (!std::isfinite(coordinate) ||
+            (interpolation_mode == 1 && std::abs(coordinate) > kMaxContinuousLensCoordinate)) {
+            renderer->error = "Streaming lens remap maps contain non-finite or unsafe coordinates";
+            return IM_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    if (!renderer->backend->supports_lens_remap()) {
+        renderer->error = "Streaming RGB16 lens remap is unavailable on this GPU backend";
+        return IM_STATUS_BACKEND_UNAVAILABLE;
+    }
+    try {
+        std::string error;
+        if (!renderer->backend->remap_lens_rgb16_strip(maps, map_values, strip_y,
+                                                        strip_height, map_channels,
+                                                        interpolation_mode, error)) {
+            renderer->error = error.empty() ? "Streaming lens remap strip failed" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        for (uint32_t row = strip_y; row < strip_y + strip_height; ++row) {
+            renderer->lens_remap_covered_rows[row] = 1;
+        }
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        renderer->error = "Insufficient memory while uploading a streaming lens remap strip";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        renderer->error = "Unknown error while executing a streaming lens remap strip";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
+
+im_status im_renderer_lens_remap_finish(im_renderer *renderer,
+                                        uint16_t *destination,
+                                        size_t destination_values) {
+    if (!renderer || !destination) return IM_STATUS_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(renderer->mutex);
+    if (!renderer->has_lens_remap_source) {
+        renderer->error = "Streaming lens remap source has not been uploaded";
+        return IM_STATUS_NOT_READY;
+    }
+    const uint64_t values64 = static_cast<uint64_t>(renderer->lens_remap_width) *
+                              renderer->lens_remap_height * 3u;
+    if (destination_values != values64) {
+        renderer->error = "Streaming lens remap destination sample count is invalid";
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    size_t destination_bytes = 0;
+    if (!camera_profile_byte_length<uint16_t>(destination_values, &destination_bytes) ||
+        camera_profile_ranges_overlap(destination, destination_bytes,
+                                      renderer->lens_remap_source_origin,
+                                      renderer->lens_remap_source_bytes)) {
+        renderer->error = "Streaming lens remap destination overlaps source or overflows";
+        return IM_STATUS_INVALID_ARGUMENT;
+    }
+    if (renderer->lens_remap_covered_rows.size() != renderer->lens_remap_height ||
+        std::find(renderer->lens_remap_covered_rows.begin(),
+                  renderer->lens_remap_covered_rows.end(), uint8_t{0}) !=
+            renderer->lens_remap_covered_rows.end()) {
+        renderer->error = "Streaming lens remap cannot finish before every output row is written";
+        return IM_STATUS_NOT_READY;
+    }
+    if (!renderer->backend->supports_lens_remap()) {
+        renderer->error = "Streaming RGB16 lens remap is unavailable on this GPU backend";
+        return IM_STATUS_BACKEND_UNAVAILABLE;
+    }
+    try {
+        std::string error;
+        if (!renderer->backend->finish_lens_remap_rgb16(destination,
+                                                        destination_values, error)) {
+            renderer->error = error.empty() ? "Streaming lens remap readback failed" : std::move(error);
+            return IM_STATUS_RUNTIME_ERROR;
+        }
+        renderer->has_lens_remap_source = false;
+        renderer->lens_remap_source_origin = nullptr;
+        renderer->lens_remap_source_bytes = 0;
+        renderer->lens_remap_covered_rows.clear();
+        renderer->error.clear();
+        return IM_STATUS_OK;
+    } catch (const std::bad_alloc &) {
+        renderer->error = "Insufficient memory while reading back streaming lens remap";
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (const std::exception &exception) {
+        renderer->error = exception.what();
+        return IM_STATUS_RUNTIME_ERROR;
+    } catch (...) {
+        renderer->error = "Unknown error while reading back streaming lens remap";
+        return IM_STATUS_RUNTIME_ERROR;
+    }
 }
 
 im_status im_renderer_render_physical_float(im_renderer *renderer,

@@ -303,6 +303,26 @@ IMPRINT_API im_status im_renderer_create(im_backend_kind backend, im_renderer **
 IMPRINT_API void im_renderer_destroy(im_renderer *renderer);
 IMPRINT_API const char *im_renderer_last_error(const im_renderer *renderer);
 IMPRINT_API const char *im_renderer_backend_name(const im_renderer *renderer);
+/* Streaming Metal RGB16 Lensfun remap. The source is uploaded once at begin;
+   strips write into a full-size backend output and finish reads it back. Only
+   backends that explicitly report support may be used. Coordinates are
+   absolute source coordinates, with REFLECT101 borders. */
+IMPRINT_API int im_renderer_supports_lens_remap(const im_renderer *renderer);
+IMPRINT_API im_status im_renderer_lens_remap_begin(im_renderer *renderer,
+                                                   uint32_t width,
+                                                   uint32_t height,
+                                                   const uint16_t *source,
+                                                   size_t source_values);
+IMPRINT_API im_status im_renderer_lens_remap_strip(im_renderer *renderer,
+                                                   const float *maps,
+                                                   size_t map_values,
+                                                   uint32_t strip_y,
+                                                   uint32_t strip_height,
+                                                   uint32_t map_channels,
+                                                   uint32_t interpolation_mode);
+IMPRINT_API im_status im_renderer_lens_remap_finish(im_renderer *renderer,
+                                                    uint16_t *destination,
+                                                    size_t destination_values);
 /* Dense full-resolution stages. Sources are normalized finite RGB float32;
    dimensions/counts follow the dense CPU contract and outputs never alias inputs. */
 IMPRINT_API im_status im_native_rgb_peak(uint32_t width, uint32_t height,

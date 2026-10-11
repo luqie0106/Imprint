@@ -488,6 +488,22 @@ def _configure_library(library: ctypes.CDLL) -> None:
     library.im_renderer_last_error.restype = ctypes.c_char_p
     library.im_renderer_backend_name.argtypes = [renderer]
     library.im_renderer_backend_name.restype = ctypes.c_char_p
+    lens_support = getattr(library, "im_renderer_supports_lens_remap", None)
+    lens_begin = getattr(library, "im_renderer_lens_remap_begin", None)
+    lens_strip = getattr(library, "im_renderer_lens_remap_strip", None)
+    lens_finish = getattr(library, "im_renderer_lens_remap_finish", None)
+    if all(symbol is not None for symbol in (lens_support, lens_begin, lens_strip, lens_finish)):
+        lens_support.argtypes = [renderer]
+        lens_support.restype = ctypes.c_int
+        lens_begin.argtypes = [renderer, ctypes.c_uint32, ctypes.c_uint32,
+                               uint16_pointer, ctypes.c_size_t]
+        lens_begin.restype = ctypes.c_int
+        lens_strip.argtypes = [renderer, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                               ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+                               ctypes.c_uint32]
+        lens_strip.restype = ctypes.c_int
+        lens_finish.argtypes = [renderer, uint16_pointer, ctypes.c_size_t]
+        lens_finish.restype = ctypes.c_int
     physical_support = getattr(library, "im_renderer_supports_physical_float", None)
     if physical_support is not None:
         physical_support.argtypes = [renderer]
@@ -873,10 +889,10 @@ def _native_error(library: ctypes.CDLL, renderer: ctypes.c_void_p | None) -> str
     return raw.decode("utf-8", errors="replace") if raw else "no native error detail"
 
 
-def _create_renderer(library: ctypes.CDLL) -> tuple[ctypes.c_void_p, str]:
+def _create_renderer(library: ctypes.CDLL, backend_kind: int = 0) -> tuple[ctypes.c_void_p, str]:
     renderer = ctypes.c_void_p()
     # IM_BACKEND_AUTO asks the native factory to choose an available backend.
-    status = library.im_renderer_create(0, ctypes.byref(renderer))
+    status = library.im_renderer_create(backend_kind, ctypes.byref(renderer))
     if status != 0 or not renderer.value:
         detail = _native_error(library, None)
         if renderer.value:
@@ -887,6 +903,133 @@ def _create_renderer(library: ctypes.CDLL) -> tuple[ctypes.c_void_p, str]:
     name = library.im_renderer_backend_name(renderer)
     backend = name.decode("utf-8", errors="replace") if name else "unknown"
     return renderer, backend
+
+
+class NativeLensRemapper:
+    """Per-operation streaming Metal RGB16 Lensfun resampler.
+
+    The full source is uploaded once. Call :meth:`remap` with absolute source
+    coordinate strips and their destination y offsets, then :meth:`finish` to
+    read the complete result. The object owns only its renderer handle; it does
+    not retain the NumPy source or coordinate arrays.
+    """
+
+    def __init__(self, source, interpolation_mode: int):
+        source = np.asarray(source)
+        if source.dtype != np.uint16 or source.ndim != 3 or source.shape[2] != 3:
+            raise NativeRendererError("Native lens remap source must be RGB uint16")
+        if not source.flags.c_contiguous:
+            raise NativeRendererError("Native lens remap source must be C-contiguous")
+        if interpolation_mode not in (0, 1):
+            raise NativeRendererError("Native lens remap interpolation mode must be 0 or 1")
+        height, width, _ = source.shape
+        if width < 1 or height < 1:
+            raise NativeRendererError("Native lens remap source must have nonzero dimensions")
+
+        self._library = None
+        self._renderer = None
+        self._width = int(width)
+        self._height = int(height)
+        self._mode = int(interpolation_mode)
+        self._finished = False
+
+        library, _ = _get_library()
+        required = (
+            "im_renderer_supports_lens_remap",
+            "im_renderer_lens_remap_begin",
+            "im_renderer_lens_remap_strip",
+            "im_renderer_lens_remap_finish",
+        )
+        if any(getattr(library, name, None) is None for name in required):
+            raise NativeRendererError("Streaming GPU lens remap ABI is unavailable in this library")
+        _configure_library(library)
+        renderer, backend = _create_renderer(library, backend_kind=1)  # IM_BACKEND_METAL
+        if backend.lower() != "metal" or not library.im_renderer_supports_lens_remap(renderer):
+            library.im_renderer_destroy(renderer)
+            raise NativeRendererError("Streaming RGB16 lens remap is unavailable on Metal")
+        self._library = library
+        self._renderer = renderer
+        status = library.im_renderer_lens_remap_begin(
+            renderer, self._width, self._height,
+            source.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), source.size,
+        )
+        if status != 0:
+            detail = _native_error(library, renderer)
+            self.close()
+            raise NativeRendererError(f"Could not upload streaming lens remap source: {detail}")
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return (self._height, self._width, 3)
+
+    def _require_open(self) -> tuple[ctypes.CDLL, ctypes.c_void_p]:
+        if self._renderer is None or self._library is None or self._finished:
+            raise NativeRendererError("Native lens remapper is closed or already finished")
+        return self._library, self._renderer
+
+    def remap(self, maps, y: int) -> None:
+        library, renderer = self._require_open()
+        maps = np.asarray(maps)
+        if maps.dtype != np.float32:
+            raise NativeRendererError("Native lens remap coordinate strips must be float32")
+        expected_shared = (None, self._width, 2)
+        expected_channel = (None, self._width, 3, 2)
+        if (maps.ndim == 3 and maps.shape[1:] == expected_shared[1:]):
+            map_channels = 1
+        elif maps.ndim == 4 and maps.shape[1:] == expected_channel[1:]:
+            map_channels = 3
+        else:
+            raise NativeRendererError("Native lens remap strip must have shape (h,w,2) or (h,w,3,2)")
+        strip_height = int(maps.shape[0])
+        if strip_height <= 0 or not isinstance(y, (int, np.integer)):
+            raise NativeRendererError("Native lens remap strip offset and height are invalid")
+        strip_y = int(y)
+        if strip_y < 0 or strip_y + strip_height > self._height:
+            raise NativeRendererError("Native lens remap strip lies outside the output image")
+        if not maps.flags.c_contiguous:
+            maps = np.ascontiguousarray(maps)
+        status = library.im_renderer_lens_remap_strip(
+            renderer, maps.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), maps.size,
+            strip_y, strip_height, map_channels, self._mode,
+        )
+        if status != 0:
+            raise NativeRendererError(f"Streaming lens remap strip failed: {_native_error(library, renderer)}")
+
+    def finish(self, destination) -> None:
+        library, renderer = self._require_open()
+        if (not isinstance(destination, np.ndarray) or destination.dtype != np.uint16 or
+                destination.shape != self.shape or not destination.flags.c_contiguous or
+                not destination.flags.writeable):
+            raise NativeRendererError("Native lens remap destination must be writable contiguous RGB uint16")
+        status = library.im_renderer_lens_remap_finish(
+            renderer, destination.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)),
+            destination.size,
+        )
+        if status != 0:
+            raise NativeRendererError(f"Streaming lens remap readback failed: {_native_error(library, renderer)}")
+        self._finished = True
+
+    def close(self) -> None:
+        renderer = self._renderer
+        library = self._library
+        self._renderer = None
+        self._library = None
+        if renderer is not None and library is not None:
+            library.im_renderer_destroy(renderer)
+
+    def __enter__(self):
+        self._require_open()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def _values(params: object, fields: tuple[str, ...], limits: tuple[tuple[float, float], ...], label: str):

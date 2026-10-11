@@ -53,6 +53,7 @@ function cloneBasicParams(source?: Partial<BasicParams> | null): BasicParams {
   return { ...defaultBasicParams, ...source };
 }
 
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
 const presets = ref<Preset[]>([]);
 const selectedPreset = computed({
   get: () => sharedPresetByPhoto.value[selectedId.value] || "",
@@ -69,6 +70,7 @@ const photoListLayout = ref<PhotoListLayout>("vertical");
 const basicParamsByPhoto = sharedBasicByPhoto;
 const selectedId = ref("");
 const originalUrl = ref("");
+const originalFullResolution = ref(false);
 const effectUrl = ref("");
 const mode = ref<PreviewMode>("effect");
 const split = ref(50);
@@ -95,6 +97,7 @@ const effectReady = computed(() => Boolean(effectUrl.value));
 const showComparePreview = computed(() => mode.value === "compare" && effectReady.value);
 const previewImageUrl = computed(() => mode.value !== "original" && effectReady.value ? effectUrl.value : originalUrl.value);
 let generation = 0;
+const previewClientId = crypto.randomUUID();
 let previewTimer: number | undefined;
 let fullResolutionTimer: number | undefined;
 let scheduledPreviewTask: Promise<void> | undefined;
@@ -341,6 +344,7 @@ function releasePreview() {
   if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
   if (effectUrl.value) URL.revokeObjectURL(effectUrl.value);
   originalUrl.value = "";
+  originalFullResolution.value = false;
   effectUrl.value = "";
 }
 interface PreviewAsset { url: string; width: number; height: number }
@@ -349,6 +353,7 @@ async function requestPreview(endpoint: string, body: object, token: number): Pr
   const response = await fetch(`${BASE_URL.value}${endpoint}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
+  if (response.status === 204) throw new DOMException("预览已被更新请求替代", "AbortError");
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(data.error || "预览失败");
@@ -364,6 +369,7 @@ async function requestPreview(endpoint: string, body: object, token: number): Pr
   };
 }
 async function refreshPreview(includeOriginal = false, fullResolution = false, token = ++generation) {
+  if (!props.active || token !== generation) return;
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) {
     releasePreview();
     return;
@@ -372,6 +378,8 @@ async function refreshPreview(includeOriginal = false, fullResolution = false, t
   try {
     const common = {
       session_id: sessionId.value, photo_id: selectedId.value, max_edge: 1800,
+      preview_client_id: previewClientId, preview_generation: token,
+      render_backend: renderBackend.value,
       preview_level: fullResolution ? 0 : 2, full_resolution: fullResolution,
     };
     const autoMode = sharedDehazeAutoByPhoto.value[selectedId.value] ?? false;
@@ -379,7 +387,8 @@ async function refreshPreview(includeOriginal = false, fullResolution = false, t
     const nonlocalMode = sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off";
     const dehazeContext = { ...common, auto_mode: autoMode, auto_exposure: autoExposure, nonlocal_mode: nonlocalMode };
     const requests: Array<Promise<PreviewAsset>> = [];
-    const requestOriginal = includeOriginal || fullResolution || !originalUrl.value;
+    const requestOriginal = includeOriginal || !originalUrl.value
+      || (fullResolution && !originalFullResolution.value);
     if (requestOriginal) requests.push(requestPreview("/api/enhance/preview", {
       ...dehazeContext, mode: "original", color_manage_srgb: true,
     }, token));
@@ -411,6 +420,7 @@ async function refreshPreview(includeOriginal = false, fullResolution = false, t
       if (result?.status === "fulfilled" && result.value.url) {
         if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
         originalUrl.value = result.value.url;
+        originalFullResolution.value = fullResolution;
       }
     }
     const effectResult = results[resultIndex];
@@ -436,6 +446,7 @@ async function refreshPreview(includeOriginal = false, fullResolution = false, t
 }
 
 function schedulePreview(includeOriginal = false, immediate = false) {
+  if (!props.active) return;
   window.clearTimeout(previewTimer);
   window.clearTimeout(fullResolutionTimer);
   const token = ++generation;
@@ -447,11 +458,27 @@ function schedulePreview(includeOriginal = false, immediate = false) {
     void (async () => {
       if (token !== generation) return;
       await scheduledPreviewTask;
-      if (token === generation) await refreshPreview(true, true, token);
+      if (token === generation) await refreshPreview(false, true, token);
     })();
   }, 500);
 }
 
+function cancelPendingPreview() {
+  const token = ++generation;
+  window.clearTimeout(previewTimer);
+  window.clearTimeout(fullResolutionTimer);
+  if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
+  void fetch(`${BASE_URL.value}/api/enhance/preview`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId.value, photo_id: selectedId.value,
+      preview_client_id: previewClientId, preview_generation: token, preview_cancel_only: true }),
+  }).catch(() => {});
+}
+
+watch(() => props.active, (active) => {
+  if (active) schedulePreview(false, true);
+  else cancelPendingPreview();
+});
 watch([isServerReady, BASE_URL], () => { void loadPresets(); }, { immediate: true });
 watch(sharedPhotoSource, source => {
   if (source?.owner === "enhance") adoptSession(source);

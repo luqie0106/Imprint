@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <sstream>
 
 namespace imprint {
@@ -33,9 +34,31 @@ private:
     __strong id<MTLDevice> device_ = nil;
 };
 
+struct MetalRuntime {
+    __strong id<MTLDevice> device = nil;
+    __strong id<MTLCommandQueue> queue = nil;
+    __strong id<MTLLibrary> library = nil;
+    __strong id<MTLComputePipelineState> render_pipeline = nil;
+    __strong id<MTLComputePipelineState> spatial_first_pipeline = nil;
+    __strong id<MTLComputePipelineState> spatial_finish_pipeline = nil;
+    __strong id<MTLComputePipelineState> physical_pipeline = nil;
+    __strong id<MTLComputePipelineState> warp_pipeline = nil;
+    __strong id<MTLComputePipelineState> lens_remap_pipeline = nil;
+    __strong id<MTLComputePipelineState> camera_profile_pipeline = nil;
+    __strong id<MTLComputePipelineState> camera_profile_transfer_pipeline = nil;
+};
+
+std::mutex g_metal_runtime_mutex;
+std::shared_ptr<MetalRuntime> g_metal_runtime;
+
 class MetalBackend final : public Backend {
 public:
     explicit MetalBackend(std::string &error) {
+        std::lock_guard<std::mutex> runtime_lock(g_metal_runtime_mutex);
+        if (g_metal_runtime) {
+            use_runtime(g_metal_runtime);
+            return;
+        }
         device_ = MTLCreateSystemDefaultDevice();
         if (!device_) {
             error = "No Metal-capable GPU is available";
@@ -119,6 +142,24 @@ public:
             warp_pipeline_ = [device_ newComputePipelineStateWithFunction:warp_rectilinear
                                                                     error:&nativeError];
         }
+        id<MTLFunction> lens_remap = [library_ newFunctionWithName:@"lens_remap_rgb16_strip"];
+        if (lens_remap) {
+            lens_remap_pipeline_ = [device_ newComputePipelineStateWithFunction:lens_remap
+                                                                           error:&nativeError];
+        }
+        auto runtime = std::make_shared<MetalRuntime>();
+        runtime->device = device_;
+        runtime->queue = queue_;
+        runtime->library = library_;
+        runtime->render_pipeline = pipeline_;
+        runtime->spatial_first_pipeline = spatial_first_pipeline_;
+        runtime->spatial_finish_pipeline = spatial_finish_pipeline_;
+        runtime->physical_pipeline = physical_pipeline_;
+        runtime->warp_pipeline = warp_pipeline_;
+        runtime->lens_remap_pipeline = lens_remap_pipeline_;
+        runtime->camera_profile_pipeline = camera_profile_pipeline_;
+        runtime->camera_profile_transfer_pipeline = camera_profile_transfer_pipeline_;
+        g_metal_runtime = std::move(runtime);
     }
 
     bool ready() const {
@@ -131,8 +172,103 @@ public:
     bool supports_warp_rectilinear() const override {
         return ready() && warp_pipeline_ != nil;
     }
+    bool supports_lens_remap() const override {
+        return ready() && lens_remap_pipeline_ != nil;
+    }
     bool supports_camera_profile_render() const override {
         return ready() && camera_profile_pipeline_ != nil;
+    }
+    bool begin_lens_remap_rgb16(uint32_t width, uint32_t height,
+                                const uint16_t *source, size_t source_values,
+                                std::string &error) override {
+        if (!supports_lens_remap() || !source || !width || !height ||
+            width > 32766 || height > 32766 ||
+            source_values != static_cast<size_t>(width) * height * 3u ||
+            source_values > (1ull << 29)) {
+            error = "Metal streaming lens remap source or dimensions are invalid";
+            return false;
+        }
+        const size_t bytes = source_values * sizeof(uint16_t);
+        id<MTLBuffer> source_buffer = [device_ newBufferWithBytes:source
+                                                          length:bytes
+                                                         options:MTLResourceStorageModeShared];
+        id<MTLBuffer> output_buffer = [device_ newBufferWithLength:bytes
+                                                            options:MTLResourceStorageModeShared];
+        if (!source_buffer || !output_buffer) {
+            error = "Could not allocate or upload Metal streaming lens remap buffers";
+            return false;
+        }
+        lens_source_buffer_ = source_buffer;
+        lens_output_buffer_ = output_buffer;
+        lens_width_ = width;
+        lens_height_ = height;
+        lens_source_values_ = source_values;
+        return true;
+    }
+    bool remap_lens_rgb16_strip(const float *maps, size_t map_values,
+                                uint32_t strip_y, uint32_t strip_height,
+                                uint32_t map_channels, uint32_t interpolation_mode,
+                                std::string &error) override {
+        const uint64_t pixels64 = static_cast<uint64_t>(lens_width_) * strip_height;
+        const uint64_t expected_maps = pixels64 * map_channels * 2u;
+        if (!supports_lens_remap() || !lens_source_buffer_ || !lens_output_buffer_ ||
+            !maps || !strip_height || strip_y >= lens_height_ ||
+            strip_height > lens_height_ - strip_y ||
+            (map_channels != 1 && map_channels != 3) || interpolation_mode > 1 ||
+            expected_maps != map_values || expected_maps > (1ull << 29) ||
+            pixels64 > std::numeric_limits<uint32_t>::max()) {
+            error = "Metal streaming lens remap strip buffers or dimensions are invalid";
+            return false;
+        }
+        const size_t map_bytes = map_values * sizeof(float);
+        id<MTLBuffer> map_buffer = [device_ newBufferWithBytes:maps
+                                                        length:map_bytes
+                                                       options:MTLResourceStorageModeShared];
+        if (!map_buffer) {
+            error = "Could not allocate or upload Metal streaming lens remap maps";
+            return false;
+        }
+        const uint32_t geometry[4] = {lens_width_, lens_height_, strip_y, strip_height};
+        const uint32_t options[2] = {map_channels, interpolation_mode};
+        const uint32_t pixel_count = static_cast<uint32_t>(pixels64);
+        id<MTLCommandBuffer> command = [queue_ commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (!command || !encoder) {
+            error = "Could not create a Metal streaming lens remap command";
+            return false;
+        }
+        [encoder setComputePipelineState:lens_remap_pipeline_];
+        [encoder setBuffer:lens_source_buffer_ offset:0 atIndex:0];
+        [encoder setBuffer:map_buffer offset:0 atIndex:1];
+        [encoder setBuffer:lens_output_buffer_ offset:0 atIndex:2];
+        [encoder setBytes:geometry length:sizeof(geometry) atIndex:3];
+        [encoder setBytes:options length:sizeof(options) atIndex:4];
+        [encoder setBytes:&pixel_count length:sizeof(pixel_count) atIndex:5];
+        const NSUInteger threads = lens_remap_pipeline_.threadExecutionWidth
+                                       ? lens_remap_pipeline_.threadExecutionWidth : 256;
+        [encoder dispatchThreadgroups:MTLSizeMake((pixels64 + threads - 1) / threads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            error = describe_error("Metal streaming lens remap failed", command.error);
+            return false;
+        }
+        return true;
+    }
+    bool finish_lens_remap_rgb16(uint16_t *destination,
+                                 size_t destination_values,
+                                 std::string &error) override {
+        if (!supports_lens_remap() || !lens_source_buffer_ || !lens_output_buffer_ ||
+            !destination || destination_values != lens_source_values_ ||
+            lens_output_buffer_.length != destination_values * sizeof(uint16_t)) {
+            error = "Metal streaming lens remap readback buffers are invalid";
+            return false;
+        }
+        std::memcpy(destination, lens_output_buffer_.contents,
+                    destination_values * sizeof(uint16_t));
+        return true;
     }
     bool create_shared_buffer(size_t byte_count,
                               std::shared_ptr<SharedBuffer> &buffer,
@@ -790,6 +926,20 @@ private:
         return true;
     }
 
+    void use_runtime(const std::shared_ptr<MetalRuntime> &runtime) {
+        device_ = runtime->device;
+        queue_ = runtime->queue;
+        library_ = runtime->library;
+        pipeline_ = runtime->render_pipeline;
+        spatial_first_pipeline_ = runtime->spatial_first_pipeline;
+        spatial_finish_pipeline_ = runtime->spatial_finish_pipeline;
+        physical_pipeline_ = runtime->physical_pipeline;
+        warp_pipeline_ = runtime->warp_pipeline;
+        lens_remap_pipeline_ = runtime->lens_remap_pipeline;
+        camera_profile_pipeline_ = runtime->camera_profile_pipeline;
+        camera_profile_transfer_pipeline_ = runtime->camera_profile_transfer_pipeline;
+    }
+
     static std::string describe_error(const char *prefix, NSError *error) {
         std::ostringstream stream;
         stream << prefix;
@@ -854,8 +1004,14 @@ private:
     id<MTLComputePipelineState> spatial_finish_pipeline_ = nil;
     id<MTLComputePipelineState> physical_pipeline_ = nil;
     id<MTLComputePipelineState> warp_pipeline_ = nil;
+    id<MTLComputePipelineState> lens_remap_pipeline_ = nil;
     id<MTLComputePipelineState> camera_profile_pipeline_ = nil;
     id<MTLComputePipelineState> camera_profile_transfer_pipeline_ = nil;
+    id<MTLBuffer> lens_source_buffer_ = nil;
+    id<MTLBuffer> lens_output_buffer_ = nil;
+    size_t lens_source_values_ = 0;
+    uint32_t lens_width_ = 0;
+    uint32_t lens_height_ = 0;
     std::array<id<MTLBuffer>, 3> source_buffers_{};
     id<MTLBuffer> curve_buffer_ = nil;
     id<MTLBuffer> lut_buffer_ = nil;

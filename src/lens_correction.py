@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass, field
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -94,6 +95,7 @@ _PLAN_CACHE: OrderedDict[tuple, _LensPlan] = OrderedDict()
 _PLAN_CACHE_LOCK = threading.RLock()
 _MAX_LENS_PLANS = 4
 _DATABASE_CACHE: dict[tuple, tuple[Any, Any]] = {}
+_LENS_BACKEND_CONTEXT = threading.local()
 
 
 def _calibration_signature() -> tuple:
@@ -552,8 +554,12 @@ def _geometry_map(value: Any, height: int, width: int) -> np.ndarray | None:
     return result if np.isfinite(result).all() else None
 
 
-def _apply_geometry(
-    corrected: np.ndarray,
+def _apply_geometry(corrected: np.ndarray, modifier: Any, **kwargs) -> tuple[bool, bool, bool]:
+    return _apply_geometry_many([corrected], modifier, **kwargs)
+
+
+def _apply_geometry_many(
+    images: list[np.ndarray],
     modifier: Any,
     *,
     width: int,
@@ -561,7 +567,9 @@ def _apply_geometry(
     geometry_enabled: bool,
     tca_enabled: bool,
     distortion_enabled: bool,
+    _allow_gpu: bool = True,
 ) -> tuple[bool, bool, bool]:
+    _LENS_BACKEND_CONTEXT.backend = "none"
     if not geometry_enabled:
         return False, False, False
     combined_method = getattr(modifier, "apply_subpixel_geometry_distortion", None)
@@ -571,67 +579,81 @@ def _apply_geometry(
 
     # Mapping strips are remapped from a stable source copy.  Without that
     # copy, an earlier strip could alter samples needed by a later map.
-    source = corrected.copy()
+    sources = [image.copy() for image in images]
+    remappers = []
+    if (_allow_gpu and sys.platform == "darwin" and
+            os.environ.get("IMPRINT_NATIVE_LENS_REMAP") != "0" and
+            width * height >= 1_000_000):
+        try:
+            from native_renderer import NativeLensRemapper
+            mode = native_dense._lens_interpolation_mode(
+                cv2.useOptimized(),
+                bool(getattr(getattr(cv2, "ipp", None), "useIPP", lambda: False)()),
+            )
+            for source in sources:
+                remappers.append(NativeLensRemapper(source, mode))
+        except (ImportError, NativeRendererError):
+            for remapper in remappers:
+                remapper.close()
+            remappers = []
     combined_applied = False
     geometry_applied = False
-    # Bilinear interpolation avoids negative ringing around high-contrast point lights.
-    for y in range(0, height, STRIP_HEIGHT):
-        strip_height = min(STRIP_HEIGHT, height - y)
-        maps = None
-        if callable(combined_method):
-            maps = _combined_map(_call_map(combined_method, y, width, strip_height), strip_height, width)
-        if maps is not None:
-            try:
-                native_dense.lens_remap(
-                    source,
-                    maps,
-                    destination=corrected[y:y + strip_height],
-                )
-                combined_applied = True
-                geometry_applied = True
+    try:
+        # Generate each Lensfun strip once for all aligned color-space images.
+        for y in range(0, height, STRIP_HEIGHT):
+            strip_height = min(STRIP_HEIGHT, height - y)
+            maps = None
+            combined = False
+            if callable(combined_method):
+                maps = _combined_map(_call_map(combined_method, y, width, strip_height), strip_height, width)
+                combined = maps is not None
+            if maps is None and callable(geometry_method):
+                maps = _geometry_map(_call_map(geometry_method, y, width, strip_height), strip_height, width)
+            if maps is None:
+                # Partial geometry must preserve the untouched strips too.
+                if remappers:
+                    raise NativeRendererError("Lensfun did not return a complete coordinate strip")
                 continue
-            except NativeRendererError:
-                pass
-            for channel in range(3):
-                remapped = cv2.remap(
-                    source[..., channel],
-                    maps[..., channel, 0],
-                    maps[..., channel, 1],
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_REFLECT101,
-                )
-                corrected[y : y + strip_height, :, channel] = remapped
-            combined_applied = True
+            for index, (source, corrected) in enumerate(zip(sources, images)):
+                if remappers:
+                    remappers[index].remap(maps, y)
+                    continue
+                try:
+                    native_dense.lens_remap(source, maps, destination=corrected[y:y + strip_height])
+                    if _LENS_BACKEND_CONTEXT.backend != "opencv":
+                        _LENS_BACKEND_CONTEXT.backend = "cpp_cpu"
+                except NativeRendererError:
+                    _LENS_BACKEND_CONTEXT.backend = "opencv"
+                    for channel in range(3):
+                        channel_maps = maps[..., channel, :] if combined else maps
+                        corrected[y:y + strip_height, :, channel] = cv2.remap(
+                            source[..., channel], channel_maps[..., 0], channel_maps[..., 1],
+                            interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101,
+                        )
+            combined_applied = combined_applied or combined
             geometry_applied = True
-            continue
-
-        if not callable(geometry_method):
-            continue
-        coordinate_map = _geometry_map(
-            _call_map(geometry_method, y, width, strip_height), strip_height, width
+        for remapper, corrected in zip(remappers, images):
+            remapper.finish(corrected)
+        if remappers:
+            _LENS_BACKEND_CONTEXT.backend = "metal"
+    except NativeRendererError:
+        if not remappers:
+            raise
+        # Restart the whole batch from its stable vignette-corrected sources;
+        # an unsuccessful GPU strip must never expose partial output.
+        for corrected, source in zip(images, sources):
+            np.copyto(corrected, source)
+        for remapper in remappers:
+            remapper.close()
+        remappers = []
+        return _apply_geometry_many(
+            images, modifier, width=width, height=height,
+            geometry_enabled=geometry_enabled, tca_enabled=tca_enabled,
+            distortion_enabled=distortion_enabled, _allow_gpu=False,
         )
-        if coordinate_map is None:
-            continue
-        try:
-            native_dense.lens_remap(
-                source,
-                coordinate_map,
-                destination=corrected[y:y + strip_height],
-            )
-            geometry_applied = True
-            continue
-        except NativeRendererError:
-            pass
-        for channel in range(3):
-            remapped = cv2.remap(
-                source[..., channel],
-                coordinate_map[..., 0],
-                coordinate_map[..., 1],
-                interpolation=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_REFLECT101,
-            )
-            corrected[y : y + strip_height, :, channel] = remapped
-        geometry_applied = True
+    finally:
+        for remapper in remappers:
+            remapper.close()
 
     if not geometry_applied:
         return False, False, False
@@ -716,12 +738,23 @@ def _lens_output_copy(image: np.ndarray) -> np.ndarray:
 
 
 def apply_lens_correction(
-    image_rgb16: np.ndarray,
+    image_rgb16: np.ndarray, metadata: Any, *,
+    require_correction: bool = True, backend: str = "auto",
+) -> tuple[np.ndarray, LensCorrectionResult]:
+    """Correct one image without modifying its input storage."""
+    return apply_lens_correction_many(
+        [image_rgb16], metadata, require_correction=require_correction, backend=backend,
+    )[0]
+
+
+def apply_lens_correction_many(
+    images: list[np.ndarray],
     metadata: Any,
     *,
     require_correction: bool = True,
-) -> tuple[np.ndarray, LensCorrectionResult]:
-    """Bake Lensfun correction into a copy of a 16-bit linear RGB image.
+    backend: str = "auto",
+) -> list[tuple[np.ndarray, LensCorrectionResult]]:
+    """Correct aligned RGB16 images using one optical map per output strip.
 
     ``metadata`` may be an EXIF mapping or an object containing an ``exif``
     mapping.  The source array is never modified.  With the default strict
@@ -729,14 +762,23 @@ def apply_lens_correction(
     and a vignetting-only calibration all raise a typed exception.
     """
 
-    if not isinstance(image_rgb16, np.ndarray):
-        raise TypeError("image_rgb16 must be a numpy array")
-    if image_rgb16.ndim != 3 or image_rgb16.shape[2] != 3:
-        raise ValueError("image_rgb16 must have shape (height, width, 3)")
-    if image_rgb16.dtype != np.uint16:
-        raise TypeError("image_rgb16 must use uint16 samples")
-    if image_rgb16.size == 0:
-        raise ValueError("image_rgb16 must not be empty")
+    if not images:
+        raise ValueError("lens correction batch must not be empty")
+    for image_rgb16 in images:
+        if not isinstance(image_rgb16, np.ndarray):
+            raise TypeError("image_rgb16 must be a numpy array")
+        if image_rgb16.ndim != 3 or image_rgb16.shape[2] != 3:
+            raise ValueError("image_rgb16 must have shape (height, width, 3)")
+        if image_rgb16.dtype != np.uint16:
+            raise TypeError("image_rgb16 must use uint16 samples")
+        if image_rgb16.size == 0:
+            raise ValueError("image_rgb16 must not be empty")
+    image_rgb16 = images[0]
+    if any(image.shape != image_rgb16.shape for image in images):
+        raise ValueError("lens correction batch requires aligned image shapes")
+
+    def failure(error):
+        return [_failure(error, image, require_correction) for image in images]
 
     make = _text(_metadata_value(metadata, "Make"))
     model = _text(_metadata_value(metadata, "Model"))
@@ -746,9 +788,9 @@ def apply_lens_correction(
     aperture = _number(_metadata_value(metadata, "FNumber"))
     distance = _number(_metadata_value(metadata, "SubjectDistance"))
     if focal_length is None or focal_length <= 0.0:
-        return _failure(LensMetadataUnavailableError("FocalLength 无效，无法初始化 Lensfun"), image_rgb16, require_correction)
+        return failure(LensMetadataUnavailableError("FocalLength 无效，无法初始化 Lensfun"))
     if aperture is None or aperture <= 0.0:
-        return _failure(LensMetadataUnavailableError("FNumber 无效，无法初始化 Lensfun"), image_rgb16, require_correction)
+        return failure(LensMetadataUnavailableError("FNumber 无效，无法初始化 Lensfun"))
     # Lensfun accepts a very distant subject as a stable default.  EXIF often
     # omits SubjectDistance; only a present, finite positive value overrides it.
     if distance is None or distance <= 0.0:
@@ -757,7 +799,7 @@ def apply_lens_correction(
     try:
         import lensfunpy  # type: ignore[import-not-found]
     except Exception as exc:
-        return _failure(LensfunUnavailableError("未安装或无法导入 lensfunpy"), image_rgb16, require_correction)
+        return failure(LensfunUnavailableError("未安装或无法导入 lensfunpy"))
 
     try:
         height, width = int(image_rgb16.shape[0]), int(image_rgb16.shape[1])
@@ -768,13 +810,15 @@ def apply_lens_correction(
         # A modifier may be shared by preview/export workers. Its calls remain
         # serialized, while callers hold only a small optical plan, not maps.
         with plan.lock:
-            corrected = _lens_output_copy(image_rgb16)
+            corrected_images = [_lens_output_copy(image) for image in images]
             vignetting_enabled = bool(enabled & flags_by_name["VIGNETTING"]) and bool(
                 getattr(lens, "calib_vignetting", ())
             )
-            vignetting_applied = _apply_vignetting(
-                corrected, modifier, enabled=vignetting_enabled
-            )
+            vignette_results = [
+                _apply_vignetting(corrected, modifier, enabled=vignetting_enabled)
+                for corrected in corrected_images
+            ]
+            vignetting_applied = all(vignette_results)
 
             # lensfunpy 1.18 returns None from initialize, so requested flags alone
             # cannot prove a calibration exists.  Require the matched profile to
@@ -786,20 +830,21 @@ def apply_lens_correction(
             tca_enabled = bool(enabled & flags_by_name["TCA"]) and bool(
                 getattr(lens, "calib_tca", ())
             )
-            distortion_applied, tca_applied, geometry_applied = _apply_geometry(
-                corrected,
+            distortion_applied, tca_applied, geometry_applied = _apply_geometry_many(
+                corrected_images,
                 modifier,
                 width=width,
                 height=height,
                 geometry_enabled=distortion_enabled or tca_enabled,
                 tca_enabled=tca_enabled,
                 distortion_enabled=distortion_enabled,
+                _allow_gpu=backend in ("auto", "native"),
             )
         if not geometry_applied:
             error = LensCorrectionNotAppliedError(
                 "Lensfun 匹配仅提供暗角或未提供可用坐标，未满足像素级 distortion/TCA 校正"
             )
-            return _failure(error, image_rgb16, require_correction)
+            return failure(error)
         result = LensCorrectionResult(
             applied=True,
             camera_name=_object_text(camera, "model", "name", "camera_model") or model or None,
@@ -808,12 +853,13 @@ def apply_lens_correction(
             tca_applied=tca_applied,
             vignetting_applied=vignetting_applied,
             scale=float(scale),
+            backend=getattr(_LENS_BACKEND_CONTEXT, "backend", "none"),
         )
-        return corrected, result
+        return [(corrected, result) for corrected in corrected_images]
     except LensCorrectionError as exc:
-        return _failure(exc, image_rgb16, require_correction)
+        return failure(exc)
     except Exception as exc:
-        return _failure(LensCorrectionError(f"Lensfun 校正失败: {type(exc).__name__}"), image_rgb16, require_correction)
+        return failure(LensCorrectionError(f"Lensfun 校正失败: {type(exc).__name__}"))
 
 
 __all__ = [
@@ -824,4 +870,5 @@ __all__ = [
     "LensMatchError",
     "LensfunUnavailableError",
     "apply_lens_correction",
+    "apply_lens_correction_many",
 ]

@@ -10,6 +10,7 @@ import copy
 import math
 import json
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -22,6 +23,10 @@ _RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 _IMPRINT_NS = "https://imprint.local/ns/photo-settings/1.0/"
 _MAX_PHOTOS = 500
 _WRITE_LOCK = threading.RLock()
+_RICOH_PARALLEL_PIXEL_THRESHOLD = 1_000_000
+_RICOH_ROW_CHUNK_SIZE = 64
+_RICOH_DEFAULT_ROW_WORKERS = 4
+_RICOH_MAX_ROW_WORKERS = 4
 
 # Empirical residual luminance calibration for the GR3 Vivid Street measured
 # preview. It comes from aligned captures of one photo using Adobe's Standard
@@ -522,6 +527,15 @@ def _apply_display_srgb_exposure(rgb, exposure: float, np):
     )
 
 
+def _ricoh_row_worker_count() -> int:
+    """Read the bounded worker setting, defaulting to four on invalid input."""
+    try:
+        configured = int(os.environ.get("IMPRINT_RICOH_ROW_WORKERS", str(_RICOH_DEFAULT_ROW_WORKERS)))
+    except (TypeError, ValueError):
+        return _RICOH_DEFAULT_ROW_WORKERS
+    return max(1, min(_RICOH_MAX_ROW_WORKERS, configured))
+
+
 def apply_ricoh_preview_effect(image: "object", preset_id: str,
                                basic_params: dict[str, float] | None = None,
                                use_measured_color: bool = False):
@@ -562,8 +576,9 @@ def apply_ricoh_preview_effect(image: "object", preset_id: str,
     blacks = float(controls["blacks"]) / 100.0
     saturation = float(controls["saturation"]) / 100.0
     vibrance = float(controls["vibrance"]) / 100.0
-    for row in range(0, image.shape[0], 64):
-        end = min(image.shape[0], row + 64)
+
+    def render_rows(bounds: tuple[int, int]) -> None:
+        row, end = bounds
         rgb = image[row:end].astype(np.float32) / maximum
         # White balance controls in these reviewed presets are generally small;
         # model them as restrained channel gains around neutral.
@@ -653,6 +668,22 @@ def apply_ricoh_preview_effect(image: "object", preset_id: str,
         if use_measured_color and preset_id == "gr3_vivid_street":
             rgb = _apply_gr3_vivid_street_luminance_calibration(rgb, np)
         output[row:end] = np.clip(np.rint(rgb * maximum), 0.0, maximum).astype(image.dtype)
+
+    row_ranges = [
+        (row, min(image.shape[0], row + _RICOH_ROW_CHUNK_SIZE))
+        for row in range(0, image.shape[0], _RICOH_ROW_CHUNK_SIZE)
+    ]
+    if image.shape[0] * image.shape[1] >= _RICOH_PARALLEL_PIXEL_THRESHOLD:
+        workers = _ricoh_row_worker_count()
+        if workers > 1:
+            # Every task reads the same source and writes a disjoint output
+            # slice. Consuming map's results propagates worker exceptions;
+            # the executor context waits for all submitted rows before exit.
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                list(executor.map(render_rows, row_ranges))
+            return output
+    for bounds in row_ranges:
+        render_rows(bounds)
     return output
 
 

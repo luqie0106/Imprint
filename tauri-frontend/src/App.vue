@@ -211,8 +211,8 @@ onMounted(() => {
 
       <!-- 正常功能页面切换 -->
       <BurstPage v-show="activeTab === 'burst'" />
-      <EnhancePage v-show="activeTab === 'enhance'" />
-      <RicohPage v-show="activeTab === 'ricoh'" />
+      <EnhancePage v-show="activeTab === 'enhance'" :active="activeTab === 'enhance'" />
+      <RicohPage v-show="activeTab === 'ricoh'" :active="activeTab === 'ricoh'" />
       <ModelsPage v-show="activeTab === 'models'" />
       <TrainerPage v-show="activeTab === 'trainer'" />
       <SettingsPage v-show="activeTab === 'settings'" />

@@ -40,6 +40,30 @@ public:
     virtual bool supports_physical_float() const { return false; }
     virtual bool supports_physical_guarded_float() const { return false; }
     virtual bool supports_warp_rectilinear() const { return false; }
+    virtual bool supports_lens_remap() const { return false; }
+    virtual bool begin_lens_remap_rgb16(uint32_t width, uint32_t height,
+                                        const uint16_t *source, size_t source_values,
+                                        std::string &error) {
+        (void)width; (void)height; (void)source; (void)source_values;
+        error = "Streaming RGB16 lens remap is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool remap_lens_rgb16_strip(const float *maps, size_t map_values,
+                                        uint32_t strip_y, uint32_t strip_height,
+                                        uint32_t map_channels, uint32_t interpolation_mode,
+                                        std::string &error) {
+        (void)maps; (void)map_values; (void)strip_y; (void)strip_height;
+        (void)map_channels; (void)interpolation_mode;
+        error = "Streaming RGB16 lens remap is unavailable on this GPU backend";
+        return false;
+    }
+    virtual bool finish_lens_remap_rgb16(uint16_t *destination,
+                                         size_t destination_values,
+                                         std::string &error) {
+        (void)destination; (void)destination_values;
+        error = "Streaming RGB16 lens remap is unavailable on this GPU backend";
+        return false;
+    }
     virtual bool warp_rectilinear_rgb16(uint32_t width, uint32_t height,
                                        const uint16_t *source, size_t source_values,
                                        const float *constants, size_t constant_values,

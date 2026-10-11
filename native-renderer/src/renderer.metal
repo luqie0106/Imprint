@@ -655,6 +655,117 @@ kernel void warp_rectilinear_rgb16(device const ushort *source [[buffer(0)]],
     }
 }
 
+struct LensRemapAxis {
+    uint first;
+    uint second;
+    float fraction;
+    uint fixed_fraction;
+};
+
+static uint lens_reflect101(int index, uint extent) {
+    if (extent <= 1u) return 0u;
+    int edge = int(extent - 1u);
+    int period = 2 * edge;
+    int folded = index % period;
+    if (folded < 0) folded += period;
+    if (folded > edge) folded = period - folded;
+    return uint(folded);
+}
+
+static LensRemapAxis lens_remap_axis_fixed(float coordinate, uint extent) {
+    if (extent <= 1u) return {0u, 0u, 0.0f, 0u};
+    float base = floor(coordinate);
+    float fraction = coordinate - base;
+    uint quantized = uint(rint(fraction * 32.0f));
+    if (quantized == 32u) {
+        base += 1.0f;
+        quantized = 0u;
+    }
+    // OpenCV's fixed map stores its integer coordinate in a signed 16-bit
+    // value. Match the CPU bridge's saturation before REFLECT101 folding.
+    base = clamp(base, -32768.0f, 32767.0f);
+    int first = int(base);
+    return {lens_reflect101(first, extent),
+            lens_reflect101(first + 1, extent), 0.0f, quantized};
+}
+
+static LensRemapAxis lens_remap_axis_continuous(float coordinate, uint extent) {
+    if (extent <= 1u) return {0u, 0u, 0.0f, 0u};
+    float floor_coordinate = floor(coordinate);
+    int base = int(floor_coordinate);
+    int edge = int(extent - 1u);
+    int period = 2 * edge;
+    int remainder = base % period;
+    if (remainder < 0) remainder += period;
+    float fraction = coordinate - floor_coordinate;
+    int first;
+    if (remainder > edge || (remainder == edge && fraction > 0.0f)) {
+        first = period - remainder - 1;
+        fraction = 1.0f - fraction;
+    } else {
+        first = remainder;
+    }
+    uint second = uint(first + 1);
+    if (second >= extent) second = extent - 2u;
+    return {uint(first), second, fraction, 0u};
+}
+
+static ushort lens_round_u16(float value) {
+    return ushort(clamp(rint(value), 0.0f, 65535.0f));
+}
+
+kernel void lens_remap_rgb16_strip(device const ushort *source [[buffer(0)]],
+                                   device const float *maps [[buffer(1)]],
+                                   device ushort *destination [[buffer(2)]],
+                                   constant uint4 &geometry [[buffer(3)]],
+                                   constant uint2 &options [[buffer(4)]],
+                                   constant uint &pixel_count [[buffer(5)]],
+                                   uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= pixel_count) return;
+    uint width = geometry.x;
+    uint height = geometry.y;
+    uint strip_y = geometry.z;
+    uint x = pixel % width;
+    uint output_y = strip_y + pixel / width;
+    uint map_channels = options.x;
+    uint mode = options.y;
+    uint map_base = pixel * map_channels * 2u;
+    uint destination_base = (output_y * width + x) * 3u;
+    for (uint channel = 0u; channel < 3u; ++channel) {
+        uint coordinate = map_base + (map_channels == 1u ? 0u : channel * 2u);
+        float source_x = maps[coordinate];
+        float source_y = maps[coordinate + 1u];
+        LensRemapAxis axis_x = mode == 0u
+            ? lens_remap_axis_fixed(source_x, width)
+            : lens_remap_axis_continuous(source_x, width);
+        LensRemapAxis axis_y = mode == 0u
+            ? lens_remap_axis_fixed(source_y, height)
+            : lens_remap_axis_continuous(source_y, height);
+        uint offset00 = (axis_y.first * width + axis_x.first) * 3u + channel;
+        uint offset01 = (axis_y.first * width + axis_x.second) * 3u + channel;
+        uint offset10 = (axis_y.second * width + axis_x.first) * 3u + channel;
+        uint offset11 = (axis_y.second * width + axis_x.second) * 3u + channel;
+        if (mode == 0u) {
+            uint wx0 = 32u - axis_x.fixed_fraction;
+            uint wy0 = 32u - axis_y.fixed_fraction;
+            uint sum = uint(source[offset00]) * wx0 * wy0 +
+                       uint(source[offset01]) * axis_x.fixed_fraction * wy0 +
+                       uint(source[offset10]) * wx0 * axis_y.fixed_fraction +
+                       uint(source[offset11]) * axis_x.fixed_fraction * axis_y.fixed_fraction;
+            uint rounded = sum / 1024u;
+            uint remainder = sum % 1024u;
+            if (remainder > 512u || (remainder == 512u && (rounded & 1u) != 0u)) ++rounded;
+            destination[destination_base + channel] = ushort(min(rounded, 65535u));
+        } else {
+            float fx = axis_x.fraction;
+            float fy = axis_y.fraction;
+            float top = float(source[offset00]) * (1.0f - fx) + float(source[offset01]) * fx;
+            float bottom = float(source[offset10]) * (1.0f - fx) + float(source[offset11]) * fx;
+            destination[destination_base + channel] = lens_round_u16(top * (1.0f - fy) + bottom * fy);
+        }
+    }
+}
+
 static float profile_encode_srgb(float value) {
     value = max(value, 0.0f);
     if (value <= 0.0031308f) return value * 12.92f;
