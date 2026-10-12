@@ -90,6 +90,8 @@ htmlcov/
 **/*.test.*
 **/*.spec.*
 /artifacts/acr_blackbox_fixtures/
+# Local Camera Raw investigation evidence (for example, lcr3520-*.json)
+/research/acr/reports/evidence/lcr*
 
 # Large model weights (except the small custom aesthetic model)
 *.pt
