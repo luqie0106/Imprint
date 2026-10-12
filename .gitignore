@@ -1,10 +1,8 @@
-# ── macOS ───────────────────────────────────────────────────────────────────────
+# Operating systems and editors
 .DS_Store
 .AppleDouble
 .LSOverride
 ._*
-
-# ── Windows ─────────────────────────────────────────────────────────────────────
 Thumbs.db
 Thumbs.db:encryptable
 ehthumbs.db
@@ -15,22 +13,27 @@ ehthumbs_vista.db
 *.ntvs*
 *.njsproj
 *.sln
-
-# ── Linux & Editors ─────────────────────────────────────────────────────────────
 *~
 *.swp
 *.swo
+.vscode/
+.idea/
 
-# ── Python Byte-compiled & Optimized ────────────────────────────────────────────
+# Python caches, environments, and packaging output
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 *.dylib
 *.dll
-
-# ── Distribution & Build Artifacts ─────────────────────────────────────────────
 .Python
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 build/
 develop-eggs/
 dist/
@@ -51,15 +54,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# ── Tauri & Rust Build ─────────────────────────────────────────────────────────
+# Rust, Tauri, and frontend build output
 **/target/
-target/
 **/gen/schemas/
 gen/
-
-# ── Node & Frontend ────────────────────────────────────────────────────────────
 **/node_modules/
-node_modules/
 tauri-frontend/dist/
 tauri-frontend/dist-ssr/
 *.local
@@ -68,7 +67,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# ── Testing & Linters ──────────────────────────────────────────────────────────
+# Test and analysis artifacts
 .pytest_cache/
 .coverage
 .coverage.*
@@ -79,8 +78,6 @@ htmlcov/
 .ruff_cache/
 .pyre/
 .pytype/
-
-# Keep tests and test fixtures local; do not add them to the repository.
 **/test/
 **/tests/
 **/__tests__/
@@ -92,47 +89,29 @@ htmlcov/
 **/*Tests.*
 **/*.test.*
 **/*.spec.*
-
-# Local ACR black-box test fixtures and analysis artifacts (including TIFFs)
 /artifacts/acr_blackbox_fixtures/
 
-# ── Virtual Environments ───────────────────────────────────────────────────────
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# ── IDEs ───────────────────────────────────────────────────────────────────────
-.vscode/
-.idea/
-
-# ── Model Large Weights (Ignore large base models) ──────────────────────────────
+# Large model weights (except the small custom aesthetic model)
 *.pt
 *.onnx
 models/clip-vit-base-patch32/
 models/clip-vit-large-patch14/
-
-# Explicitly track our custom trained aesthetic MLP (since it is small)
 !models/aesthetic_mlp.pth
 !aesthetic_mlp.pth
 
-# ── PyInstaller ────────────────────────────────────────────────────────────────
+# PyInstaller specs (keep the app specs used by this project)
 *.spec
 !imprint.spec
 !photo_sort.spec
 !app_api.spec
 
+# Runtime leftovers
 .reasonix
-
-# ── Runtime telemetry/session leftovers ────────────────────────────────────────
 # ONNX Runtime may create this file on macOS when its telemetry store cannot be
 # opened from a sandboxed process.
 :memory:.ses
 
-# ── User photos and generated review/export folders ────────────────────────────
+# Local photos, review folders, and generated exports
 去朦胧输出/
 审查_连拍淘汰/
 审查_明显废片/
@@ -161,7 +140,6 @@ models/clip-vit-large-patch14/
 *.erf
 *.mef
 *.mos
-
 test_images/
 qa/
 artifacts/
