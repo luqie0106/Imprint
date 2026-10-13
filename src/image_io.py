@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 from PIL import ExifTags, Image, ImageOps
 import rawpy
+from raw_decoder import open_raw
 
 try:
     import pillow_heif
@@ -586,7 +587,7 @@ def _raw_bit_depth(raw: Any) -> int:
 
 
 def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
-    with rawpy.imread(str(path)) as raw:
+    with open_raw(str(path)) as raw:
         # Preview lens correction needs the same camera/lens EXIF as export.
         # Only source bit depth can be skipped on the quick path.
         source_bit_depth = 16 if preview else _raw_bit_depth(raw)
@@ -628,6 +629,9 @@ def _read_raw(path: Path, preview: bool) -> tuple[np.ndarray, ImageMetadata]:
         _fill_lens_specification(exif)
         if camera is not None:
             exif["CameraWhiteBalance"] = tuple(camera)
+        decoder_backend = getattr(raw, "decoder_backend", None)
+        if decoder_backend is not None:
+            exif["RawDecoderBackend"] = str(decoder_backend)
     metadata = ImageMetadata(
         width=int(rgb.shape[1]),
         height=int(rgb.shape[0]),
@@ -1030,7 +1034,7 @@ def enhanced_dng_source_data(
         ):
             cache_candidate = False
 
-    with rawpy.imread(str(source_path)) as raw:
+    with open_raw(str(source_path)) as raw:
         mosaic = np.ascontiguousarray(raw.raw_image_visible.copy())
         pattern = np.asarray(raw.raw_pattern)
         color_desc = bytes(raw.color_desc)

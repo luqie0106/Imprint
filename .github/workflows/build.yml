@@ -91,12 +91,17 @@ jobs:
           cmake -S native-sort -B native-sort/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
           cmake --build native-sort/build --config Release --target imprint_sort --parallel
 
+      - name: Build native TicoRAW decoder
+        run: |
+          cmake -S native-raw -B native-raw/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native-raw/build --config Release --target imprint_raw --parallel
+
       - name: Cache Python sidecar
         id: cache-sidecar
         uses: actions/cache@v4
         with:
           path: tauri-frontend/dist-python
-          key: sidecar-onedir-v7-${{ runner.os }}-${{ hashFiles('src/*.py', 'native-renderer/src/*', 'native-renderer/include/*', 'native-renderer/cmake/*', 'native-renderer/CMakeLists.txt', 'native-sort/src/*', 'native-sort/include/*', 'native-sort/CMakeLists.txt', 'assets/acr_measured/*.npz', 'third_party/lensfun-db/*.xml', 'third_party/licenses/*', 'THIRD_PARTY_NOTICES.md', 'LICENSE', 'app_api.spec', 'requirements-build.txt') }}
+          key: sidecar-onedir-v8-${{ runner.os }}-${{ hashFiles('src/*.py', 'native-renderer/src/*', 'native-renderer/include/*', 'native-renderer/cmake/*', 'native-renderer/CMakeLists.txt', 'native-sort/src/*', 'native-sort/include/*', 'native-sort/CMakeLists.txt', 'native-raw/src/*', 'native-raw/include/*', 'native-raw/cmake/*', 'native-raw/CMakeLists.txt', 'assets/acr_measured/*.npz', 'third_party/lensfun-db/*.xml', 'third_party/licenses/*', 'THIRD_PARTY_NOTICES.md', 'LICENSE', 'app_api.spec', 'requirements-build.txt') }}
 
       - name: Build Python sidecar (macOS onedir)
         if: steps.cache-sidecar.outputs.cache-hit != 'true' && runner.os == 'macOS'

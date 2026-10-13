@@ -1,0 +1,3 @@
+# Local Hopper analysis databases; do not commit copies of Adobe binaries.
+*.hop
+*.hop/

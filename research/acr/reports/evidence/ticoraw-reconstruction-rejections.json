@@ -1,0 +1,7 @@
+{
+  "bad_scatter_rejected": true,
+  "bad_scatter_error": "reconstruct error: scatter size does not match complete tile schedule",
+  "existing_output_rejected": true,
+  "existing_output_unchanged": true,
+  "existing_output_error": "reconstruct error: output already exists"
+}

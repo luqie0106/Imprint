@@ -21,6 +21,21 @@ These notices do not change the Apache-2.0 license of Imprint itself.
   the Lensfun license. The notices and complete license texts are included in
   both this repository and packaged sidecar resources.
 
+## LibRaw metadata / rendering and TicoRAW reconstruction reference
+
+- Source: https://github.com/pdcgomes/redlamp-libraw/tree/4abfcd2ab82f2211b1f7e7c3cd83974c87e0d812
+- Fixed archive SHA-256: `2ca1d9673531fccabcc7c8bce589444163868bcde625aa1f09eb442df1bcce2d`.
+- This component is used under LGPL-2.1, with license and attribution in
+  `third_party/licenses/LIBRAW_LGPL_2.1.txt` and `LIBRAW_COPYRIGHT.txt`.
+- `native-raw` builds a separate replaceable shared library containing LibRaw's
+  metadata and color rendering with Imprint's C++/Metal TicoRAW operators.
+  Its adapted reconstruction sources retain the upstream attribution and are
+  provided under LGPL-2.1. The rest of Imprint retains its existing license.
+- Corresponding source and build instructions are in `native-raw`, together
+  with the fixed downloadable LibRaw source above. Recipients can rebuild and
+  replace the shared library, including for debugging their modifications.
+- Release packages include this notice and the full license texts.
+
 ## Lensfun database
 
 - Project: https://github.com/lensfun/lensfun

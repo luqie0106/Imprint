@@ -1,0 +1,448 @@
+[
+  {
+    "selector": "T@\"NSURL\",C,VprimaryPresentedItemURL",
+    "vm_address": "0x7a08dfb",
+    "file_offset": "0x109c4dfb",
+    "selref_addresses": []
+  },
+  {
+    "selector": "newComputePipelineStateWithDescriptor:options:reflection:error:",
+    "vm_address": "0x7a08f76",
+    "file_offset": "0x109c4f76",
+    "selref_addresses": [
+      "0x811cc68"
+    ]
+  },
+  {
+    "selector": "accommodatePresentedItemDeletionWithCompletionHandler:",
+    "vm_address": "0x7a08fb6",
+    "file_offset": "0x109c4fb6",
+    "selref_addresses": []
+  },
+  {
+    "selector": "accommodatePresentedSubitemDeletionAtURL:completionHandler:",
+    "vm_address": "0x7a08ffd",
+    "file_offset": "0x109c4ffd",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedSubitemDidChangeAtURL:",
+    "vm_address": "0x7a0908c",
+    "file_offset": "0x109c508c",
+    "selref_addresses": []
+  },
+  {
+    "selector": "addRepresentation:",
+    "vm_address": "0x7a0912f",
+    "file_offset": "0x109c512f",
+    "selref_addresses": [
+      "0x811c1b0"
+    ]
+  },
+  {
+    "selector": "setTextureType:",
+    "vm_address": "0x7a092bc",
+    "file_offset": "0x109c52bc",
+    "selref_addresses": [
+      "0x811d5f8"
+    ]
+  },
+  {
+    "selector": "texture",
+    "vm_address": "0x7a0934a",
+    "file_offset": "0x109c534a",
+    "selref_addresses": [
+      "0x811d7c8"
+    ]
+  },
+  {
+    "selector": "T@\"NSURL\",C,VpresentedItemURL",
+    "vm_address": "0x7a0948d",
+    "file_offset": "0x109c548d",
+    "selref_addresses": []
+  },
+  {
+    "selector": "TIFFRepresentation",
+    "vm_address": "0x7a094e9",
+    "file_offset": "0x109c54e9",
+    "selref_addresses": [
+      "0x811c100"
+    ]
+  },
+  {
+    "selector": "newCommandQueue",
+    "vm_address": "0x7a09674",
+    "file_offset": "0x109c5674",
+    "selref_addresses": [
+      "0x811cc60"
+    ]
+  },
+  {
+    "selector": "accommodatePresentedItemEvictionWithCompletionHandler:",
+    "vm_address": "0x7a096a2",
+    "file_offset": "0x109c56a2",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedSubitemDidAppearAtURL:",
+    "vm_address": "0x7a0971b",
+    "file_offset": "0x109c571b",
+    "selref_addresses": []
+  },
+  {
+    "selector": "addFilePresenter:",
+    "vm_address": "0x7a09785",
+    "file_offset": "0x109c5785",
+    "selref_addresses": [
+      "0x811c188"
+    ]
+  },
+  {
+    "selector": "commandBuffer",
+    "vm_address": "0x7a09cc8",
+    "file_offset": "0x109c5cc8",
+    "selref_addresses": [
+      "0x811c3c0"
+    ]
+  },
+  {
+    "selector": "commit",
+    "vm_address": "0x7a09cd6",
+    "file_offset": "0x109c5cd6",
+    "selref_addresses": [
+      "0x811c3c8"
+    ]
+  },
+  {
+    "selector": "computeCommandEncoder",
+    "vm_address": "0x7a09cff",
+    "file_offset": "0x109c5cff",
+    "selref_addresses": [
+      "0x811c3e0"
+    ]
+  },
+  {
+    "selector": "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+    "vm_address": "0x7a0a0d0",
+    "file_offset": "0x109c60d0",
+    "selref_addresses": [
+      "0x811c480"
+    ]
+  },
+  {
+    "selector": "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+    "vm_address": "0x7a0a199",
+    "file_offset": "0x109c6199",
+    "selref_addresses": [
+      "0x811c490"
+    ]
+  },
+  {
+    "selector": "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+    "vm_address": "0x7a0a225",
+    "file_offset": "0x109c6225",
+    "selref_addresses": [
+      "0x811c498"
+    ]
+  },
+  {
+    "selector": "dispatchThreadgroups:threadsPerThreadgroup:",
+    "vm_address": "0x7a0a616",
+    "file_offset": "0x109c6616",
+    "selref_addresses": [
+      "0x811c5e8"
+    ]
+  },
+  {
+    "selector": "dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:",
+    "vm_address": "0x7a0a642",
+    "file_offset": "0x109c6642",
+    "selref_addresses": [
+      "0x811c5f0"
+    ]
+  },
+  {
+    "selector": "drawableSize",
+    "vm_address": "0x7a0a8aa",
+    "file_offset": "0x109c68aa",
+    "selref_addresses": [
+      "0x811c690"
+    ]
+  },
+  {
+    "selector": "encodeToCommandBuffer:inputs:outputs:error:",
+    "vm_address": "0x7a0a8cb",
+    "file_offset": "0x109c68cb",
+    "selref_addresses": [
+      "0x811dab8"
+    ]
+  },
+  {
+    "selector": "initWithFilePresenter:",
+    "vm_address": "0x7a0af3c",
+    "file_offset": "0x109c6f3c",
+    "selref_addresses": [
+      "0x811c8f8"
+    ]
+  },
+  {
+    "selector": "newFunctionWithName:",
+    "vm_address": "0x7a0b991",
+    "file_offset": "0x109c7991",
+    "selref_addresses": [
+      "0x811cc78"
+    ]
+  },
+  {
+    "selector": "newLibraryWithData:error:",
+    "vm_address": "0x7a0b9a6",
+    "file_offset": "0x109c79a6",
+    "selref_addresses": [
+      "0x811cc80"
+    ]
+  },
+  {
+    "selector": "newRenderPipelineStateWithDescriptor:error:",
+    "vm_address": "0x7a0b9c0",
+    "file_offset": "0x109c79c0",
+    "selref_addresses": [
+      "0x811cc88"
+    ]
+  },
+  {
+    "selector": "newTextureWithDescriptor:",
+    "vm_address": "0x7a0ba0b",
+    "file_offset": "0x109c7a0b",
+    "selref_addresses": [
+      "0x811cc98"
+    ]
+  },
+  {
+    "selector": "nextDrawable",
+    "vm_address": "0x7a0ba25",
+    "file_offset": "0x109c7a25",
+    "selref_addresses": [
+      "0x811cca0"
+    ]
+  },
+  {
+    "selector": "observedPresentedItemUbiquityAttributes",
+    "vm_address": "0x7a0bba5",
+    "file_offset": "0x109c7ba5",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentDrawable:",
+    "vm_address": "0x7a0bf9e",
+    "file_offset": "0x109c7f9e",
+    "selref_addresses": [
+      "0x811ce50"
+    ]
+  },
+  {
+    "selector": "presentedItemDidChange",
+    "vm_address": "0x7a0bfaf",
+    "file_offset": "0x109c7faf",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedItemDidChangeUbiquityAttributes:",
+    "vm_address": "0x7a0bfc6",
+    "file_offset": "0x109c7fc6",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedItemDidGainVersion:",
+    "vm_address": "0x7a0bff0",
+    "file_offset": "0x109c7ff0",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedItemDidLoseVersion:",
+    "vm_address": "0x7a0c00d",
+    "file_offset": "0x109c800d",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedItemDidMoveToURL:",
+    "vm_address": "0x7a0c02a",
+    "file_offset": "0x109c802a",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedItemDidResolveConflictVersion:",
+    "vm_address": "0x7a0c045",
+    "file_offset": "0x109c8045",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedItemOperationQueue",
+    "vm_address": "0x7a0c06d",
+    "file_offset": "0x109c806d",
+    "selref_addresses": [
+      "0x811daa8"
+    ]
+  },
+  {
+    "selector": "presentedItemURL",
+    "vm_address": "0x7a0c089",
+    "file_offset": "0x109c8089",
+    "selref_addresses": [
+      "0x811ce58"
+    ]
+  },
+  {
+    "selector": "presentedSubitemAtURL:didGainVersion:",
+    "vm_address": "0x7a0c09a",
+    "file_offset": "0x109c809a",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedSubitemAtURL:didLoseVersion:",
+    "vm_address": "0x7a0c0c0",
+    "file_offset": "0x109c80c0",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedSubitemAtURL:didMoveToURL:",
+    "vm_address": "0x7a0c0e6",
+    "file_offset": "0x109c80e6",
+    "selref_addresses": []
+  },
+  {
+    "selector": "presentedSubitemAtURL:didResolveConflictVersion:",
+    "vm_address": "0x7a0c10a",
+    "file_offset": "0x109c810a",
+    "selref_addresses": []
+  },
+  {
+    "selector": "primaryPresentedItemURL",
+    "vm_address": "0x7a0c144",
+    "file_offset": "0x109c8144",
+    "selref_addresses": [
+      "0x811dab0"
+    ]
+  },
+  {
+    "selector": "relinquishPresentedItemToReader:",
+    "vm_address": "0x7a0c1c5",
+    "file_offset": "0x109c81c5",
+    "selref_addresses": []
+  },
+  {
+    "selector": "relinquishPresentedItemToWriter:",
+    "vm_address": "0x7a0c1e6",
+    "file_offset": "0x109c81e6",
+    "selref_addresses": []
+  },
+  {
+    "selector": "removeFilePresenter:",
+    "vm_address": "0x7a0c21a",
+    "file_offset": "0x109c821a",
+    "selref_addresses": [
+      "0x811cea0"
+    ]
+  },
+  {
+    "selector": "renderCommandEncoderWithDescriptor:",
+    "vm_address": "0x7a0c2ee",
+    "file_offset": "0x109c82ee",
+    "selref_addresses": [
+      "0x811cef0"
+    ]
+  },
+  {
+    "selector": "savePresentedItemChangesWithCompletionHandler:",
+    "vm_address": "0x7a0c4cf",
+    "file_offset": "0x109c84cf",
+    "selref_addresses": []
+  },
+  {
+    "selector": "setBuffer:offset:atIndex:",
+    "vm_address": "0x7a0c783",
+    "file_offset": "0x109c8783",
+    "selref_addresses": [
+      "0x811d0b8"
+    ]
+  },
+  {
+    "selector": "setComputePipelineState:",
+    "vm_address": "0x7a0c8ae",
+    "file_offset": "0x109c88ae",
+    "selref_addresses": [
+      "0x811d128"
+    ]
+  },
+  {
+    "selector": "setDrawableSize:",
+    "vm_address": "0x7a0ca45",
+    "file_offset": "0x109c8a45",
+    "selref_addresses": [
+      "0x811d1f0"
+    ]
+  },
+  {
+    "selector": "setFragmentTexture:atIndex:",
+    "vm_address": "0x7a0cbcc",
+    "file_offset": "0x109c8bcc",
+    "selref_addresses": [
+      "0x811d2a8"
+    ]
+  },
+  {
+    "selector": "setPresentedItemURL:",
+    "vm_address": "0x7a0cfd8",
+    "file_offset": "0x109c8fd8",
+    "selref_addresses": [
+      "0x811d4a8"
+    ]
+  },
+  {
+    "selector": "setPrimaryPresentedItemURL:",
+    "vm_address": "0x7a0cfed",
+    "file_offset": "0x109c8fed",
+    "selref_addresses": [
+      "0x811d4b0"
+    ]
+  },
+  {
+    "selector": "setRenderPipelineState:",
+    "vm_address": "0x7a0d049",
+    "file_offset": "0x109c9049",
+    "selref_addresses": [
+      "0x811d4d8"
+    ]
+  },
+  {
+    "selector": "setTexture:",
+    "vm_address": "0x7a0d279",
+    "file_offset": "0x109c9279",
+    "selref_addresses": [
+      "0x811d5e8"
+    ]
+  },
+  {
+    "selector": "setTexture:atIndex:",
+    "vm_address": "0x7a0d285",
+    "file_offset": "0x109c9285",
+    "selref_addresses": [
+      "0x811d5f0"
+    ]
+  },
+  {
+    "selector": "setVertexTexture:atIndex:",
+    "vm_address": "0x7a0d352",
+    "file_offset": "0x109c9352",
+    "selref_addresses": [
+      "0x811d648"
+    ]
+  },
+  {
+    "selector": "textureType",
+    "vm_address": "0x7a0d659",
+    "file_offset": "0x109c9659",
+    "selref_addresses": [
+      "0x811d7d0"
+    ]
+  }
+]

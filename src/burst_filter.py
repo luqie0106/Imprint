@@ -33,6 +33,7 @@ from typing import Any, Callable, Sequence
 import cv2
 import numpy as np
 import rawpy
+from raw_decoder import open_raw
 from PIL import Image
 
 try:
@@ -418,7 +419,7 @@ class RawEvaluator:
 
     @staticmethod
     def _half_decode(path: Path) -> np.ndarray:
-        with rawpy.imread(str(path)) as raw:
+        with open_raw(str(path)) as raw:
             res = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
             return np.ascontiguousarray(res)
 

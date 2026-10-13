@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "captured_at_utc": "2026-10-12T05:01:43Z",
+  "scope": {
+    "mode": "read_only_diagnostics",
+    "modified_configuration": false,
+    "started_analysis_session": false,
+    "terminated_processes": false,
+    "cleaned_retained_resources": false,
+    "credentials_captured": false,
+    "database_saved": false,
+    "reconnected": false
+  },
+  "observed_mcp_sequence": {
+    "run_id": "61f19de4-83ac-494d-a281-f11e0d38dcb1",
+    "open_binary": {
+      "result": "success",
+      "elapsed_seconds_approx": 6.1,
+      "format": "mach-o",
+      "kind": "executable",
+      "architecture": "arm64",
+      "sha256": "c0d0bdad561b3e2948b21b6a4b8a267a86ad4f4f2d99b890632dcaa88f431234",
+      "source": "primary-agent-rechecked raw MCP result"
+    },
+    "binary_overview": {
+      "result": "error",
+      "elapsed_seconds_approx": 120,
+      "error_code": "provider_timeout",
+      "stage": "startup",
+      "timeout_ms": 120000,
+      "launcher_exit_code": 0,
+      "cleanup_error": "cleanup_incomplete",
+      "cleanup_operation": "open_binary",
+      "source": "primary-agent-rechecked raw MCP result"
+    },
+    "cli_xrefs": {
+      "result": "rejected",
+      "error_code": "provider_unavailable",
+      "stage": "launch",
+      "owner_run_id": "61f19de4-83ac-494d-a281-f11e0d38dcb1",
+      "source": "/tmp/acr-cli-xrefs.json"
+    },
+    "saved_connection_check": {
+      "path": "research/acr/reports/evidence/mcp-connection-check.json",
+      "provider": "hopper",
+      "architecture": "arm64",
+      "run_id": "61f19de4-83ac-494d-a281-f11e0d38dcb1",
+      "activity": "idle",
+      "health": "idle",
+      "python_mcp_tool_count": 0,
+      "unreadable_output_operations": [
+        "functions",
+        "assembly",
+        "pseudocode",
+        "xrefs"
+      ]
+    }
+  },
+  "retained_runtime": {
+    "path": "/tmp/rea-Nnwiq8",
+    "observed_files": [
+      "bootstrap.py",
+      "ownership.json"
+    ],
+    "bridge_socket_present": false,
+    "bootstrap": {
+      "run_id": "61f19de4-83ac-494d-a281-f11e0d38dcb1",
+      "target_basename": "Camera Raw",
+      "owns_process_lifetime": false,
+      "token_value_recorded": false
+    },
+    "ownership": {
+      "launcher_pid": 75091,
+      "process_group_id": 75091,
+      "parent_pid": 74678,
+      "launcher_basename": "hopper",
+      "created_at_utc": "2026-10-12T04:39:07.096Z",
+      "launcher_pid_present_in_later_ps_snapshot": false
+    }
+  },
+  "process_snapshot": {
+    "captured_date_local": "2026-10-12",
+    "processes": [
+      {
+        "pid": 72991,
+        "name": "Hopper Disassembler",
+        "started_local": "2026-10-12T12:29:34+08:00"
+      },
+      {
+        "pid": 73008,
+        "name": "Hopper ExternalAPI",
+        "started_local": "2026-10-12T12:29:36+08:00"
+      },
+      {
+        "pid": 73521,
+        "name": "npm exec rea-agents@6.4.0 mcp",
+        "started_local": "2026-10-12T12:31:49+08:00",
+        "child_pid": 73741
+      },
+      {
+        "pid": 74443,
+        "name": "npm exec rea-agents@6.4.0 mcp",
+        "started_local": "2026-10-12T12:38:09+08:00",
+        "child_pid": 74678
+      },
+      {
+        "pid": 74678,
+        "name": "node",
+        "ppid": 74443,
+        "started_local": "2026-10-12T12:38:11+08:00",
+        "open_target_lease_socket": true
+      }
+    ],
+    "target_lease": {
+      "directory": "/tmp/rea-hopper-501",
+      "observed_listener_pid": 74678,
+      "run_id_association": "ownership.json records the failed run under parent PID 74678; CLI rejection names the same owner run",
+      "first_mcp_target_lease_association": "unproven"
+    },
+    "commands": [
+      "/bin/ps -p 73521,74443,72991,73008,74678,73305 -o pid=,ppid=,lstart=,comm=",
+      "/bin/ps -axo pid=,ppid=,lstart=,comm= | awk '$2==73521 || $2==74443 || $1==73521 || $1==74443 || $1==74678 {print}'",
+      "/usr/sbin/lsof -nP -a -p 73521,73741,74443,74678,72991,73008 -U"
+    ]
+  },
+  "source_findings": [
+    {
+      "finding": "An existing same-target, same-profile BinarySession fast path returns without creating a client; a cold path calls health before activating the new client.",
+      "source": "/Users/hualaiwu/.npm/_npx/dea9475797100b20/node_modules/rea-agents/dist/application/binary/BinarySession.js",
+      "lines": [150, 156, 170, 174],
+      "classification": "confirmed_from_installed_source"
+    },
+    {
+      "finding": "Hopper provider routes operations to HopperClient.callTool; callTool awaits start; default startup timeout is 120 seconds and connection waits for bridge socket and authenticated health.",
+      "source": "/Users/hualaiwu/.npm/_npx/dea9475797100b20/node_modules/rea-agents/dist/hopper/HopperProvider.js",
+      "lines": [181, 186],
+      "additional_sources": [
+        {
+          "path": "/Users/hualaiwu/.npm/_npx/dea9475797100b20/node_modules/rea-agents/dist/hopper/HopperClient.js",
+          "lines": [95, 214, 282, 301, 323, 328, 393, 428]
+        }
+      ],
+      "classification": "confirmed_from_installed_source"
+    },
+    {
+      "finding": "REA passes -Y bootstrap.py to Hopper; local launcher strings state that -y runs a Python command and -Y a Python script once initial analysis has ended.",
+      "source": "/Users/hualaiwu/.npm/_npx/dea9475797100b20/node_modules/rea-agents/dist/hopper/BridgeLauncher.js",
+      "lines": [71, 81],
+      "launcher_strings": [
+        "-y | --python-command CMD: Execute a Python command, once the initial analysis is ended.",
+        "-Y | --python script.py: Execute a Python script, once the initial analysis is ended."
+      ],
+      "additional_primary_agent_cli_check": {
+        "command": "hopper --help",
+        "result": "unrecognized option followed by usage output",
+        "target_argument_supplied": false,
+        "python_script_executed": false
+      },
+      "classification": "confirmed_from_installed_source_and_local_binary_strings"
+    },
+    {
+      "finding": "MCP evidence exposes no python_mcp_tool; doctor catalog contains 170 named tools and none with python in name or surface. The injected bridge dispatches a fixed method set.",
+      "sources": [
+        "research/acr/reports/evidence/mcp-connection-check.json",
+        "/tmp/acr-rea-doctor.json",
+        "/Users/hualaiwu/.npm/_npx/dea9475797100b20/node_modules/rea-agents/bridge/hopper_bridge.py"
+      ],
+      "lines": [730, 770],
+      "classification": "confirmed_for_current_installed_connection"
+    },
+    {
+      "finding": "Cleanup does not release the target lease unless shutdown is confirmed; external Hopper documents and unconfirmed private runtime can remain retained.",
+      "source": "/Users/hualaiwu/.npm/_npx/dea9475797100b20/node_modules/rea-agents/dist/hopper/HopperCleanup.js",
+      "lines": [18, 39, 41, 54, 178, 194],
+      "classification": "confirmed_from_installed_source"
+    }
+  ],
+  "diagnosis": {
+    "confirmed_current_blocker": {
+      "classification": "license_demo_expired_alert_observed_by_primary_agent",
+      "message": "Demo period has expired. Document will be closed.",
+      "dialog_buttons": ["OK"],
+      "clicked": false,
+      "initial_analysis_progress_observed": "pass 10",
+      "source": "primary-agent live Hopper UI observation"
+    },
+    "leading_hypothesis_for_prior_startup_timeout": "Hopper initial background analysis delayed the REA -Y bootstrap, leaving no bridge socket before REA's 120-second startup deadline.",
+    "confidence": "plausible_not_proven",
+    "license_alert_caused_prior_startup_timeout": "unknown; the observed analysis progress to pass 10 prevents attributing the earlier timeout to the alert without a timestamped causal trace",
+    "supporting_observations": [
+      "User reports Hopper initial analysis is still running.",
+      "Hopper -Y is documented by local launcher strings to run the Python script only after initial analysis ends.",
+      "Retained run directory contains bootstrap.py but no bridge.sock.",
+      "REA reports startup timeout at 120000 ms while launcher exit code is 0."
+    ],
+    "alternatives": [
+      "A Hopper loader or other modal dialog may have delayed the script; the later-observed license alert could also prevent continued processing, but its causal timing is unknown.",
+      "The injected bridge script failed before binding its Unix socket.",
+      "The preceding open_binary result used the same-target/same-profile fast path; whether it did so is unknown."
+    ],
+    "unknowns": [
+      "Whether the preceding open_binary call took BinarySession's same-target/same-profile fast path.",
+      "Whether Hopper had completed its native initial analysis at the exact timeout time.",
+      "Whether Hopper displayed a modal dialog or logged a bridge script exception.",
+      "Whether the first MCP process ever attempted this exact target lease."
+    ]
+  },
+  "safe_next_steps_not_performed": [
+    "Restore valid Hopper authorization; do not bypass the demo restriction or dismiss the current close alert before deciding how to preserve the document.",
+    "Wait until Hopper reports initial analysis complete.",
+    "Save the Hopper database through Hopper's normal Save or Save As UI and verify the saved file.",
+    "Retry a read-only operation in the lease-owning REA session.",
+    "If opening the saved database in a fresh session is necessary, close through the owner session, wait for confirmed cleanup and lease release, then open the saved database path."
+  ],
+  "validation": {
+    "json_parse": "passed with python3 -m json.tool",
+    "git_diff_check": "git diff --check passed for tracked changes; both new files passed a trailing-whitespace and final-newline scan; git diff --no-index --check emitted no diagnostics (exit 1 because files differ from /dev/null)",
+    "tests_run": false
+  }
+}

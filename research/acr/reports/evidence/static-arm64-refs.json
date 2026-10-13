@@ -1,0 +1,1368 @@
+{
+  "evidence_kind": "static ARM64 instruction-byte string-address candidates",
+  "input": {
+    "path": "/Library/Application Support/Adobe/Plug-Ins/CC/File Formats/Camera Raw.plugin/Contents/MacOS/Camera Raw",
+    "file_size": 290177856,
+    "architecture": "arm64",
+    "slice_full_file_offset": 150716416,
+    "slice_size": 139461440
+  },
+  "method": {
+    "text_section": "LC_SEGMENT_64 __TEXT,__text",
+    "function_start_source": "LC_FUNCTION_STARTS ULEB128 offsets based at __TEXT vmaddr",
+    "instruction_pattern": "ADRP followed 1-4 instructions later by 64-bit ADD (immediate), where ADRP Rd = ADD Rn = ADD Rd and computed address exactly equals a requested string VM address",
+    "scope_limit": "Instructions between ADRP and ADD are recorded as raw words but are not fully decoded for writes to the base register. Matches are structural candidates, not verified register dataflow, xrefs, calls, or semantic proof.",
+    "objdump_note": "The installed llvm-objdump --macho path ignored start/stop bounds on the fat input. Bounded snippets were therefore checked against a temporary lipo -thin arm64 copy using the help-documented --arch-name=arm64 mode; the temporary copy is removed after execution."
+  },
+  "macho": {
+    "cpu_type": "0x100000c",
+    "file_type": 8,
+    "load_command_count": 35,
+    "text_segment_vm_address": "0x0",
+    "text_section_vm_address": "0x535c",
+    "text_section_slice_file_offset": 21340,
+    "text_section_size": 31951736,
+    "function_starts_data": {
+      "slice_file_offset": 138209280,
+      "size": 107720
+    },
+    "function_start_candidate_count": 72425
+  },
+  "requested_targets": [
+    "ReadNikonCompressed_Scalar",
+    "ipxcpucodec_init_ctx_options failed",
+    "ipxcpucodec_set_thread_count failed",
+    "ipxcpucodec_init_decoder failed",
+    "ipxcpucodec_init_image_geometry failed",
+    "ipxcpucodec_init_image_format_cfg failed",
+    "ipxcpucodec_init_decode_options failed",
+    "standard bayer demosaic",
+    "LoadBayerDemosaicModels",
+    "LoadXTransDemosaicModels",
+    "Stage1-ColorTransform",
+    "BuildNegative-ColorTransform",
+    "InitializeGPUDisplayColorTransforms",
+    "MakeMetalSystem",
+    "create metal lib failed: \"%s\"",
+    "cr_gpu_tile_render_task"
+  ],
+  "string_target_locations": {
+    "ReadNikonCompressed_Scalar": [
+      {
+        "string_vm_address": 127607217,
+        "string_slice_file_offset": 127607217,
+        "string_full_file_offset": 278323633,
+        "source_manifests": [
+          "main-arm64-strings.json",
+          "main-codec-strings.json"
+        ]
+      }
+    ],
+    "ipxcpucodec_init_ctx_options failed": [
+      {
+        "string_vm_address": 127606632,
+        "string_slice_file_offset": 127606632,
+        "string_full_file_offset": 278323048,
+        "source_manifests": [
+          "main-codec-strings.json"
+        ]
+      }
+    ],
+    "ipxcpucodec_set_thread_count failed": [
+      {
+        "string_vm_address": 127606668,
+        "string_slice_file_offset": 127606668,
+        "string_full_file_offset": 278323084,
+        "source_manifests": [
+          "main-codec-strings.json"
+        ]
+      }
+    ],
+    "ipxcpucodec_init_decoder failed": [
+      {
+        "string_vm_address": 127606704,
+        "string_slice_file_offset": 127606704,
+        "string_full_file_offset": 278323120,
+        "source_manifests": [
+          "main-codec-strings.json"
+        ]
+      }
+    ],
+    "ipxcpucodec_init_image_geometry failed": [
+      {
+        "string_vm_address": 127606736,
+        "string_slice_file_offset": 127606736,
+        "string_full_file_offset": 278323152,
+        "source_manifests": [
+          "main-codec-strings.json"
+        ]
+      }
+    ],
+    "ipxcpucodec_init_image_format_cfg failed": [
+      {
+        "string_vm_address": 127606775,
+        "string_slice_file_offset": 127606775,
+        "string_full_file_offset": 278323191,
+        "source_manifests": [
+          "main-codec-strings.json"
+        ]
+      }
+    ],
+    "ipxcpucodec_init_decode_options failed": [
+      {
+        "string_vm_address": 127606816,
+        "string_slice_file_offset": 127606816,
+        "string_full_file_offset": 278323232,
+        "source_manifests": [
+          "main-codec-strings.json"
+        ]
+      }
+    ],
+    "standard bayer demosaic": [
+      {
+        "string_vm_address": 127145165,
+        "string_slice_file_offset": 127145165,
+        "string_full_file_offset": 277861581,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "LoadBayerDemosaicModels": [
+      {
+        "string_vm_address": 127113959,
+        "string_slice_file_offset": 127113959,
+        "string_full_file_offset": 277830375,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "LoadXTransDemosaicModels": [
+      {
+        "string_vm_address": 127113990,
+        "string_slice_file_offset": 127113990,
+        "string_full_file_offset": 277830406,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "Stage1-ColorTransform": [
+      {
+        "string_vm_address": 127303464,
+        "string_slice_file_offset": 127303464,
+        "string_full_file_offset": 278019880,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "BuildNegative-ColorTransform": [
+      {
+        "string_vm_address": 127412925,
+        "string_slice_file_offset": 127412925,
+        "string_full_file_offset": 278129341,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "InitializeGPUDisplayColorTransforms": [
+      {
+        "string_vm_address": 126594755,
+        "string_slice_file_offset": 126594755,
+        "string_full_file_offset": 277311171,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "MakeMetalSystem": [
+      {
+        "string_vm_address": 127276761,
+        "string_slice_file_offset": 127276761,
+        "string_full_file_offset": 277993177,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "create metal lib failed: \"%s\"": [
+      {
+        "string_vm_address": 127277747,
+        "string_slice_file_offset": 127277747,
+        "string_full_file_offset": 277994163,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ],
+    "cr_gpu_tile_render_task": [
+      {
+        "string_vm_address": 127562189,
+        "string_slice_file_offset": 127562189,
+        "string_full_file_offset": 278278605,
+        "source_manifests": [
+          "main-arm64-strings.json"
+        ]
+      }
+    ]
+  },
+  "reference_candidates": [
+    {
+      "target": "BuildNegative-ColorTransform",
+      "string_vm_address": 127412925,
+      "string_slice_file_offset": 127412925,
+      "string_full_file_offset": 278129341,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 12680972,
+      "adrp_instruction_full_file_offset": 163397388,
+      "adrp_instruction_word": "0xf0036b41",
+      "adrp_page_vm_address": "0x7982000",
+      "add_instruction_vm_address": 12680976,
+      "add_instruction_full_file_offset": 163397392,
+      "add_instruction_word": "0x912af421",
+      "add_immediate": 2749,
+      "computed_target_vm_address": "0x7982abd",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0xc1795c"
+    },
+    {
+      "target": "InitializeGPUDisplayColorTransforms",
+      "string_vm_address": 126594755,
+      "string_slice_file_offset": 126594755,
+      "string_full_file_offset": 277311171,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 901376,
+      "adrp_instruction_full_file_offset": 151617792,
+      "adrp_instruction_word": "0xd003bee7",
+      "adrp_page_vm_address": "0x78ba000",
+      "add_instruction_vm_address": 901380,
+      "add_instruction_full_file_offset": 151617796,
+      "add_instruction_word": "0x913b0ce7",
+      "add_immediate": 3779,
+      "computed_target_vm_address": "0x78baec3",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0xdbe84"
+    },
+    {
+      "target": "InitializeGPUDisplayColorTransforms",
+      "string_vm_address": 126594755,
+      "string_slice_file_offset": 126594755,
+      "string_full_file_offset": 277311171,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 901496,
+      "adrp_instruction_full_file_offset": 151617912,
+      "adrp_instruction_word": "0xd003bee7",
+      "adrp_page_vm_address": "0x78ba000",
+      "add_instruction_vm_address": 901500,
+      "add_instruction_full_file_offset": 151617916,
+      "add_instruction_word": "0x913b0ce7",
+      "add_immediate": 3779,
+      "computed_target_vm_address": "0x78baec3",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0xdbe84"
+    },
+    {
+      "target": "LoadBayerDemosaicModels",
+      "string_vm_address": 127113959,
+      "string_slice_file_offset": 127113959,
+      "string_full_file_offset": 277830375,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 7568060,
+      "adrp_instruction_full_file_offset": 158284476,
+      "adrp_instruction_word": "0xd0039001",
+      "adrp_page_vm_address": "0x7939000",
+      "add_instruction_vm_address": 7568064,
+      "add_instruction_full_file_offset": 158284480,
+      "add_instruction_word": "0x912b9c21",
+      "add_immediate": 2791,
+      "computed_target_vm_address": "0x7939ae7",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x7379ac"
+    },
+    {
+      "target": "LoadXTransDemosaicModels",
+      "string_vm_address": 127113990,
+      "string_slice_file_offset": 127113990,
+      "string_full_file_offset": 277830406,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 7568232,
+      "adrp_instruction_full_file_offset": 158284648,
+      "adrp_instruction_word": "0xd0039001",
+      "adrp_page_vm_address": "0x7939000",
+      "add_instruction_vm_address": 7568236,
+      "add_instruction_full_file_offset": 158284652,
+      "add_instruction_word": "0x912c1821",
+      "add_immediate": 2822,
+      "computed_target_vm_address": "0x7939b06",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x7379ac"
+    },
+    {
+      "target": "MakeMetalSystem",
+      "string_vm_address": 127276761,
+      "string_slice_file_offset": 127276761,
+      "string_full_file_offset": 277993177,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 10074240,
+      "adrp_instruction_full_file_offset": 160790656,
+      "adrp_instruction_word": "0xd0037e27",
+      "adrp_page_vm_address": "0x7961000",
+      "add_instruction_vm_address": 10074244,
+      "add_instruction_full_file_offset": 160790660,
+      "add_instruction_word": "0x911b64e7",
+      "add_immediate": 1753,
+      "computed_target_vm_address": "0x79616d9",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x99b828"
+    },
+    {
+      "target": "ReadNikonCompressed_Scalar",
+      "string_vm_address": 127607217,
+      "string_slice_file_offset": 127607217,
+      "string_full_file_offset": 278323633,
+      "source_manifests": [
+        "main-arm64-strings.json",
+        "main-codec-strings.json"
+      ],
+      "adrp_instruction_vm_address": 19781540,
+      "adrp_instruction_full_file_offset": 170497956,
+      "adrp_instruction_word": "0xb00336a1",
+      "adrp_page_vm_address": "0x79b2000",
+      "add_instruction_vm_address": 19781544,
+      "add_instruction_full_file_offset": 170497960,
+      "add_instruction_word": "0x9106c421",
+      "add_immediate": 433,
+      "computed_target_vm_address": "0x79b21b1",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x12da138"
+    },
+    {
+      "target": "Stage1-ColorTransform",
+      "string_vm_address": 127303464,
+      "string_slice_file_offset": 127303464,
+      "string_full_file_offset": 278019880,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 10875396,
+      "adrp_instruction_full_file_offset": 161591812,
+      "adrp_instruction_word": "0x90037841",
+      "adrp_page_vm_address": "0x7967000",
+      "add_instruction_vm_address": 10875400,
+      "add_instruction_full_file_offset": 161591816,
+      "add_instruction_word": "0x913ca021",
+      "add_immediate": 3880,
+      "computed_target_vm_address": "0x7967f28",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0xa5f0dc"
+    },
+    {
+      "target": "cr_gpu_tile_render_task",
+      "string_vm_address": 127562189,
+      "string_slice_file_offset": 127562189,
+      "string_full_file_offset": 278278605,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 15492920,
+      "adrp_instruction_full_file_offset": 166209336,
+      "adrp_instruction_word": "0xb0035700",
+      "adrp_page_vm_address": "0x79a7000",
+      "add_instruction_vm_address": 15492924,
+      "add_instruction_full_file_offset": 166209340,
+      "add_instruction_word": "0x91073400",
+      "add_immediate": 461,
+      "computed_target_vm_address": "0x79a71cd",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0xec6738"
+    },
+    {
+      "target": "create metal lib failed: \"%s\"",
+      "string_vm_address": 127277747,
+      "string_slice_file_offset": 127277747,
+      "string_full_file_offset": 277994163,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 10070968,
+      "adrp_instruction_full_file_offset": 160787384,
+      "adrp_instruction_word": "0xf0037e28",
+      "adrp_page_vm_address": "0x7961000",
+      "add_instruction_vm_address": 10070972,
+      "add_instruction_full_file_offset": 160787388,
+      "add_instruction_word": "0x912acd08",
+      "add_immediate": 2739,
+      "computed_target_vm_address": "0x7961ab3",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x99a9bc"
+    },
+    {
+      "target": "ipxcpucodec_init_ctx_options failed",
+      "string_vm_address": 127606632,
+      "string_slice_file_offset": 127606632,
+      "string_full_file_offset": 278323048,
+      "source_manifests": [
+        "main-codec-strings.json"
+      ],
+      "adrp_instruction_vm_address": 19763752,
+      "adrp_instruction_full_file_offset": 170480168,
+      "adrp_instruction_word": "0x900336c2",
+      "adrp_page_vm_address": "0x79b1000",
+      "add_instruction_vm_address": 19763756,
+      "add_instruction_full_file_offset": 170480172,
+      "add_instruction_word": "0x913da042",
+      "add_immediate": 3944,
+      "computed_target_vm_address": "0x79b1f68",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x12d9160"
+    },
+    {
+      "target": "ipxcpucodec_init_decode_options failed",
+      "string_vm_address": 127606816,
+      "string_slice_file_offset": 127606816,
+      "string_full_file_offset": 278323232,
+      "source_manifests": [
+        "main-codec-strings.json"
+      ],
+      "adrp_instruction_vm_address": 19763864,
+      "adrp_instruction_full_file_offset": 170480280,
+      "adrp_instruction_word": "0xb00336c2",
+      "adrp_page_vm_address": "0x79b2000",
+      "add_instruction_vm_address": 19763868,
+      "add_instruction_full_file_offset": 170480284,
+      "add_instruction_word": "0x91008042",
+      "add_immediate": 32,
+      "computed_target_vm_address": "0x79b2020",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x12d9160"
+    },
+    {
+      "target": "ipxcpucodec_init_decoder failed",
+      "string_vm_address": 127606704,
+      "string_slice_file_offset": 127606704,
+      "string_full_file_offset": 278323120,
+      "source_manifests": [
+        "main-codec-strings.json"
+      ],
+      "adrp_instruction_vm_address": 19763780,
+      "adrp_instruction_full_file_offset": 170480196,
+      "adrp_instruction_word": "0x900336c2",
+      "adrp_page_vm_address": "0x79b1000",
+      "add_instruction_vm_address": 19763784,
+      "add_instruction_full_file_offset": 170480200,
+      "add_instruction_word": "0x913ec042",
+      "add_immediate": 4016,
+      "computed_target_vm_address": "0x79b1fb0",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x12d9160"
+    },
+    {
+      "target": "ipxcpucodec_init_image_format_cfg failed",
+      "string_vm_address": 127606775,
+      "string_slice_file_offset": 127606775,
+      "string_full_file_offset": 278323191,
+      "source_manifests": [
+        "main-codec-strings.json"
+      ],
+      "adrp_instruction_vm_address": 19763836,
+      "adrp_instruction_full_file_offset": 170480252,
+      "adrp_instruction_word": "0x900336c2",
+      "adrp_page_vm_address": "0x79b1000",
+      "add_instruction_vm_address": 19763840,
+      "add_instruction_full_file_offset": 170480256,
+      "add_instruction_word": "0x913fdc42",
+      "add_immediate": 4087,
+      "computed_target_vm_address": "0x79b1ff7",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x12d9160"
+    },
+    {
+      "target": "ipxcpucodec_init_image_geometry failed",
+      "string_vm_address": 127606736,
+      "string_slice_file_offset": 127606736,
+      "string_full_file_offset": 278323152,
+      "source_manifests": [
+        "main-codec-strings.json"
+      ],
+      "adrp_instruction_vm_address": 19763808,
+      "adrp_instruction_full_file_offset": 170480224,
+      "adrp_instruction_word": "0x900336c2",
+      "adrp_page_vm_address": "0x79b1000",
+      "add_instruction_vm_address": 19763812,
+      "add_instruction_full_file_offset": 170480228,
+      "add_instruction_word": "0x913f4042",
+      "add_immediate": 4048,
+      "computed_target_vm_address": "0x79b1fd0",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x12d9160"
+    },
+    {
+      "target": "ipxcpucodec_set_thread_count failed",
+      "string_vm_address": 127606668,
+      "string_slice_file_offset": 127606668,
+      "string_full_file_offset": 278323084,
+      "source_manifests": [
+        "main-codec-strings.json"
+      ],
+      "adrp_instruction_vm_address": 19763892,
+      "adrp_instruction_full_file_offset": 170480308,
+      "adrp_instruction_word": "0x900336c2",
+      "adrp_page_vm_address": "0x79b1000",
+      "add_instruction_vm_address": 19763896,
+      "add_instruction_full_file_offset": 170480312,
+      "add_instruction_word": "0x913e3042",
+      "add_immediate": 3980,
+      "computed_target_vm_address": "0x79b1f8c",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x12d9160"
+    },
+    {
+      "target": "standard bayer demosaic",
+      "string_vm_address": 127145165,
+      "string_slice_file_offset": 127145165,
+      "string_full_file_offset": 277861581,
+      "source_manifests": [
+        "main-arm64-strings.json"
+      ],
+      "adrp_instruction_vm_address": 8376424,
+      "adrp_instruction_full_file_offset": 159092840,
+      "adrp_instruction_word": "0x90038a21",
+      "adrp_page_vm_address": "0x7941000",
+      "add_instruction_vm_address": 8376428,
+      "add_instruction_full_file_offset": 159092844,
+      "add_instruction_word": "0x91133421",
+      "add_immediate": 1229,
+      "computed_target_vm_address": "0x79414cd",
+      "intervening_instruction_words": [],
+      "lc_function_start_candidate_vm_address": "0x7fccc8"
+    }
+  ],
+  "local_llvm_objdump_snippets": [
+    {
+      "area": "Nikon compressed decoder",
+      "targets": [
+        "ReadNikonCompressed_Scalar"
+      ],
+      "arm64_vm_address_range": "0x12dd794-0x12dd7bc",
+      "reference_instruction_addresses": [
+        {
+          "target": "ReadNikonCompressed_Scalar",
+          "adrp": "0x12dd7a4",
+          "add": "0x12dd7a8"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": " 12dd79c: aa1703e1     \tmov\tx1, x23\n 12dd7a0: 97fe362a     \tbl\t0x126b048 <_EntryFI+0xf73bb4>\n 12dd7a4: b00336a1     \tadrp\tx1, 0x79b2000 <dyld_stub_binder+0x79b2000>\n 12dd7a8: 9106c421     \tadd\tx1, x1, #0x1b1\n 12dd7ac: 914007e0     \tadd\tx0, sp, #0x1, lsl #12   ; =0x1000\n 12dd7b0: 91008000     \tadd\tx0, x0, #0x20"
+    },
+    {
+      "area": "ipxcpucodec initialization failures",
+      "targets": [
+        "ipxcpucodec_init_ctx_options failed",
+        "ipxcpucodec_init_decode_options failed",
+        "ipxcpucodec_init_decoder failed",
+        "ipxcpucodec_init_image_format_cfg failed",
+        "ipxcpucodec_init_image_geometry failed",
+        "ipxcpucodec_set_thread_count failed"
+      ],
+      "arm64_vm_address_range": "0x12d9218-0x12d92cc",
+      "reference_instruction_addresses": [
+        {
+          "target": "ipxcpucodec_init_ctx_options failed",
+          "adrp": "0x12d9228",
+          "add": "0x12d922c"
+        },
+        {
+          "target": "ipxcpucodec_init_decode_options failed",
+          "adrp": "0x12d9298",
+          "add": "0x12d929c"
+        },
+        {
+          "target": "ipxcpucodec_init_decoder failed",
+          "adrp": "0x12d9244",
+          "add": "0x12d9248"
+        },
+        {
+          "target": "ipxcpucodec_init_image_format_cfg failed",
+          "adrp": "0x12d927c",
+          "add": "0x12d9280"
+        },
+        {
+          "target": "ipxcpucodec_init_image_geometry failed",
+          "adrp": "0x12d9260",
+          "add": "0x12d9264"
+        },
+        {
+          "target": "ipxcpucodec_set_thread_count failed",
+          "adrp": "0x12d92b4",
+          "add": "0x12d92b8"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": " 12d9220: 52800003     \tmov\tw3, #0x0                ; =0\n 12d9224: 94004289     \tbl\t0x12e9c48 <_EntryFI+0xff27b4>\n 12d9228: 900336c2     \tadrp\tx2, 0x79b1000 <dyld_stub_binder+0x79b1000>\n 12d922c: 913da042     \tadd\tx2, x2, #0xf68\n 12d9230: 5290d4c0     \tmov\tw0, #0x86a6             ; =34470\n 12d9234: 72a00020     \tmovk\tw0, #0x1, lsl #16\n 12d923c: 52800003     \tmov\tw3, #0x0                ; =0\n 12d9240: 94004282     \tbl\t0x12e9c48 <_EntryFI+0xff27b4>\n 12d9244: 900336c2     \tadrp\tx2, 0x79b1000 <dyld_stub_binder+0x79b1000>\n 12d9248: 913ec042     \tadd\tx2, x2, #0xfb0\n 12d924c: 5290d4c0     \tmov\tw0, #0x86a6             ; =34470\n 12d9250: 72a00020     \tmovk\tw0, #0x1, lsl #16\n 12d9258: 52800003     \tmov\tw3, #0x0                ; =0\n 12d925c: 9400427b     \tbl\t0x12e9c48 <_EntryFI+0xff27b4>\n 12d9260: 900336c2     \tadrp\tx2, 0x79b1000 <dyld_stub_binder+0x79b1000>\n 12d9264: 913f4042     \tadd\tx2, x2, #0xfd0\n 12d9268: 5290d4c0     \tmov\tw0, #0x86a6             ; =34470\n 12d926c: 72a00020     \tmovk\tw0, #0x1, lsl #16\n 12d9274: 52800003     \tmov\tw3, #0x0                ; =0\n 12d9278: 94004274     \tbl\t0x12e9c48 <_EntryFI+0xff27b4>\n 12d927c: 900336c2     \tadrp\tx2, 0x79b1000 <dyld_stub_binder+0x79b1000>\n 12d9280: 913fdc42     \tadd\tx2, x2, #0xff7\n 12d9284: 5290d4c0     \tmov\tw0, #0x86a6             ; =34470\n 12d9288: 72a00020     \tmovk\tw0, #0x1, lsl #16\n 12d9290: 52800003     \tmov\tw3, #0x0                ; =0\n 12d9294: 9400426d     \tbl\t0x12e9c48 <_EntryFI+0xff27b4>\n 12d9298: b00336c2     \tadrp\tx2, 0x79b2000 <dyld_stub_binder+0x79b2000>\n 12d929c: 91008042     \tadd\tx2, x2, #0x20\n 12d92a0: 5290d4c0     \tmov\tw0, #0x86a6             ; =34470\n 12d92a4: 72a00020     \tmovk\tw0, #0x1, lsl #16\n 12d92ac: 52800003     \tmov\tw3, #0x0                ; =0\n 12d92b0: 94004266     \tbl\t0x12e9c48 <_EntryFI+0xff27b4>\n 12d92b4: 900336c2     \tadrp\tx2, 0x79b1000 <dyld_stub_binder+0x79b1000>\n 12d92b8: 913e3042     \tadd\tx2, x2, #0xf8c\n 12d92bc: 5290d4c0     \tmov\tw0, #0x86a6             ; =34470\n 12d92c0: 72a00020     \tmovk\tw0, #0x1, lsl #16"
+    },
+    {
+      "area": "standard Bayer demosaic",
+      "targets": [
+        "standard bayer demosaic"
+      ],
+      "arm64_vm_address_range": "0x7fd058-0x7fd080",
+      "reference_instruction_addresses": [
+        {
+          "target": "standard bayer demosaic",
+          "adrp": "0x7fd068",
+          "add": "0x7fd06c"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": "  7fd060: 94078d0c     \tbl\t0x9e0490 <_EntryFI+0x6e8ffc>\n  7fd064: aa0003f7     \tmov\tx23, x0\n  7fd068: 90038a21     \tadrp\tx1, 0x7941000 <dyld_stub_binder+0x7941000>\n  7fd06c: 91133421     \tadd\tx1, x1, #0x4cd\n  7fd070: 910163e0     \tadd\tx0, sp, #0x58\n  7fd074: d2800002     \tmov\tx2, #0x0                ; =0"
+    },
+    {
+      "area": "Bayer/X-Trans model loading",
+      "targets": [
+        "LoadBayerDemosaicModels",
+        "LoadXTransDemosaicModels"
+      ],
+      "arm64_vm_address_range": "0x737aac-0x737b80",
+      "reference_instruction_addresses": [
+        {
+          "target": "LoadBayerDemosaicModels",
+          "adrp": "0x737abc",
+          "add": "0x737ac0"
+        },
+        {
+          "target": "LoadXTransDemosaicModels",
+          "adrp": "0x737b68",
+          "add": "0x737b6c"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": "  737ab4: f9400288     \tldr\tx8, [x20]\n  737ab8: f9401d08     \tldr\tx8, [x8, #0x38]\n  737abc: d0039001     \tadrp\tx1, 0x7939000 <dyld_stub_binder+0x7939000>\n  737ac0: 912b9c21     \tadd\tx1, x1, #0xae7\n  737ac4: aa1403e0     \tmov\tx0, x20\n  737ac8: d63f0100     \tblr\tx8\n  737b60: f9400288     \tldr\tx8, [x20]\n  737b64: f9401d08     \tldr\tx8, [x8, #0x38]\n  737b68: d0039001     \tadrp\tx1, 0x7939000 <dyld_stub_binder+0x7939000>\n  737b6c: 912c1821     \tadd\tx1, x1, #0xb06\n  737b70: aa1403e0     \tmov\tx0, x20\n  737b74: d63f0100     \tblr\tx8"
+    },
+    {
+      "area": "stage 1 color transform",
+      "targets": [
+        "Stage1-ColorTransform"
+      ],
+      "arm64_vm_address_range": "0xa5f1f4-0xa5f21c",
+      "reference_instruction_addresses": [
+        {
+          "target": "Stage1-ColorTransform",
+          "adrp": "0xa5f204",
+          "add": "0xa5f208"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": "  a5f1fc: 9450802b     \tbl\t0x1e7f2a8 <dyld_stub_binder+0x1e7f2a8>\n  a5f200: b9400eb8     \tldr\tw24, [x21, #0xc]\n  a5f204: 90037841     \tadrp\tx1, 0x7967000 <dyld_stub_binder+0x7967000>\n  a5f208: 913ca021     \tadd\tx1, x1, #0xf28\n  a5f20c: 910de3e0     \tadd\tx0, sp, #0x378\n  a5f210: d2800002     \tmov\tx2, #0x0                ; =0"
+    },
+    {
+      "area": "negative color transform",
+      "targets": [
+        "BuildNegative-ColorTransform"
+      ],
+      "arm64_vm_address_range": "0xc17efc-0xc17f24",
+      "reference_instruction_addresses": [
+        {
+          "target": "BuildNegative-ColorTransform",
+          "adrp": "0xc17f0c",
+          "add": "0xc17f10"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": "  c17f04: 5280001b     \tmov\tw27, #0x0               ; =0\n  c17f08: b9000ffa     \tstr\tw26, [sp, #0xc]\n  c17f0c: f0036b41     \tadrp\tx1, 0x7982000 <dyld_stub_binder+0x7982000>\n  c17f10: 912af421     \tadd\tx1, x1, #0xabd\n  c17f14: 910bc3e0     \tadd\tx0, sp, #0x2f0\n  c17f18: d2800002     \tmov\tx2, #0x0                ; =0"
+    },
+    {
+      "area": "GPU display color transforms",
+      "targets": [
+        "InitializeGPUDisplayColorTransforms"
+      ],
+      "arm64_vm_address_range": "0xdc0f0-0xdc190",
+      "reference_instruction_addresses": [
+        {
+          "target": "InitializeGPUDisplayColorTransforms",
+          "adrp": "0xdc100",
+          "add": "0xdc104"
+        },
+        {
+          "target": "InitializeGPUDisplayColorTransforms",
+          "adrp": "0xdc178",
+          "add": "0xdc17c"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": "   dc0f8: d003bee5     \tadrp\tx5, 0x78ba000 <dyld_stub_binder+0x78ba000>\n   dc0fc: 913590a5     \tadd\tx5, x5, #0xd64\n   dc100: d003bee7     \tadrp\tx7, 0x78ba000 <dyld_stub_binder+0x78ba000>\n   dc104: 913b0ce7     \tadd\tx7, x7, #0xec3\n   dc108: 52800003     \tmov\tw3, #0x0                ; =0\n   dc10c: 52800041     \tmov\tw1, #0x2                ; =2\n   dc170: d003bee5     \tadrp\tx5, 0x78ba000 <dyld_stub_binder+0x78ba000>\n   dc174: 913590a5     \tadd\tx5, x5, #0xd64\n   dc178: d003bee7     \tadrp\tx7, 0x78ba000 <dyld_stub_binder+0x78ba000>\n   dc17c: 913b0ce7     \tadd\tx7, x7, #0xec3\n   dc180: 52800003     \tmov\tw3, #0x0                ; =0\n   dc184: 52800041     \tmov\tw1, #0x2                ; =2"
+    },
+    {
+      "area": "Metal system creation",
+      "targets": [
+        "MakeMetalSystem",
+        "create metal lib failed: \"%s\""
+      ],
+      "arm64_vm_address_range": "0x99aba8-0x99b898",
+      "reference_instruction_addresses": [
+        {
+          "target": "MakeMetalSystem",
+          "adrp": "0x99b880",
+          "add": "0x99b884"
+        },
+        {
+          "target": "create metal lib failed: \"%s\"",
+          "adrp": "0x99abb8",
+          "add": "0x99abbc"
+        }
+      ],
+      "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>",
+      "output": "  99abb0: 910083e0     \tadd\tx0, sp, #0x20\n  99abb4: 942354ee     \tbl\t0x126ff6c <_EntryFI+0xf78ad8>\n  99abb8: f0037e28     \tadrp\tx8, 0x7961000 <dyld_stub_binder+0x7961000>\n  99abbc: 912acd08     \tadd\tx8, x8, #0xab3\n  99abc0: a90103e8     \tstp\tx8, x0, [sp, #0x10]\n  99abc4: f00378a8     \tadrp\tx8, 0x78b1000 <dyld_stub_binder+0x78b1000>\n  99b878: d0037e25     \tadrp\tx5, 0x7961000 <dyld_stub_binder+0x7961000>\n  99b87c: 910b98a5     \tadd\tx5, x5, #0x2e6\n  99b880: d0037e27     \tadrp\tx7, 0x7961000 <dyld_stub_binder+0x7961000>\n  99b884: 911b64e7     \tadd\tx7, x7, #0x6d9\n  99b888: 52800041     \tmov\tw1, #0x2                ; =2\n  99b88c: 528000c2     \tmov\tw2, #0x6                ; =6"
+    }
+  ],
+  "unmatched_targets": [],
+  "metal_selector_evidence": {
+    "selector_targets": [
+      "newComputePipelineStateWithFunction:error:",
+      "newComputePipelineStateWithDescriptor:options:reflection:error:",
+      "newRenderPipelineStateWithDescriptor:error:",
+      "newLibraryWithData:error:",
+      "newTextureWithDescriptor:",
+      "setTexture:atIndex:",
+      "setFragmentTexture:atIndex:",
+      "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+      "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+      "presentDrawable:",
+      "nextDrawable",
+      "commit"
+    ],
+    "cstring_selref_validation": [
+      {
+        "selector": "newComputePipelineStateWithDescriptor:options:reflection:error:",
+        "selector_vm_address": "0x7a08f76",
+        "selector_full_file_offset": 278679414,
+        "selref_vm_address": "0x811cc68",
+        "selref_full_file_offset": 286100584,
+        "selref_raw_pointer_value": "0x7a08f76",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "newRenderPipelineStateWithDescriptor:error:",
+        "selector_vm_address": "0x7a0b9c0",
+        "selector_full_file_offset": 278690240,
+        "selref_vm_address": "0x811cc88",
+        "selref_full_file_offset": 286100616,
+        "selref_raw_pointer_value": "0x7a0b9c0",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "newLibraryWithData:error:",
+        "selector_vm_address": "0x7a0b9a6",
+        "selector_full_file_offset": 278690214,
+        "selref_vm_address": "0x811cc80",
+        "selref_full_file_offset": 286100608,
+        "selref_raw_pointer_value": "0x7a0b9a6",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "newTextureWithDescriptor:",
+        "selector_vm_address": "0x7a0ba0b",
+        "selector_full_file_offset": 278690315,
+        "selref_vm_address": "0x811cc98",
+        "selref_full_file_offset": 286100632,
+        "selref_raw_pointer_value": "0x7a0ba0b",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "setTexture:atIndex:",
+        "selector_vm_address": "0x7a0d285",
+        "selector_full_file_offset": 278696581,
+        "selref_vm_address": "0x811d5f0",
+        "selref_full_file_offset": 286103024,
+        "selref_raw_pointer_value": "0x7a0d285",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "setFragmentTexture:atIndex:",
+        "selector_vm_address": "0x7a0cbcc",
+        "selector_full_file_offset": 278694860,
+        "selref_vm_address": "0x811d2a8",
+        "selref_full_file_offset": 286102184,
+        "selref_raw_pointer_value": "0x7a0cbcc",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+        "selector_vm_address": "0x7a0a0d0",
+        "selector_full_file_offset": 278683856,
+        "selref_vm_address": "0x811c480",
+        "selref_full_file_offset": 286098560,
+        "selref_raw_pointer_value": "0x7a0a0d0",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+        "selector_vm_address": "0x7a0a199",
+        "selector_full_file_offset": 278684057,
+        "selref_vm_address": "0x811c490",
+        "selref_full_file_offset": 286098576,
+        "selref_raw_pointer_value": "0x7a0a199",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "presentDrawable:",
+        "selector_vm_address": "0x7a0bf9e",
+        "selector_full_file_offset": 278691742,
+        "selref_vm_address": "0x811ce50",
+        "selref_full_file_offset": 286101072,
+        "selref_raw_pointer_value": "0x7a0bf9e",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "nextDrawable",
+        "selector_vm_address": "0x7a0ba25",
+        "selector_full_file_offset": 278690341,
+        "selref_vm_address": "0x811cca0",
+        "selref_full_file_offset": 286100640,
+        "selref_raw_pointer_value": "0x7a0ba25",
+        "selref_pointer_matches_selector_cstring": true
+      },
+      {
+        "selector": "commit",
+        "selector_vm_address": "0x7a09cd6",
+        "selector_full_file_offset": 278682838,
+        "selref_vm_address": "0x811c3c8",
+        "selref_full_file_offset": 286098376,
+        "selref_raw_pointer_value": "0x7a09cd6",
+        "selref_pointer_matches_selector_cstring": true
+      }
+    ],
+    "objc_stub_candidates": [
+      {
+        "selector": "commit",
+        "selector_vm_address": "0x7a09cd6",
+        "selector_full_file_offset": 278682838,
+        "selref_vm_address": "0x811c3c8",
+        "selref_full_file_offset": 286098376,
+        "selref_raw_pointer_value": "0x7a09cd6",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e83100",
+        "adrp_instruction_vm_address": "0x1e83100",
+        "adrp_instruction_full_file_offset": 182710528,
+        "adrp_instruction_word": "0xb00314c1",
+        "ldr_instruction_vm_address": "0x1e83104",
+        "ldr_instruction_full_file_offset": 182710532,
+        "ldr_instruction_word": "0xf941e421",
+        "ldr_computed_selref_vm_address": "0x811c3c8",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+        "selector_vm_address": "0x7a0a0d0",
+        "selector_full_file_offset": 278683856,
+        "selref_vm_address": "0x811c480",
+        "selref_full_file_offset": 286098560,
+        "selref_raw_pointer_value": "0x7a0a0d0",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e833e0",
+        "adrp_instruction_vm_address": "0x1e833e0",
+        "adrp_instruction_full_file_offset": 182711264,
+        "adrp_instruction_word": "0xb00314c1",
+        "ldr_instruction_vm_address": "0x1e833e4",
+        "ldr_instruction_full_file_offset": 182711268,
+        "ldr_instruction_word": "0xf9424021",
+        "ldr_computed_selref_vm_address": "0x811c480",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+        "selector_vm_address": "0x7a0a199",
+        "selector_full_file_offset": 278684057,
+        "selref_vm_address": "0x811c490",
+        "selref_full_file_offset": 286098576,
+        "selref_raw_pointer_value": "0x7a0a199",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e83420",
+        "adrp_instruction_vm_address": "0x1e83420",
+        "adrp_instruction_full_file_offset": 182711328,
+        "adrp_instruction_word": "0xb00314c1",
+        "ldr_instruction_vm_address": "0x1e83424",
+        "ldr_instruction_full_file_offset": 182711332,
+        "ldr_instruction_word": "0xf9424821",
+        "ldr_computed_selref_vm_address": "0x811c490",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "newComputePipelineStateWithDescriptor:options:reflection:error:",
+        "selector_vm_address": "0x7a08f76",
+        "selector_full_file_offset": 278679414,
+        "selref_vm_address": "0x811cc68",
+        "selref_full_file_offset": 286100584,
+        "selref_raw_pointer_value": "0x7a08f76",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e85380",
+        "adrp_instruction_vm_address": "0x1e85380",
+        "adrp_instruction_full_file_offset": 182719360,
+        "adrp_instruction_word": "0xf00314a1",
+        "ldr_instruction_vm_address": "0x1e85384",
+        "ldr_instruction_full_file_offset": 182719364,
+        "ldr_instruction_word": "0xf9463421",
+        "ldr_computed_selref_vm_address": "0x811cc68",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "newLibraryWithData:error:",
+        "selector_vm_address": "0x7a0b9a6",
+        "selector_full_file_offset": 278690214,
+        "selref_vm_address": "0x811cc80",
+        "selref_full_file_offset": 286100608,
+        "selref_raw_pointer_value": "0x7a0b9a6",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e853e0",
+        "adrp_instruction_vm_address": "0x1e853e0",
+        "adrp_instruction_full_file_offset": 182719456,
+        "adrp_instruction_word": "0xf00314a1",
+        "ldr_instruction_vm_address": "0x1e853e4",
+        "ldr_instruction_full_file_offset": 182719460,
+        "ldr_instruction_word": "0xf9464021",
+        "ldr_computed_selref_vm_address": "0x811cc80",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "newRenderPipelineStateWithDescriptor:error:",
+        "selector_vm_address": "0x7a0b9c0",
+        "selector_full_file_offset": 278690240,
+        "selref_vm_address": "0x811cc88",
+        "selref_full_file_offset": 286100616,
+        "selref_raw_pointer_value": "0x7a0b9c0",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e85400",
+        "adrp_instruction_vm_address": "0x1e85400",
+        "adrp_instruction_full_file_offset": 182719488,
+        "adrp_instruction_word": "0xf00314a1",
+        "ldr_instruction_vm_address": "0x1e85404",
+        "ldr_instruction_full_file_offset": 182719492,
+        "ldr_instruction_word": "0xf9464421",
+        "ldr_computed_selref_vm_address": "0x811cc88",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "newTextureWithDescriptor:",
+        "selector_vm_address": "0x7a0ba0b",
+        "selector_full_file_offset": 278690315,
+        "selref_vm_address": "0x811cc98",
+        "selref_full_file_offset": 286100632,
+        "selref_raw_pointer_value": "0x7a0ba0b",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e85440",
+        "adrp_instruction_vm_address": "0x1e85440",
+        "adrp_instruction_full_file_offset": 182719552,
+        "adrp_instruction_word": "0xf00314a1",
+        "ldr_instruction_vm_address": "0x1e85444",
+        "ldr_instruction_full_file_offset": 182719556,
+        "ldr_instruction_word": "0xf9464c21",
+        "ldr_computed_selref_vm_address": "0x811cc98",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "nextDrawable",
+        "selector_vm_address": "0x7a0ba25",
+        "selector_full_file_offset": 278690341,
+        "selref_vm_address": "0x811cca0",
+        "selref_full_file_offset": 286100640,
+        "selref_raw_pointer_value": "0x7a0ba25",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e85460",
+        "adrp_instruction_vm_address": "0x1e85460",
+        "adrp_instruction_full_file_offset": 182719584,
+        "adrp_instruction_word": "0xf00314a1",
+        "ldr_instruction_vm_address": "0x1e85464",
+        "ldr_instruction_full_file_offset": 182719588,
+        "ldr_instruction_word": "0xf9465021",
+        "ldr_computed_selref_vm_address": "0x811cca0",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "presentDrawable:",
+        "selector_vm_address": "0x7a0bf9e",
+        "selector_full_file_offset": 278691742,
+        "selref_vm_address": "0x811ce50",
+        "selref_full_file_offset": 286101072,
+        "selref_raw_pointer_value": "0x7a0bf9e",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e85b20",
+        "adrp_instruction_vm_address": "0x1e85b20",
+        "adrp_instruction_full_file_offset": 182721312,
+        "adrp_instruction_word": "0xf00314a1",
+        "ldr_instruction_vm_address": "0x1e85b24",
+        "ldr_instruction_full_file_offset": 182721316,
+        "ldr_instruction_word": "0xf9472821",
+        "ldr_computed_selref_vm_address": "0x811ce50",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "setFragmentTexture:atIndex:",
+        "selector_vm_address": "0x7a0cbcc",
+        "selector_full_file_offset": 278694860,
+        "selref_vm_address": "0x811d2a8",
+        "selref_full_file_offset": 286102184,
+        "selref_raw_pointer_value": "0x7a0cbcc",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e86c80",
+        "adrp_instruction_vm_address": "0x1e86c80",
+        "adrp_instruction_full_file_offset": 182725760,
+        "adrp_instruction_word": "0xf00314a1",
+        "ldr_instruction_vm_address": "0x1e86c84",
+        "ldr_instruction_full_file_offset": 182725764,
+        "ldr_instruction_word": "0xf9415421",
+        "ldr_computed_selref_vm_address": "0x811d2a8",
+        "stub_entry_stride_bytes_observed": 32
+      },
+      {
+        "selector": "setTexture:atIndex:",
+        "selector_vm_address": "0x7a0d285",
+        "selector_full_file_offset": 278696581,
+        "selref_vm_address": "0x811d5f0",
+        "selref_full_file_offset": 286103024,
+        "selref_raw_pointer_value": "0x7a0d285",
+        "selref_pointer_matches_selector_cstring": true,
+        "objc_stub_vm_address": "0x1e879a0",
+        "adrp_instruction_vm_address": "0x1e879a0",
+        "adrp_instruction_full_file_offset": 182729120,
+        "adrp_instruction_word": "0xd00314a1",
+        "ldr_instruction_vm_address": "0x1e879a4",
+        "ldr_instruction_full_file_offset": 182729124,
+        "ldr_instruction_word": "0xf942f821",
+        "ldr_computed_selref_vm_address": "0x811d5f0",
+        "stub_entry_stride_bytes_observed": 32
+      }
+    ],
+    "text_adrp_ldr_selref_candidates": [],
+    "direct_bl_call_candidates": [
+      {
+        "selector": "commit",
+        "selector_vm_address": "0x7a09cd6",
+        "selref_vm_address": "0x811c3c8",
+        "objc_stub_vm_address": "0x1e83100",
+        "call_instruction_vm_address": "0x9975fc",
+        "call_instruction_full_file_offset": 160773628,
+        "call_instruction_word": "0x9453aec1",
+        "direct_bl_target_vm_address": "0x1e83100",
+        "lc_function_start_candidate_vm_address": "0x997470"
+      },
+      {
+        "selector": "presentDrawable:",
+        "selector_vm_address": "0x7a0bf9e",
+        "selref_vm_address": "0x811ce50",
+        "objc_stub_vm_address": "0x1e85b20",
+        "call_instruction_vm_address": "0x9977e0",
+        "call_instruction_full_file_offset": 160774112,
+        "call_instruction_word": "0x9453b8d0",
+        "direct_bl_target_vm_address": "0x1e85b20",
+        "lc_function_start_candidate_vm_address": "0x9977bc"
+      },
+      {
+        "selector": "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+        "selector_vm_address": "0x7a0a0d0",
+        "selref_vm_address": "0x811c480",
+        "objc_stub_vm_address": "0x1e833e0",
+        "call_instruction_vm_address": "0x998420",
+        "call_instruction_full_file_offset": 160777248,
+        "call_instruction_word": "0x9453abf0",
+        "direct_bl_target_vm_address": "0x1e833e0",
+        "lc_function_start_candidate_vm_address": "0x99839c"
+      },
+      {
+        "selector": "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+        "selector_vm_address": "0x7a0a199",
+        "selref_vm_address": "0x811c490",
+        "objc_stub_vm_address": "0x1e83420",
+        "call_instruction_vm_address": "0x9984a0",
+        "call_instruction_full_file_offset": 160777376,
+        "call_instruction_word": "0x9453abe0",
+        "direct_bl_target_vm_address": "0x1e83420",
+        "lc_function_start_candidate_vm_address": "0x998430"
+      },
+      {
+        "selector": "nextDrawable",
+        "selector_vm_address": "0x7a0ba25",
+        "selref_vm_address": "0x811cca0",
+        "objc_stub_vm_address": "0x1e85460",
+        "call_instruction_vm_address": "0x999234",
+        "call_instruction_full_file_offset": 160780852,
+        "call_instruction_word": "0x9453b08b",
+        "direct_bl_target_vm_address": "0x1e85460",
+        "lc_function_start_candidate_vm_address": "0x9991c0"
+      },
+      {
+        "selector": "newTextureWithDescriptor:",
+        "selector_vm_address": "0x7a0ba0b",
+        "selref_vm_address": "0x811cc98",
+        "objc_stub_vm_address": "0x1e85440",
+        "call_instruction_vm_address": "0x999a80",
+        "call_instruction_full_file_offset": 160782976,
+        "call_instruction_word": "0x9453ae70",
+        "direct_bl_target_vm_address": "0x1e85440",
+        "lc_function_start_candidate_vm_address": "0x9998ac"
+      },
+      {
+        "selector": "newComputePipelineStateWithDescriptor:options:reflection:error:",
+        "selector_vm_address": "0x7a08f76",
+        "selref_vm_address": "0x811cc68",
+        "objc_stub_vm_address": "0x1e85380",
+        "call_instruction_vm_address": "0x999fc0",
+        "call_instruction_full_file_offset": 160784320,
+        "call_instruction_word": "0x9453acf0",
+        "direct_bl_target_vm_address": "0x1e85380",
+        "lc_function_start_candidate_vm_address": "0x999f50"
+      },
+      {
+        "selector": "newRenderPipelineStateWithDescriptor:error:",
+        "selector_vm_address": "0x7a0b9c0",
+        "selref_vm_address": "0x811cc88",
+        "objc_stub_vm_address": "0x1e85400",
+        "call_instruction_vm_address": "0x99a558",
+        "call_instruction_full_file_offset": 160785752,
+        "call_instruction_word": "0x9453abaa",
+        "direct_bl_target_vm_address": "0x1e85400",
+        "lc_function_start_candidate_vm_address": "0x99a18c"
+      },
+      {
+        "selector": "newLibraryWithData:error:",
+        "selector_vm_address": "0x7a0b9a6",
+        "selref_vm_address": "0x811cc80",
+        "objc_stub_vm_address": "0x1e853e0",
+        "call_instruction_vm_address": "0x99aaa4",
+        "call_instruction_full_file_offset": 160787108,
+        "call_instruction_word": "0x9453aa4f",
+        "direct_bl_target_vm_address": "0x1e853e0",
+        "lc_function_start_candidate_vm_address": "0x99a9bc"
+      }
+    ],
+    "direct_bl_calls_grouped_by_lc_function_start_candidate": [
+      {
+        "lc_function_start_candidate_vm_address": "0x997470",
+        "direct_bl_calls": [
+          {
+            "selector": "commit",
+            "call_instruction_vm_address": "0x9975fc",
+            "direct_bl_target_vm_address": "0x1e83100"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x9977bc",
+        "direct_bl_calls": [
+          {
+            "selector": "presentDrawable:",
+            "call_instruction_vm_address": "0x9977e0",
+            "direct_bl_target_vm_address": "0x1e85b20"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x99839c",
+        "direct_bl_calls": [
+          {
+            "selector": "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+            "call_instruction_vm_address": "0x998420",
+            "direct_bl_target_vm_address": "0x1e833e0"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x998430",
+        "direct_bl_calls": [
+          {
+            "selector": "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+            "call_instruction_vm_address": "0x9984a0",
+            "direct_bl_target_vm_address": "0x1e83420"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x9991c0",
+        "direct_bl_calls": [
+          {
+            "selector": "nextDrawable",
+            "call_instruction_vm_address": "0x999234",
+            "direct_bl_target_vm_address": "0x1e85460"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x9998ac",
+        "direct_bl_calls": [
+          {
+            "selector": "newTextureWithDescriptor:",
+            "call_instruction_vm_address": "0x999a80",
+            "direct_bl_target_vm_address": "0x1e85440"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x999f50",
+        "direct_bl_calls": [
+          {
+            "selector": "newComputePipelineStateWithDescriptor:options:reflection:error:",
+            "call_instruction_vm_address": "0x999fc0",
+            "direct_bl_target_vm_address": "0x1e85380"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x99a18c",
+        "direct_bl_calls": [
+          {
+            "selector": "newRenderPipelineStateWithDescriptor:error:",
+            "call_instruction_vm_address": "0x99a558",
+            "direct_bl_target_vm_address": "0x1e85400"
+          }
+        ]
+      },
+      {
+        "lc_function_start_candidate_vm_address": "0x99a9bc",
+        "direct_bl_calls": [
+          {
+            "selector": "newLibraryWithData:error:",
+            "call_instruction_vm_address": "0x99aaa4",
+            "direct_bl_target_vm_address": "0x1e853e0"
+          }
+        ]
+      }
+    ],
+    "local_objdump_callsite_snippets": [
+      {
+        "area": "pipeline state creation",
+        "local_fragments": [
+          {
+            "selector": "newComputePipelineStateWithDescriptor:options:reflection:error:",
+            "call_instruction_vm_address": "0x999fc0",
+            "direct_bl_target_vm_address": "0x1e85380",
+            "lc_function_start_candidate_vm_address": "0x999f50",
+            "arm64_vm_address_range": "0x999fb0-0x999fd4",
+            "output": "  999fb0: 910123e5     \tadd\tx5, sp, #0x48\n  999fb4: aa1303e2     \tmov\tx2, x19\n  999fb8: d2800003     \tmov\tx3, #0x0                ; =0\n  999fbc: d2800004     \tmov\tx4, #0x0                ; =0\n  999fc0: 9453acf0     \tbl\t0x1e85380 <dyld_stub_binder+0x1e85380>\n  999fc4: aa0003f7     \tmov\tx23, x0\n  999fc8: f94027e0     \tldr\tx0, [sp, #0x48]\n  999fcc: 9453975d     \tbl\t0x1e7fd40 <dyld_stub_binder+0x1e7fd40>\n  999fd0: aa0003f4     \tmov\tx20, x0"
+          },
+          {
+            "selector": "newRenderPipelineStateWithDescriptor:error:",
+            "call_instruction_vm_address": "0x99a558",
+            "direct_bl_target_vm_address": "0x1e85400",
+            "lc_function_start_candidate_vm_address": "0x99a18c",
+            "arm64_vm_address_range": "0x99a548-0x99a56c",
+            "output": "  99a548: f9422ec0     \tldr\tx0, [x22, #0x458]\n  99a54c: f90027ff     \tstr\txzr, [sp, #0x48]\n  99a550: 910123e3     \tadd\tx3, sp, #0x48\n  99a554: aa1403e2     \tmov\tx2, x20\n  99a558: 9453abaa     \tbl\t0x1e85400 <dyld_stub_binder+0x1e85400>\n  99a55c: aa0003f7     \tmov\tx23, x0\n  99a560: f94027e0     \tldr\tx0, [sp, #0x48]\n  99a564: 945395f7     \tbl\t0x1e7fd40 <dyld_stub_binder+0x1e7fd40>\n  99a568: aa0003f6     \tmov\tx22, x0"
+          }
+        ],
+        "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>"
+      },
+      {
+        "area": "Metal library creation",
+        "local_fragments": [
+          {
+            "selector": "newLibraryWithData:error:",
+            "call_instruction_vm_address": "0x99aaa4",
+            "direct_bl_target_vm_address": "0x1e853e0",
+            "lc_function_start_candidate_vm_address": "0x99a9bc",
+            "arm64_vm_address_range": "0x99aa94-0x99aab8",
+            "output": "  99aa94: f9001bff     \tstr\txzr, [sp, #0x30]\n  99aa98: 9100c3e3     \tadd\tx3, sp, #0x30\n  99aa9c: aa1303e0     \tmov\tx0, x19\n  99aaa0: aa1503e2     \tmov\tx2, x21\n  99aaa4: 9453aa4f     \tbl\t0x1e853e0 <dyld_stub_binder+0x1e853e0>\n  99aaa8: aa0003f7     \tmov\tx23, x0\n  99aaac: f9401be0     \tldr\tx0, [sp, #0x30]\n  99aab0: 945394a4     \tbl\t0x1e7fd40 <dyld_stub_binder+0x1e7fd40>\n  99aab4: b5000700     \tcbnz\tx0, 0x99ab94 <_EntryFI+0x6a3700>"
+          }
+        ],
+        "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>"
+      },
+      {
+        "area": "texture creation",
+        "local_fragments": [
+          {
+            "selector": "newTextureWithDescriptor:",
+            "call_instruction_vm_address": "0x999a80",
+            "direct_bl_target_vm_address": "0x1e85440",
+            "lc_function_start_candidate_vm_address": "0x9998ac",
+            "arm64_vm_address_range": "0x999a70-0x999a94",
+            "output": "  999a70: aa1303e0     \tmov\tx0, x19\n  999a74: 945398b0     \tbl\t0x1e7fd34 <dyld_stub_binder+0x1e7fd34>\n  999a78: f9422ea0     \tldr\tx0, [x21, #0x458]\n  999a7c: aa1303e2     \tmov\tx2, x19\n  999a80: 9453ae70     \tbl\t0x1e85440 <dyld_stub_binder+0x1e85440>\n  999a84: f9405688     \tldr\tx8, [x20, #0xa8]\n  999a88: f9005680     \tstr\tx0, [x20, #0xa8]\n  999a8c: aa0803e0     \tmov\tx0, x8\n  999a90: 945398a9     \tbl\t0x1e7fd34 <dyld_stub_binder+0x1e7fd34>"
+          }
+        ],
+        "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>"
+      },
+      {
+        "area": "texture input copy",
+        "local_fragments": [
+          {
+            "selector": "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+            "call_instruction_vm_address": "0x998420",
+            "direct_bl_target_vm_address": "0x1e833e0",
+            "lc_function_start_candidate_vm_address": "0x99839c",
+            "arm64_vm_address_range": "0x998410-0x998434",
+            "output": "  998410: aa0803e2     \tmov\tx2, x8\n  998414: aa0903e3     \tmov\tx3, x9\n  998418: aa0a03e4     \tmov\tx4, x10\n  99841c: aa0b03e7     \tmov\tx7, x11\n  998420: 9453abf0     \tbl\t0x1e833e0 <dyld_stub_binder+0x1e833e0>\n  998424: a9457bfd     \tldp\tx29, x30, [sp, #0x50]\n  998428: 910183ff     \tadd\tsp, sp, #0x60\n  99842c: d65f03c0     \tret\n  998430: d101c3ff     \tsub\tsp, sp, #0x70"
+          }
+        ],
+        "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>"
+      },
+      {
+        "area": "texture output copy",
+        "local_fragments": [
+          {
+            "selector": "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+            "call_instruction_vm_address": "0x9984a0",
+            "direct_bl_target_vm_address": "0x1e83420",
+            "lc_function_start_candidate_vm_address": "0x998430",
+            "arm64_vm_address_range": "0x998490-0x9984b4",
+            "output": "  998490: aa0803e2     \tmov\tx2, x8\n  998494: aa0903e3     \tmov\tx3, x9\n  998498: aa0a03e4     \tmov\tx4, x10\n  99849c: aa0b03e7     \tmov\tx7, x11\n  9984a0: 9453abe0     \tbl\t0x1e83420 <dyld_stub_binder+0x1e83420>\n  9984a4: a9467bfd     \tldp\tx29, x30, [sp, #0x60]\n  9984a8: 9101c3ff     \tadd\tsp, sp, #0x70\n  9984ac: d65f03c0     \tret\n  9984b0: a9be4ff4     \tstp\tx20, x19, [sp, #-0x20]!"
+          }
+        ],
+        "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>"
+      },
+      {
+        "area": "drawable acquisition",
+        "local_fragments": [
+          {
+            "selector": "nextDrawable",
+            "call_instruction_vm_address": "0x999234",
+            "direct_bl_target_vm_address": "0x1e85460",
+            "lc_function_start_candidate_vm_address": "0x9991c0",
+            "arm64_vm_address_range": "0x999224-0x999248",
+            "output": "  999224: d63f0100     \tblr\tx8\n  999228: aa1503e0     \tmov\tx0, x21\n  99922c: 9453981f     \tbl\t0x1e7f2a8 <dyld_stub_binder+0x1e7f2a8>\n  999230: f9403a80     \tldr\tx0, [x20, #0x70]\n  999234: 9453b08b     \tbl\t0x1e85460 <dyld_stub_binder+0x1e85460>\n  999238: aa1d03fd     \tmov\tx29, x29\n  99923c: 94539ac7     \tbl\t0x1e7fd58 <dyld_stub_binder+0x1e7fd58>\n  999240: f9402a68     \tldr\tx8, [x19, #0x50]\n  999244: f9002a60     \tstr\tx0, [x19, #0x50]"
+          }
+        ],
+        "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>"
+      },
+      {
+        "area": "drawable presentation and command submission",
+        "local_fragments": [
+          {
+            "selector": "presentDrawable:",
+            "call_instruction_vm_address": "0x9977e0",
+            "direct_bl_target_vm_address": "0x1e85b20",
+            "lc_function_start_candidate_vm_address": "0x9977bc",
+            "arm64_vm_address_range": "0x9977d0-0x9977f4",
+            "output": "  9977d0: aa0003f3     \tmov\tx19, x0\n  9977d4: f9400034     \tldr\tx20, [x1]\n  9977d8: f9412000     \tldr\tx0, [x0, #0x240]\n  9977dc: f9402a82     \tldr\tx2, [x20, #0x50]\n  9977e0: 9453b8d0     \tbl\t0x1e85b20 <dyld_stub_binder+0x1e85b20>\n  9977e4: 91016295     \tadd\tx21, x20, #0x58\n  9977e8: 52800b00     \tmov\tw0, #0x58               ; =88\n  9977ec: 94539f78     \tbl\t0x1e7f5cc <dyld_stub_binder+0x1e7f5cc>\n  9977f0: aa0003f4     \tmov\tx20, x0"
+          },
+          {
+            "selector": "commit",
+            "call_instruction_vm_address": "0x9975fc",
+            "direct_bl_target_vm_address": "0x1e83100",
+            "lc_function_start_candidate_vm_address": "0x997470",
+            "arm64_vm_address_range": "0x9975ec-0x997610",
+            "output": "  9975ec: f8290108     \tldadd\tx9, x8, [x8]\n  9975f0: 910083e2     \tadd\tx2, sp, #0x20\n  9975f4: 9453ac7b     \tbl\t0x1e827e0 <dyld_stub_binder+0x1e827e0>\n  9975f8: f9412260     \tldr\tx0, [x19, #0x240]\n  9975fc: 9453aec1     \tbl\t0x1e83100 <dyld_stub_binder+0x1e83100>\n  997600: f94027f3     \tldr\tx19, [sp, #0x48]\n  997604: b4000173     \tcbz\tx19, 0x997630 <_EntryFI+0x6a019c>\n  997608: 91002268     \tadd\tx8, x19, #0x8\n  99760c: 92800009     \tmov\tx9, #-0x1               ; =-1"
+          }
+        ],
+        "llvm_objdump_command": "llvm-objdump -d --arch-name=arm64 --start-address=... --stop-address=... <temporary arm64 thin copy>"
+      }
+    ],
+    "selector_targets_without_manifest_selref": [
+      "newComputePipelineStateWithFunction:error:"
+    ],
+    "selectors_with_selref_stub_but_no_text_direct_bl_candidate": [
+      "setTexture:atIndex:",
+      "setFragmentTexture:atIndex:"
+    ],
+    "scope_limit": "The selector cstring-to-selref pointer, __objc_stubs ADRP/LDR pair, and __text BL imm26 destination are byte-checked static edges. LC_FUNCTION_STARTS values are nearest-start candidates, not recovered symbol names. They do not prove runtime execution, receiver identity, dynamic dispatch outcome, or a complete preview/pipeline call chain."
+  }
+}

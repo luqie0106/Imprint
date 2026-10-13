@@ -21,6 +21,7 @@ datas = [
     ('src/native_shared.py', 'src'),
     ('src/dehaze_xmp.py', 'src'),
     ('src/image_io.py',       'src'),
+    ('src/raw_decoder.py',    'src'),
     ('src/camera_profile.py', 'src'),
     ('src/dng_writer.py',     'src'),
     ('src/lens_correction.py', 'src'),
@@ -67,6 +68,16 @@ for model_rel in [
         datas.append((model_rel, 'models'))
 
 native_binaries = []
+raw_candidates = (
+    Path('native-raw/build/libimprint_raw.dylib'),
+    Path('native-raw/build/libimprint_raw.so'),
+    Path('native-raw/build/imprint_raw.dll'),
+    Path('native-raw/build/Release/imprint_raw.dll'),
+)
+raw_library = next((candidate for candidate in raw_candidates if candidate.is_file()), None)
+if raw_library is None:
+    raise RuntimeError('Build native-raw before packaging: the TicoRAW decoder is missing')
+native_binaries.append((str(raw_library), '.'))
 candidate = Path('native-renderer/build/libimprint_renderer.dylib')
 if candidate.is_file():
     native_binaries.append((str(candidate), '.'))
@@ -106,6 +117,7 @@ a = Analysis(
         'native_dense',
         'native_shared',
         'native_sort',
+        'raw_decoder',
         'image_io',
         'dng_writer',
         'lens_correction',

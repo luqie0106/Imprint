@@ -1,0 +1,233 @@
+[
+  {
+    "file_offset": "0x1094e05f",
+    "value": "decodeCurveTexture",
+    "slice_file_offset": "0x799205f",
+    "architecture": "arm64",
+    "vm_address": "0x799205f"
+  },
+  {
+    "file_offset": "0x1095906e",
+    "value": "ColorTransformTableFragment",
+    "slice_file_offset": "0x799d06e",
+    "architecture": "arm64",
+    "vm_address": "0x799d06e"
+  },
+  {
+    "file_offset": "0x1095b7a7",
+    "value": "kVertexFunction_MaskRender",
+    "slice_file_offset": "0x799f7a7",
+    "architecture": "arm64",
+    "vm_address": "0x799f7a7"
+  },
+  {
+    "file_offset": "0x1095b7c2",
+    "value": "kVertexFunction_MergePreview",
+    "slice_file_offset": "0x799f7c2",
+    "architecture": "arm64",
+    "vm_address": "0x799f7c2"
+  },
+  {
+    "file_offset": "0x1095b837",
+    "value": "kFragmentFunction_ApplyTexture",
+    "slice_file_offset": "0x799f837",
+    "architecture": "arm64",
+    "vm_address": "0x799f837"
+  },
+  {
+    "file_offset": "0x1095b856",
+    "value": "kFragmentFunction_ApplyTextureNoAlpha",
+    "slice_file_offset": "0x799f856",
+    "architecture": "arm64",
+    "vm_address": "0x799f856"
+  },
+  {
+    "file_offset": "0x1095b87c",
+    "value": "kFragmentFunction_ApplyTextureCircle",
+    "slice_file_offset": "0x799f87c",
+    "architecture": "arm64",
+    "vm_address": "0x799f87c"
+  },
+  {
+    "file_offset": "0x1095b8a1",
+    "value": "kFragmentFunction_ApplyMatrixTexture",
+    "slice_file_offset": "0x799f8a1",
+    "architecture": "arm64",
+    "vm_address": "0x799f8a1"
+  },
+  {
+    "file_offset": "0x1095b8c6",
+    "value": "kFragmentFunction_ApplyMatrixTextureNoAlpha",
+    "slice_file_offset": "0x799f8c6",
+    "architecture": "arm64",
+    "vm_address": "0x799f8c6"
+  },
+  {
+    "file_offset": "0x1095b97f",
+    "value": "kFragmentFunction_ColorTransformTable",
+    "slice_file_offset": "0x799f97f",
+    "architecture": "arm64",
+    "vm_address": "0x799f97f"
+  },
+  {
+    "file_offset": "0x1095bab1",
+    "value": "kFragmentFunction_MergePreview",
+    "slice_file_offset": "0x799fab1",
+    "architecture": "arm64",
+    "vm_address": "0x799fab1"
+  },
+  {
+    "file_offset": "0x1095baf1",
+    "value": "kFragmentFunction_MaskRenderGradient",
+    "slice_file_offset": "0x799faf1",
+    "architecture": "arm64",
+    "vm_address": "0x799faf1"
+  },
+  {
+    "file_offset": "0x1095bb16",
+    "value": "kFragmentFunction_MaskRenderRadialFilter",
+    "slice_file_offset": "0x799fb16",
+    "architecture": "arm64",
+    "vm_address": "0x799fb16"
+  },
+  {
+    "file_offset": "0x1095bb3f",
+    "value": "kFragmentFunction_MaskRenderRangeMask",
+    "slice_file_offset": "0x799fb3f",
+    "architecture": "arm64",
+    "vm_address": "0x799fb3f"
+  },
+  {
+    "file_offset": "0x1095bb65",
+    "value": "kFragmentFunction_MaskRenderPaint",
+    "slice_file_offset": "0x799fb65",
+    "architecture": "arm64",
+    "vm_address": "0x799fb65"
+  },
+  {
+    "file_offset": "0x1095bc81",
+    "value": "kComputeFunction_TestDoRender",
+    "slice_file_offset": "0x799fc81",
+    "architecture": "arm64",
+    "vm_address": "0x799fc81"
+  },
+  {
+    "file_offset": "0x1095d33d",
+    "value": "kComputeFunction_Copy2PlaneTextureTo4PlaneTexture",
+    "slice_file_offset": "0x79a133d",
+    "architecture": "arm64",
+    "vm_address": "0x79a133d"
+  },
+  {
+    "file_offset": "0x1095d36f",
+    "value": "kComputeFunction_CopyBuffer16sToTexture32",
+    "slice_file_offset": "0x79a136f",
+    "architecture": "arm64",
+    "vm_address": "0x79a136f"
+  },
+  {
+    "file_offset": "0x1095d399",
+    "value": "kComputeFunction_CopyBuffer16uToTexture32",
+    "slice_file_offset": "0x79a1399",
+    "architecture": "arm64",
+    "vm_address": "0x79a1399"
+  },
+  {
+    "file_offset": "0x1095d3c3",
+    "value": "kComputeFunction_CopyBuffer32ToTexture32",
+    "slice_file_offset": "0x79a13c3",
+    "architecture": "arm64",
+    "vm_address": "0x79a13c3"
+  },
+  {
+    "file_offset": "0x1095d410",
+    "value": "kComputeFunction_CopyBufferToTexture",
+    "slice_file_offset": "0x79a1410",
+    "architecture": "arm64",
+    "vm_address": "0x79a1410"
+  },
+  {
+    "file_offset": "0x1095d463",
+    "value": "kComputeFunction_CopyTextureToBuffer",
+    "slice_file_offset": "0x79a1463",
+    "architecture": "arm64",
+    "vm_address": "0x79a1463"
+  },
+  {
+    "file_offset": "0x1095d488",
+    "value": "kComputeFunction_CopyTextureToTexture",
+    "slice_file_offset": "0x79a1488",
+    "architecture": "arm64",
+    "vm_address": "0x79a1488"
+  },
+  {
+    "file_offset": "0x1095d4ae",
+    "value": "kComputeFunction_CopyTextureToTextureWithDither",
+    "slice_file_offset": "0x79a14ae",
+    "architecture": "arm64",
+    "vm_address": "0x79a14ae"
+  },
+  {
+    "file_offset": "0x1095d4de",
+    "value": "kComputeFunction_CopyTextureToTextureWithEdgeOption",
+    "slice_file_offset": "0x79a14de",
+    "architecture": "arm64",
+    "vm_address": "0x79a14de"
+  },
+  {
+    "file_offset": "0x1095d512",
+    "value": "kComputeFunction_CopyTextureToTextureWithPadding",
+    "slice_file_offset": "0x79a1512",
+    "architecture": "arm64",
+    "vm_address": "0x79a1512"
+  },
+  {
+    "file_offset": "0x1095e0d6",
+    "value": "kComputeFunction_FillTexture",
+    "slice_file_offset": "0x79a20d6",
+    "architecture": "arm64",
+    "vm_address": "0x79a20d6"
+  },
+  {
+    "file_offset": "0x1095e1aa",
+    "value": "kComputeFunction_MaskRenderCombo",
+    "slice_file_offset": "0x79a21aa",
+    "architecture": "arm64",
+    "vm_address": "0x79a21aa"
+  },
+  {
+    "file_offset": "0x1095e49c",
+    "value": "kComputeFunction_ReorientTexture",
+    "slice_file_offset": "0x79a249c",
+    "architecture": "arm64",
+    "vm_address": "0x79a249c"
+  },
+  {
+    "file_offset": "0x1095ea53",
+    "value": "kComputeFunction_TextureAffinePlusComposite",
+    "slice_file_offset": "0x79a2a53",
+    "architecture": "arm64",
+    "vm_address": "0x79a2a53"
+  },
+  {
+    "file_offset": "0x1095ea7f",
+    "value": "kComputeFunction_TextureEncodeLogYCC",
+    "slice_file_offset": "0x79a2a7f",
+    "architecture": "arm64",
+    "vm_address": "0x79a2a7f"
+  },
+  {
+    "file_offset": "0x1095eaa4",
+    "value": "kComputeFunction_TextureUnitInfo",
+    "slice_file_offset": "0x79a2aa4",
+    "architecture": "arm64",
+    "vm_address": "0x79a2aa4"
+  },
+  {
+    "file_offset": "0x10963031",
+    "value": "uDstColorTransformLUT",
+    "slice_file_offset": "0x79a7031",
+    "architecture": "arm64",
+    "vm_address": "0x79a7031"
+  }
+]

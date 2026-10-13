@@ -1,0 +1,312 @@
+{
+  "binary": "/Camera_Raw_arm64.analysis-383152",
+  "functions": [
+    {
+      "name": "FUN_01502bb8-01502bb8",
+      "signature": "ulong FUN_01502bb8(long param_1,undefined8 *param_2,undefined4 *param_3);",
+      "decompiler_characters": 13703,
+      "callees": [
+        "FUN_015023bc",
+        "FUN_014d6334",
+        "FUN_01e79a98",
+        "FUN_014d61cc",
+        "FUN_015026a8",
+        "FUN_014d5354",
+        "FUN_014d5f6c",
+        "_memcmp",
+        "___stack_chk_fail",
+        "FUN_014d6080",
+        "FUN_014d5df4",
+        "FUN_014d5fe4"
+      ],
+      "referenced_strings": [
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+      ]
+    },
+    {
+      "name": "FUN_0157e768-0157e768",
+      "signature": "undefined8 FUN_0157e768(undefined8 param_1,ulong param_2,long *param_3);",
+      "decompiler_characters": 2676,
+      "callees": [
+        "FUN_01e7a298",
+        "FUN_013c94f0"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_014d5df4-014d5df4",
+      "signature": "undefined8 FUN_014d5df4(long param_1,long param_2,undefined8 param_3);",
+      "decompiler_characters": 1925,
+      "callees": [
+        "__ZNSt3__15mutex4lockEv",
+        "__ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE",
+        "_bzero",
+        "___assert_rtn",
+        "FUN_014d5380",
+        "__ZNSt3__15mutex6unlockEv",
+        "_memcpy"
+      ],
+      "referenced_strings": [
+        "wp_init_jobs_critsect",
+        "worker.cc",
+        "jobs != NULL"
+      ]
+    },
+    {
+      "name": "FUN_0157e824-0157e824",
+      "signature": "void FUN_0157e824(int param_1,ulong param_2,long *param_3);",
+      "decompiler_characters": 1603,
+      "callees": [
+        "FUN_01e7a2c0",
+        "FUN_013c951c",
+        "FUN_01e7a2e8"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013ceb54-013ceb54",
+      "signature": "undefined4 FUN_013ceb54(undefined8 param_1,undefined8 param_2,long *param_3);",
+      "decompiler_characters": 3317,
+      "callees": [
+        "FUN_014d614c",
+        "FUN_013b6598"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_014d6080-014d6080",
+      "signature": "void FUN_014d6080(long param_1);",
+      "decompiler_characters": 266,
+      "callees": [
+        "__ZNSt3__118condition_variable10notify_oneEv",
+        "__ZNSt3__15mutex6unlockEv",
+        "__ZNSt3__15mutex4lockEv"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013e2a18-013e2a18",
+      "signature": "void FUN_013e2a18(void);",
+      "decompiler_characters": 90,
+      "callees": [
+        "FUN_013e0b84"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013c951c-013c951c",
+      "signature": "void FUN_013c951c(void);",
+      "decompiler_characters": 90,
+      "callees": [
+        "FUN_013c8bc8"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_01489edc-01489edc",
+      "signature": "void FUN_01489edc(void);",
+      "decompiler_characters": 90,
+      "callees": [
+        "FUN_01488028"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013e0b84-013e0b84",
+      "signature": "void FUN_013e0b84(ulong param_1,ulong param_2,long *param_3);",
+      "decompiler_characters": 77519,
+      "callees": [
+        "FUN_013e2cd8",
+        "FUN_013e2a2c",
+        "FUN_01404de8",
+        "FUN_013e3d84",
+        "FUN_013e2eb8",
+        "FUN_013e3c78",
+        "FUN_01e78d9c",
+        "___stack_chk_fail",
+        "_bzero",
+        "_memcpy"
+      ],
+      "referenced_strings": [
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+      ]
+    },
+    {
+      "name": "FUN_013c8bc8-013c8bc8",
+      "signature": "void FUN_013c8bc8(long param_1,long param_2,long param_3,long param_4,undefined4 param_5,code *param_6,code *param_7,undefined8 param_8,ulong param_9,ulong param_10,ulong param_11,undefined8 param_12,int param_13,int *param_14,char *param_15,undefined8 param_16,int param_17,undefined8 *param_18);",
+      "decompiler_characters": 23709,
+      "callees": [
+        "FUN_01e78cd4",
+        "FUN_013d8bdc",
+        "___stack_chk_fail"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013e2eb8-013e2eb8",
+      "signature": "void FUN_013e2eb8(long param_1,int param_2,ulong param_3,code *param_4,code *param_5,undefined8 param_6,int param_7);",
+      "decompiler_characters": 15079,
+      "callees": [
+        "FUN_0144ef4c",
+        "FUN_013d8f24",
+        "FUN_013d8f3c",
+        "FUN_013d8cbc",
+        "FUN_013d8f58",
+        "FUN_013d8bc8",
+        "FUN_013d4d40",
+        "FUN_01e78e14",
+        "___stack_chk_fail",
+        "FUN_01e78e3c",
+        "FUN_013d8bb4"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013e2a2c-013e2a2c",
+      "signature": "ulong FUN_013e2a2c(long param_1,int param_2,ulong param_3,int param_4,uint param_5,ulong param_6,long param_7,undefined8 param_8,long param_9,long param_10);",
+      "decompiler_characters": 3579,
+      "callees": [
+        "FUN_01e78dec",
+        "FUN_01512c3c",
+        "FUN_01e78dc4",
+        "_memcpy"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013e2cd8-013e2cd8",
+      "signature": "void FUN_013e2cd8(long param_1,long param_2,int param_3,int param_4,uint param_5,long param_6,long param_7);",
+      "decompiler_characters": 2664,
+      "callees": [
+        "FUN_01404de8"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013e3d84-013e3d84",
+      "signature": "undefined8 FUN_013e3d84(long param_1,ulong *param_2,ulong *param_3,undefined1 (*param_4) [16],ulong *param_5,uint param_6,uint param_7,int param_8,long param_9,long param_10,long param_11,long param_12,long param_13,long param_14,int param_15);",
+      "decompiler_characters": 78346,
+      "callees": [
+        "_memcpy",
+        "FUN_013e5828",
+        "_bzero",
+        "_memset",
+        "_memcmp"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013e5828-013e5828",
+      "signature": "int FUN_013e5828(ulong *param_1);",
+      "decompiler_characters": 2636,
+      "callees": [],
+      "referenced_strings": null
+    },
+    {
+      "name": "FUN_014d614c-014d614c",
+      "signature": "void FUN_014d614c(long param_1,ulong param_2);",
+      "decompiler_characters": 587,
+      "callees": [
+        "__ZNSt3__118condition_variable10notify_oneEv",
+        "__ZNSt3__15mutex6unlockEv",
+        "__ZNSt3__15mutex4lockEv"
+      ],
+      "referenced_strings": null
+    },
+    {
+      "name": "FUN_013b5ba0-013b5ba0",
+      "signature": "undefined4 * FUN_013b5ba0(undefined8 param_1);",
+      "decompiler_characters": 2959,
+      "callees": [
+        "FUN_014fc760",
+        "FUN_00c0991c",
+        "_fprintf",
+        "FUN_01423954",
+        "FUN_014fc758",
+        "FUN_0031bd7c",
+        "FUN_00a72d38",
+        "FUN_01423948",
+        "FUN_014048f4",
+        "FUN_01455ddc",
+        "FUN_0140487c",
+        "FUN_00f33790",
+        "_free",
+        "_malloc",
+        "FUN_00368c78",
+        "FUN_014fc734",
+        "FUN_013d57dc",
+        "_calloc",
+        "_fwrite",
+        "FUN_01502024",
+        "FUN_01455e00",
+        "FUN_015024f4"
+      ],
+      "referenced_strings": [
+        "[!] Your license key is not valid for this version (installed major version %d > authorized major version %u)\n",
+        "[!] Your license key is not valid for this version (installed build date %u > authorized build date %u)\n",
+        "[!] Initialization of the decoder structure failed\n",
+        "[!] Initialization of the decoder worker failed\n",
+        "[!] Initialization some decoder internal memory failed\n"
+      ]
+    },
+    {
+      "name": "FUN_01502024-01502024",
+      "signature": "int * FUN_01502024(undefined8 param_1,undefined8 param_2,undefined8 param_3,undefined8 param_4,undefined8 param_5);",
+      "decompiler_characters": 5899,
+      "callees": [
+        "FUN_01501f54",
+        "FUN_014b2f34",
+        "FUN_015023bc",
+        "FUN_01501d00",
+        "FUN_013d57dc",
+        "FUN_014d54f0",
+        "_calloc",
+        "FUN_014d52c4",
+        "__Znwm",
+        "_malloc",
+        "FUN_015024f4"
+      ],
+      "referenced_strings": null
+    },
+    {
+      "name": "FUN_014d54f0-014d54f0",
+      "signature": "undefined4 * FUN_014d54f0(uint param_1,uint param_2,ulong param_3,undefined4 param_4);",
+      "decompiler_characters": 3714,
+      "callees": [
+        "_malloc",
+        "__ZdlPv",
+        "FUN_014d636c",
+        "FUN_014d5740",
+        "__Unwind_Resume",
+        "_calloc",
+        "__Znwm",
+        "_free",
+        "FUN_01e799f8"
+      ],
+      "referenced_strings": null
+    },
+    {
+      "name": "FUN_014d58b0-014d58b0",
+      "signature": "undefined8 FUN_014d58b0(long param_1);",
+      "decompiler_characters": 7570,
+      "callees": [
+        "__ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE",
+        "_setjmp",
+        "__ZNSt3__120__throw_system_errorEiPKc",
+        "__ZNSt3__15mutex4lockEv",
+        "__ZNSt3__118condition_variable10notify_oneEv",
+        "__tlv_bootstrap",
+        "__ZNSt3__15mutex6unlockEv"
+      ],
+      "referenced_strings": [
+        "unique_lock::lock: references null mutex",
+        "unique_lock::lock: already locked",
+        "unique_lock::unlock: not locked"
+      ]
+    }
+  ],
+  "notes": [
+    "call lists do not resolve indirect calls",
+    "large functions only partially inspected"
+  ]
+}

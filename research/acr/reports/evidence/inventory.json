@@ -1,0 +1,209 @@
+{
+  "evidence_date": "2026-10-12",
+  "collection_method": "Read-only filesystem scan; `file` magic classification, `lipo` architecture query, `otool -L` dependencies, plistlib version metadata; no Adobe application was launched and no Adobe file was modified.",
+  "plugin": {
+    "path": "/Library/Application Support/Adobe/Plug-Ins/CC/File Formats/Camera Raw.plugin",
+    "exists": true,
+    "bundle_type": ".plugin",
+    "scanned_regular_file_count": 138,
+    "scanned_symlink_count": 0,
+    "native_binary_count": 1,
+    "native_binaries": [
+      {
+        "path": "Contents/MacOS/Camera Raw",
+        "file_type": "Mach-O universal binary with 2 architectures: [x86_64:Mach-O 64-bit bundle x86_64] [arm64]\n/Library/Application Support/Adobe/Plug-Ins/CC/File Formats/Camera Raw.plugin/Contents/MacOS/Camera Raw (for architecture x86_64):\tMach-O 64-bit bundle x86_64\n/Library/Application Support/Adobe/Plug-Ins/CC/File Formats/Camera Raw.plugin/Contents/MacOS/Camera Raw (for architecture arm64):\tMach-O 64-bit bundle arm64",
+        "architectures": [
+          "x86_64",
+          "arm64"
+        ],
+        "size_bytes": 290177856,
+        "mtime_local": "2025-01-31T11:06:13+08:00",
+        "sha256": "c0d0bdad561b3e2948b21b6a4b8a267a86ad4f4f2d99b890632dcaa88f431234",
+        "import_dependencies": {
+          "x86_64": [
+            "/System/Library/Frameworks/AVKit.framework/Versions/A/AVKit",
+            "/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML",
+            "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+            "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+            "/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+            "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+            "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon",
+            "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+            "/usr/lib/libSystem.B.dylib",
+            "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+            "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate",
+            "/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa",
+            "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+            "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+            "/usr/lib/libobjc.A.dylib",
+            "/usr/lib/libc++.1.dylib",
+            "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+            "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync",
+            "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+            "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+            "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo"
+          ],
+          "arm64": [
+            "/System/Library/Frameworks/AVKit.framework/Versions/A/AVKit",
+            "/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML",
+            "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+            "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+            "/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+            "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+            "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon",
+            "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+            "/usr/lib/libSystem.B.dylib",
+            "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+            "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate",
+            "/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa",
+            "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+            "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+            "/usr/lib/libobjc.A.dylib",
+            "/usr/lib/libc++.1.dylib",
+            "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+            "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync",
+            "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+            "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+            "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo"
+          ]
+        }
+      }
+    ],
+    "packages": [
+      {
+        "path": ".",
+        "kind": ".plugin"
+      }
+    ],
+    "symlinks": [],
+    "related_framework_dylib_bundle_helper_paths": [],
+    "frameworks_directory_exists": true,
+    "frameworks_directory_entries": [],
+    "info_plists": [
+      {
+        "path": "Contents/Info.plist",
+        "values": {
+          "CFBundleIdentifier": "com.adobe.CameraRaw",
+          "CFBundleExecutable": "Camera Raw",
+          "CFBundleDisplayName": "Camera Raw",
+          "CFBundlePackageType": "8BIF",
+          "CFBundleShortVersionString": "17.2 (2155)",
+          "CFBundleVersion": "17.2f2155",
+          "CFBundleLongVersionString": "17.2, © 2025 Adobe Systems Incorporated",
+          "CFBundleGetInfoString": "17.2 (2155), Copyright © 2025 Adobe Systems Incorporated"
+        }
+      },
+      {
+        "path": "Contents/Resources/Info.plist",
+        "values": {
+          "CFBundleIdentifier": "com.adobe.CameraRaw",
+          "CFBundleExecutable": "Camera Raw",
+          "CFBundleDisplayName": "Camera Raw",
+          "CFBundlePackageType": "8BIF",
+          "CFBundleShortVersionString": "17.2 (2155)",
+          "CFBundleVersion": "17.2f2155",
+          "CFBundleLongVersionString": "17.2, © 2025 Adobe Systems Incorporated",
+          "CFBundleGetInfoString": "17.2 (2155), Copyright © 2025 Adobe Systems Incorporated"
+        }
+      }
+    ]
+  },
+  "support_directories": [
+    {
+      "scope": "system",
+      "root_label": "/Library/Application Support/Adobe/CameraRaw",
+      "exists": true,
+      "gpu_config_files": [],
+      "camera_raw_latest_log_files": []
+    },
+    {
+      "scope": "user",
+      "root_label": "~/Library/Application Support/Adobe/CameraRaw",
+      "exists": true,
+      "gpu_config_files": [
+        {
+          "path": "GPU/Adobe Photoshop Camera Raw/Camera Raw GPU Config.txt",
+          "size_bytes": 528,
+          "mtime_local": "2026-10-03T14:05:58+08:00",
+          "settings": {
+            "gpu_preferred_system": "",
+            "gpu_init_digest": "5EF5FCFC55A72CEAF00E326A08AC9F10",
+            "gpu_compute_digest": "5E898912B879C13867C4CAB57B321ADF",
+            "gpu_compute_quick_self_test_passed": "True",
+            "gpu_hdr_display_scale": "1"
+          }
+        },
+        {
+          "path": "GPU/Adobe Photoshop Lightroom Classic/Camera Raw GPU Config.txt",
+          "size_bytes": 528,
+          "mtime_local": "2026-08-05T11:26:04+08:00",
+          "settings": {
+            "gpu_preferred_system": "",
+            "gpu_init_digest": "562A8F3EE4E5C94981E2259E3253BEB1",
+            "gpu_compute_digest": "60E5A3CE02D43A08A3BFDB9C5940086C",
+            "gpu_compute_quick_self_test_passed": "True",
+            "gpu_hdr_display_scale": "1"
+          }
+        }
+      ],
+      "camera_raw_latest_log_files": [
+        {
+          "path": "Logs/Camera Raw Log Latest v1.txt",
+          "size_bytes": 39886,
+          "mtime_local": "2026-10-11T20:22:57+08:00",
+          "line_count": 645,
+          "extracted": {
+            "cpu": "Apple M2 Pro",
+            "gpu_initialization": true,
+            "loaded_gpu_system": "Metal",
+            "gpu_primary_driver_version": "15.8.1",
+            "gpu_device_count": "1",
+            "gpu_device_names": [
+              "Apple M2 Pro"
+            ],
+            "gpu3_allow_list": "yes",
+            "gpu3_deny_list": "no",
+            "gpu_compute_digest_previous": "5E898912B879C13867C4CAB57B321ADF",
+            "gpu_compute_digest_current": "5E898912B879C13867C4CAB57B321ADF",
+            "need_to_run_gpu_self_tests": "False.",
+            "gpu_init_status_part_1": "I2_GPU2",
+            "gpu_status_part_1": {
+              "gpu3_hard": "unknown",
+              "gpu3_soft": "success",
+              "gpu4_hard": "unknown",
+              "gpu4_soft": "success"
+            },
+            "metal_pipeline_states_built": true,
+            "metal_pipeline_state_total": 257,
+            "gpu_init_status_part_2": "I4_GPU4",
+            "gpu_status_part_2": {
+              "gpu3_hard": "success",
+              "gpu3_soft": "success",
+              "gpu4_hard": "success",
+              "gpu4_soft": "success"
+            },
+            "determined_gpu3_hard_status": "success"
+          }
+        },
+        {
+          "path": "Logs/Camera Raw Log Latest v0.txt",
+          "size_bytes": 2388,
+          "mtime_local": "2026-10-11T20:22:37+08:00",
+          "line_count": 53,
+          "extracted": {
+            "sdk_startup": "Adobe Photoshop Camera Raw 17.2 (Macintosh), version 17.2x2155, 64-bit, Release",
+            "ml_default_device": "GPU",
+            "dereflect_inference_device": "GPU"
+          }
+        }
+      ]
+    }
+  ],
+  "interpretation": {
+    "observed": "The plugin binary is a universal Mach-O for x86_64 and arm64; it directly links Metal.framework. The newest Camera Raw log records Metal GPU system initialization on Apple M2 Pro, one GPU device, successful final GPU3/GPU4 hard and soft statuses, and completion of 257 compute pipeline states. The app-specific GPU config files both record quick self-test passed.",
+    "inference": "The log is evidence that this recorded Camera Raw session initialized its Metal GPU path successfully at the log timestamp. Directly linking Metal.framework alone would only establish a dependency; the log provides session-specific initialization evidence.",
+    "unknown": "These files do not establish whether Camera Raw or its host application is running now, which host invoked the plugin, or that every operation used the GPU. GPU Config values are persisted settings/status artifacts and are not a live health check."
+  }
+}

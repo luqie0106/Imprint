@@ -21,6 +21,7 @@ from typing import Any
 import cv2
 import numpy as np
 import rawpy
+from raw_decoder import open_raw
 
 import native_dense
 from native_renderer import (
@@ -447,7 +448,7 @@ def load_camera_rgb(
     height, width = int(target_shape[0]), int(target_shape[1])
     if height < 1 or width < 1 or (len(target_shape) == 3 and int(target_shape[2]) != 3):
         raise ValueError("target_shape must describe a non-empty RGB image")
-    with rawpy.imread(str(Path(source_path))) as raw:
+    with open_raw(str(Path(source_path))) as raw:
         camera_wb = np.asarray(raw.camera_whitebalance[:3], dtype=np.float64)
         if camera_wb.shape != (3,) or not np.isfinite(camera_wb).all() or np.any(camera_wb <= 0):
             raise ValueError("camera white balance is unavailable")

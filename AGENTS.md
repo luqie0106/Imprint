@@ -30,6 +30,13 @@ Imprint 是一个本地优先的照片桌面工具，使用 Vue 3 + Tauri 2 构�
 - 去朦胧是独立能力，不得依赖连拍筛选结果或复用会移动原图的 decision 流程。
 - 不要为了新增功能大规模重构连拍分组、人工复核、模型管理或偏好训练。
 
+## Ghidra / Camera Raw 逆向工程交接
+
+- Camera Raw ARM64 的持久化 Ghidra 工程位于 `/Users/hualaiwu/Documents/GhidraProjects/CameraRaw-17.2-arm64`；完整备份位于同级的 `CameraRaw-17.2-arm64-backup`。工程使用 Ghidra 12.1.4、OpenJDK 25、ARM64 原生反编译器，以及独立 Conda 环境 `/Users/hualaiwu/.conda/envs/pyghidra-mcp`（pyghidra-mcp 0.2.7）。不要把依赖装进 photo_sort 的 `py311` 环境。
+- Ghidra 分析数据主要存于 `.rep` 和配套项目数据目录；备份或迁移时复制整个工程目录，不要只复制 `.gpr`。备份前先通过 MCP 保存工程、正常停止服务并确认工程不再被写入；避免并发打开同一工程。
+- pyghidra-mcp 使用 Streamable HTTP，监听地址限定为 `127.0.0.1`。大二进制首次分析可以长时间运行；保留分析日志，只启动一个分析任务，确认分析完成且保存成功后再进行函数反编译。
+- Camera Raw ARM64 切片的分析日志位于 `/Users/hualaiwu/.local/share/pyghidra-mcp/logs/CameraRaw-17.2-arm64-analysis.log`。当前已完成分析并验证 `FUN_012da138` 反编译；Adobe 原始文件保持未修改。
+
 ## 必须保持的产品行为
 
 ### 连拍优选

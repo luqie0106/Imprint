@@ -1,0 +1,132 @@
+{
+  "probe": "ticoraw_msb_unary_synthetic_v1",
+  "status": "synthetic_only",
+  "source_hypothesis": "MSB-first unary interpretation supplied for FUN_013e5828; verified here only against synthetic vectors.",
+  "codebook": {
+    "bit_order": "MSB-first",
+    "rule": "count consecutive 1 bits through the first 0; the value is that count and the codeword length is value + 1",
+    "fixed_vectors": [
+      {
+        "bits": "0",
+        "value": 0
+      },
+      {
+        "bits": "10",
+        "value": 1
+      },
+      {
+        "bits": "110",
+        "value": 2
+      },
+      {
+        "bits": "1110",
+        "value": 3
+      }
+    ]
+  },
+  "reader": {
+    "reservoir_supplement": "up to four bytes are assembled as a big-endian word; only the valid MSB-first prefix is exposed, including a partial final chunk",
+    "max_stream_bytes": 4096,
+    "max_run": 63,
+    "max_run_scope": "synthetic research safety limit only; no claim that Adobe/ACR uses this limit"
+  },
+  "cases": {
+    "fixed_vectors": {
+      "count": 4,
+      "passed": true,
+      "results": [
+        {
+          "bits": "0",
+          "expected": 0,
+          "decoded": 0,
+          "consumed_bits": 1,
+          "passed": true
+        },
+        {
+          "bits": "10",
+          "expected": 1,
+          "decoded": 1,
+          "consumed_bits": 2,
+          "passed": true
+        },
+        {
+          "bits": "110",
+          "expected": 2,
+          "decoded": 2,
+          "consumed_bits": 3,
+          "passed": true
+        },
+        {
+          "bits": "1110",
+          "expected": 3,
+          "decoded": 3,
+          "consumed_bits": 4,
+          "passed": true
+        }
+      ]
+    },
+    "non_byte_boundary": {
+      "count": 1,
+      "values": 5,
+      "bit_length": 15,
+      "consumed_bits": 15,
+      "expected_consumed_bits": 15,
+      "passed": true
+    },
+    "32bit_boundary": {
+      "count": 2,
+      "passed": true,
+      "results": [
+        {
+          "name": "terminator_after_32_ones",
+          "bit_length": 33,
+          "decoded_values": 1,
+          "consumed_bits": 33,
+          "expected_consumed_bits": 33,
+          "passed": true
+        },
+        {
+          "name": "codeword_starts_at_bit_31",
+          "bit_length": 36,
+          "decoded_values": 32,
+          "consumed_bits": 36,
+          "expected_consumed_bits": 36,
+          "passed": true
+        }
+      ]
+    },
+    "deterministic_random": {
+      "seed": 739273740306,
+      "sequence_count": 128,
+      "value_range": [
+        0,
+        63
+      ],
+      "bit_length": 4195,
+      "consumed_bits": 4195,
+      "expected_consumed_bits": 4195,
+      "passed": true
+    },
+    "truncated_missing_terminator": {
+      "count": 1,
+      "rejected": true,
+      "exception": "TruncatedBitstream",
+      "passed": true
+    },
+    "max_run_guard": {
+      "count": 1,
+      "configured_max_run": 63,
+      "rejected_run_length": 64,
+      "exception": "UnaryRunTooLong",
+      "passed": true
+    }
+  },
+  "case_count": 10,
+  "limitations": [
+    "Synthetic bitstrings only; no camera sample entropy decoding was run.",
+    "The MSB-first unary behavior is the supplied static interpretation of FUN_013e5828, not an independently validated full codec behavior.",
+    "This is not Adobe pseudocode translation, a full decoder, or evidence of successful real CFA decoding.",
+    "The 63-bit max_run is a probe safety setting and is not attributed to Adobe/ACR.",
+    "Big-endian 32-bit supplementation is exercised by synthetic boundary cases only."
+  ]
+}

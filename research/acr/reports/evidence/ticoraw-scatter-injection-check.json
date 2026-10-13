@@ -1,0 +1,6 @@
+{
+  "probe": "change first supplied dequantized coefficient by +4096",
+  "different_photosites": 292,
+  "max_absolute_difference": 344,
+  "supplied_coefficients_affect_output": true
+}

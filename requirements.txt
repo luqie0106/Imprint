@@ -3,6 +3,7 @@ pillow-heif>=0.15.0
 pillow-jxl-plugin>=1.3.0
 imagecodecs>=2025.8.2,<2026
 rawpy>=0.21.0
+# Nikon HE/HE* fallback is built by native-raw/CMakeLists.txt; no Python codec.
 opencv-python>=4.8.0
 lensfunpy==1.18.0
 mediapipe>=0.10.14,<0.11

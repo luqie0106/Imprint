@@ -1,0 +1,340 @@
+{
+  "binary": "/Camera_Raw_arm64.analysis-383152",
+  "functions": [
+    {
+      "name": "FUN_012da138-012da138",
+      "signature": "long * FUN_012da138(undefined1 param_1 [16],double param_2,undefined8 param_3,undefined8 param_4,long param_5);",
+      "decompiler_characters": 95612,
+      "callees": [
+        "FUN_012714f4",
+        "FUN_012e0504",
+        "FUN_012e05e0",
+        "thunk_FUN_00d8dea4",
+        "FUN_0130ce40",
+        "FUN_009c7dfc",
+        "thunk_FUN_01319660",
+        "FUN_01277358",
+        "FUN_00c1c7b8",
+        "FUN_00c280e8",
+        "FUN_01300600",
+        "FUN_00af055c",
+        "FUN_0131d8b4",
+        "FUN_0126b0b8",
+        "FUN_01308ba0",
+        "FUN_0127786c",
+        "FUN_00038628",
+        "FUN_00d8e180",
+        "FUN_0131f750",
+        "FUN_00b30530",
+        "FUN_00ae2d38",
+        "FUN_0126b080",
+        "FUN_00aeb790",
+        "FUN_00dd5bc4",
+        "___chkstk_darwin",
+        "FUN_0130d754",
+        "FUN_009c7e98",
+        "FUN_00dfa83c",
+        "FUN_012d892c",
+        "FUN_00d8f5a0",
+        "FUN_00c5be2c",
+        "FUN_00affad0",
+        "FUN_00d8ec24",
+        "FUN_01395ad4",
+        "FUN_00c2e0d4",
+        "FUN_013002d0",
+        "FUN_009e04c4",
+        "FUN_001034cc",
+        "FUN_00e130d4",
+        "FUN_00dd5b68",
+        "thunk_FUN_00038628",
+        "FUN_00af34ec",
+        "___cxa_guard_release",
+        "FUN_0126fcc8",
+        "FUN_0126979c",
+        "FUN_0126b1dc",
+        "FUN_00aa4cbc",
+        "FUN_0126b0e0",
+        "FUN_0130cb4c",
+        "FUN_00aea898",
+        "FUN_00aeb7e8",
+        "FUN_00dfa80c",
+        "FUN_0126b200",
+        "FUN_00a031b4",
+        "FUN_01300218",
+        "FUN_0130a428",
+        "FUN_012e1e7c",
+        "FUN_012df348",
+        "FUN_012691f0",
+        "___cxa_guard_acquire",
+        "FUN_012df248",
+        "FUN_012e001c",
+        "FUN_00aeb844",
+        "FUN_0126b048",
+        "FUN_00d8e108",
+        "FUN_0130d634",
+        "FUN_012d8598",
+        "FUN_00849c98",
+        "FUN_00af1b94",
+        "FUN_0130cda8",
+        "___stack_chk_fail",
+        "FUN_0126ff0c",
+        "FUN_0130cd20",
+        "FUN_00d8f78c",
+        "FUN_012e10bc",
+        "FUN_00d8e0c0",
+        "FUN_0130dcc0",
+        "FUN_00b30544",
+        "FUN_00c29294",
+        "FUN_00aedba4",
+        "FUN_01271614",
+        "FUN_009e0490",
+        "FUN_01300490"
+      ],
+      "referenced_strings": [
+        "image/x-nikon-nef",
+        "SUNNY",
+        "CLOUDY",
+        "SHADE",
+        "INCANDESCENT",
+        "FLUORESCENT",
+        "FLASH",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "ReadNikonCompressed_Scalar"
+      ]
+    },
+    {
+      "name": "FUN_012e001c-012e001c",
+      "signature": "void FUN_012e001c(long *param_1,undefined8 *param_2,undefined8 param_3,long param_4,uint param_5,int param_6,uint param_7,long param_8);",
+      "decompiler_characters": 5094,
+      "callees": [
+        "thunk_FUN_0126ad7c",
+        "FUN_00c43abc",
+        "FUN_012e9c48",
+        "FUN_0126979c",
+        "FUN_01300c7c",
+        "FUN_0127eca8",
+        "FUN_01395ad4",
+        "FUN_01301098",
+        "_bzero",
+        "FUN_012691f0",
+        "FUN_012e30a0",
+        "FUN_0138661c",
+        "thunk_FUN_0126af40"
+      ],
+      "referenced_strings": [
+        "Overflow computing rectangle width",
+        "Overflow computing rectangle height",
+        "Overflow computing rectangle height",
+        "Overflow computing rectangle height"
+      ]
+    },
+    {
+      "name": "FUN_012e0504-012e0504",
+      "signature": "void FUN_012e0504(undefined8 param_1,char param_2,undefined8 param_3,undefined8 param_4,undefined8 param_5,undefined8 param_6);",
+      "decompiler_characters": 635,
+      "callees": [
+        "FUN_012d92d0",
+        "FUN_012d90d0",
+        "FUN_012d9160"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_012d92d0-012d92d0",
+      "signature": "void FUN_012d92d0(long param_1,long *param_2,undefined8 *param_3,undefined8 param_4,ulong param_5,long param_6);",
+      "decompiler_characters": 6082,
+      "callees": [
+        "FUN_0144f07c",
+        "FUN_012e9c48",
+        "thunk_FUN_0126ad7c",
+        "FUN_01404828",
+        "FUN_01269264",
+        "thunk_FUN_0126af40",
+        "FUN_01300c7c",
+        "FUN_013b6864",
+        "FUN_013b6264",
+        "FUN_0127eca8",
+        "FUN_01404820",
+        "FUN_01395ad4",
+        "FUN_01301098",
+        "FUN_012691f0",
+        "FUN_01386a34",
+        "FUN_0138661c",
+        "FUN_013b68d0"
+      ],
+      "referenced_strings": [
+        "Invalid image geometry",
+        "dataBytes too large",
+        "DecodeTiles failed",
+        "Overflow in dng_rect constructor",
+        "dataBytes must be positive",
+        "Invalid image geometry",
+        "output buffer exceeds maximum size",
+        "DecodeTiles failed",
+        "Overflow computing rectangle width",
+        "Overflow computing rectangle height",
+        "Overflow computing rectangle width",
+        "Overflow computing rectangle height",
+        "Overflow computing rectangle width"
+      ]
+    },
+    {
+      "name": "FUN_013b6864-013b6864",
+      "signature": "undefined8 FUN_013b6864(long param_1,undefined8 param_2,undefined8 param_3,undefined8 param_4);",
+      "decompiler_characters": 354,
+      "callees": [
+        "FUN_014d60b4",
+        "FUN_013b62dc",
+        "FUN_014d6144"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013b6264-013b6264",
+      "signature": "undefined8 FUN_013b6264(long param_1,undefined8 param_2,undefined8 param_3,undefined8 param_4,undefined8 param_5);",
+      "decompiler_characters": 386,
+      "callees": [
+        "FUN_014d60b4",
+        "FUN_014d6144",
+        "FUN_013b5e60"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013b68d0-013b68d0",
+      "signature": "void FUN_013b68d0(void);",
+      "decompiler_characters": 278,
+      "callees": [
+        "___stack_chk_fail",
+        "FUN_013b6938"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013b62dc-013b62dc",
+      "signature": "undefined8 FUN_013b62dc(long param_1,ulong param_2,long param_3,ulong param_4,undefined8 param_5,long param_6);",
+      "decompiler_characters": 3888,
+      "callees": [
+        "FUN_014048a4",
+        "FUN_014048c4",
+        "FUN_01404884",
+        "__ZNSt3__15mutex6unlockEv",
+        "_memcmp",
+        "FUN_013d5810",
+        "__ZNSt3__15mutex4lockEv",
+        "FUN_013d3268",
+        "FUN_01404804",
+        "_memcpy",
+        "FUN_01404858",
+        "FUN_01404830",
+        "__ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE",
+        "FUN_0140484c"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013b5e60-013b5e60",
+      "signature": "undefined8 FUN_013b5e60(long param_1,ulong param_2,long param_3,undefined8 param_4,long param_5,long param_6,undefined8 param_7,undefined8 param_8);",
+      "decompiler_characters": 7652,
+      "callees": [
+        "FUN_00c0991c",
+        "FUN_014048a4",
+        "FUN_01404890",
+        "FUN_014048c4",
+        "FUN_01404828",
+        "FUN_01404884",
+        "FUN_014048f4",
+        "FUN_0140487c",
+        "FUN_00368c78",
+        "FUN_01404804",
+        "FUN_01404820",
+        "FUN_01404858",
+        "FUN_01404830",
+        "FUN_0140484c",
+        "FUN_01e78c5c",
+        "FUN_00038628"
+      ],
+      "referenced_strings": [
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "Cannot drop more horizontal levels (h_lvl_drop = %d) than max. resolution (max_res = %d)",
+        "License does not allow the use of a proxy",
+        "Proxy_W(%d) and Proxy_H(%d) should be the same with RAW image.",
+        "Cannot drop more vertical levels (v_lvl_drop = %d) than max. resolution (max_res = %d)",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "Cannot cut more horizontal levels (h_lvl_cut = %d) than max. resolution (max_res = %d)",
+        "Cannot cut more vertical levels (v_lvl_cut = %d) than max. resolution (max_res = %d)"
+      ]
+    },
+    {
+      "name": "FUN_013b6938-013b6938",
+      "signature": "undefined8 FUN_013b6938(long param_1,undefined8 param_2,undefined8 param_3,undefined8 param_4,undefined8 param_5,ulong *param_6,long *param_7,long param_8,long param_9);",
+      "decompiler_characters": 7763,
+      "callees": [
+        "FUN_00c0991c",
+        "FUN_0144f07c",
+        "FUN_0144efe4",
+        "FUN_015033a4",
+        "FUN_01404828",
+        "FUN_0031bd7c",
+        "FUN_0140487c",
+        "FUN_014048b0",
+        "FUN_01404820",
+        "FUN_013b667c",
+        "FUN_014d60b4",
+        "FUN_013b62dc",
+        "FUN_014047c8",
+        "FUN_014d6144",
+        "FUN_013b5e60",
+        "_bzero"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013d5810-013d5810",
+      "signature": "undefined8 FUN_013d5810(undefined8 *param_1,void *param_2);",
+      "decompiler_characters": 940,
+      "callees": [
+        "_free",
+        "_calloc",
+        "_memcpy"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013d3268-013d3268",
+      "signature": "void FUN_013d3268(long *param_1,short *param_2,ulong param_3);",
+      "decompiler_characters": 48770,
+      "callees": [
+        "___stack_chk_fail",
+        "_memcmp",
+        "FUN_013d4864",
+        "FUN_013d592c",
+        "_bzero",
+        "FUN_013d47dc"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013b667c-013b667c",
+      "signature": "undefined8 FUN_013b667c(uint *param_1,ulong param_2,undefined8 param_3,undefined8 param_4,undefined8 param_5,undefined8 param_6,undefined8 param_7);",
+      "decompiler_characters": 2343,
+      "callees": [
+        "FUN_01404820",
+        "FUN_01502bb8"
+      ],
+      "referenced_strings": []
+    },
+    {
+      "name": "FUN_013b5b44-013b5b44",
+      "signature": "long FUN_013b5b44(undefined8 param_1,int param_2,uint param_3,ulong param_4,long param_5);",
+      "decompiler_characters": 572,
+      "callees": [
+        "FUN_01e78c34",
+        "FUN_01e78c0c"
+      ],
+      "referenced_strings": []
+    }
+  ]
+}

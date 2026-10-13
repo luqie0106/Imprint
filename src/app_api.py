@@ -118,6 +118,7 @@ import onnxruntime as ort
 import numpy as np
 from PIL import Image, ImageCms, ImageOps
 import rawpy
+from raw_decoder import open_raw
 from ricoh_filter import (
     apply_ricoh_preset_to_session,
     apply_ricoh_preview_effect,
@@ -4271,7 +4272,7 @@ def _preprocess_photo_for_clip(path: Path) -> np.ndarray | None:
             img = Image.open(io.BytesIO(thumb.data)).convert("RGB")
         except Exception:
             try:
-                with rawpy.imread(str(path)) as raw:
+                with open_raw(str(path)) as raw:
                     arr = raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8)
                 img = Image.fromarray(arr).convert("RGB")
             except Exception:

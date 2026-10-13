@@ -1,0 +1,3182 @@
+[
+  {
+    "vm_address": "0x50a089",
+    "file_offset": "0x94c6089",
+    "value": "ipxpjpx0"
+  },
+  {
+    "vm_address": "0x618164",
+    "file_offset": "0x95d4164",
+    "value": " hox#hpxOioxPipx"
+  },
+  {
+    "vm_address": "0xca8dc1",
+    "file_offset": "0x9c64dc1",
+    "value": "ipx1ipx"
+  },
+  {
+    "vm_address": "0xca9599",
+    "file_offset": "0x9c65599",
+    "value": "ipx1ipx"
+  },
+  {
+    "vm_address": "0x1084bfd",
+    "file_offset": "0xa040bfd",
+    "value": "ipx'|"
+  },
+  {
+    "vm_address": "0x1089bb9",
+    "file_offset": "0xa045bb9",
+    "value": "ipx'|"
+  },
+  {
+    "vm_address": "0x108eb75",
+    "file_offset": "0xa04ab75",
+    "value": "ipx'|"
+  },
+  {
+    "vm_address": "0x10c8b73",
+    "file_offset": "0xa084b73",
+    "value": "Kaipx"
+  },
+  {
+    "vm_address": "0x10c8be7",
+    "file_offset": "0xa084be7",
+    "value": "K!ipx"
+  },
+  {
+    "vm_address": "0x10caa13",
+    "file_offset": "0xa086a13",
+    "value": "Kaipx"
+  },
+  {
+    "vm_address": "0x10caa87",
+    "file_offset": "0xa086a87",
+    "value": "K!ipx"
+  },
+  {
+    "vm_address": "0x10cc8b3",
+    "file_offset": "0xa0888b3",
+    "value": "Kaipx"
+  },
+  {
+    "vm_address": "0x10cc927",
+    "file_offset": "0xa088927",
+    "value": "K!ipx"
+  },
+  {
+    "vm_address": "0x116f251",
+    "file_offset": "0xa12b251",
+    "value": "ipx!n"
+  },
+  {
+    "vm_address": "0x116f6e1",
+    "file_offset": "0xa12b6e1",
+    "value": "ipx!n"
+  },
+  {
+    "vm_address": "0x121df81",
+    "file_offset": "0xa1d9f81",
+    "value": "ipx0ipx1&"
+  },
+  {
+    "vm_address": "0x121e0d5",
+    "file_offset": "0xa1da0d5",
+    "value": "ipx0ipx1&"
+  },
+  {
+    "vm_address": "0x121e215",
+    "file_offset": "0xa1da215",
+    "value": "ipx0ipx1&"
+  },
+  {
+    "vm_address": "0x1fc181b",
+    "file_offset": "0xaf7d81b",
+    "value": "N7Project27CRMaskListComponentListPaneE"
+  },
+  {
+    "vm_address": "0x1fc196f",
+    "file_offset": "0xaf7d96f",
+    "value": "N7Project23CRMaskListComponentPaneE"
+  },
+  {
+    "vm_address": "0x1fc1a63",
+    "file_offset": "0xaf7da63",
+    "value": "N7Project20CRIntComponentButtonE"
+  },
+  {
+    "vm_address": "0x1fc3415",
+    "file_offset": "0xaf7f415",
+    "value": "N7Project23CRPointColorDropperToolE"
+  },
+  {
+    "vm_address": "0x1fc3439",
+    "file_offset": "0xaf7f439",
+    "value": "N7Project16CRPointColorMenuE"
+  },
+  {
+    "vm_address": "0x1fc348f",
+    "file_offset": "0xaf7f48f",
+    "value": "?N7Project16CRPointColorRampE"
+  },
+  {
+    "vm_address": "0x1fc34ad",
+    "file_offset": "0xaf7f4ad",
+    "value": "N7Project19CRPointColorLumRampE"
+  },
+  {
+    "vm_address": "0x1fc3505",
+    "file_offset": "0xaf7f505",
+    "value": "N7Project20CRPointColorHSLabelsE"
+  },
+  {
+    "vm_address": "0x1fc3526",
+    "file_offset": "0xaf7f526",
+    "value": "N5Mondo12CPaneBuilderIN7Project16CRPointColorRampEEE"
+  },
+  {
+    "vm_address": "0x1fc355b",
+    "file_offset": "0xaf7f55b",
+    "value": "N5Mondo12CPaneBuilderIN7Project19CRPointColorLumRampEEE"
+  },
+  {
+    "vm_address": "0x1fc35fb",
+    "file_offset": "0xaf7f5fb",
+    "value": "N5Mondo12CPaneBuilderIN7Project20CRPointColorHSLabelsEEE"
+  },
+  {
+    "vm_address": "0x1fc41f0",
+    "file_offset": "0xaf801f0",
+    "value": "N7Project23CRPointColorRangeSliderE"
+  },
+  {
+    "vm_address": "0x1fc4259",
+    "file_offset": "0xaf80259",
+    "value": "N5Mondo12CPaneBuilderIN7Project23CRPointColorRangeSliderEEE"
+  },
+  {
+    "vm_address": "0x1fc4f80",
+    "file_offset": "0xaf80f80",
+    "value": "N5Mondo7CValMsgIN7Project13CRHueSatColorEEE"
+  },
+  {
+    "vm_address": "0x1fc5688",
+    "file_offset": "0xaf81688",
+    "value": "N7Project21CRSnapshotContextMenuE"
+  },
+  {
+    "vm_address": "0x1fc600d",
+    "file_offset": "0xaf8200d",
+    "value": "N7Project22CRStyleListContextMenuE"
+  },
+  {
+    "vm_address": "0x1fcbb99",
+    "file_offset": "0xaf87b99",
+    "value": "N2cv5utils12_GLOBAL__N_119AllocatorStatisticsE"
+  },
+  {
+    "vm_address": "0x1fcfc20",
+    "file_offset": "0xaf8bc20",
+    "value": "N2cv5utils28AllocatorStatisticsInterfaceE"
+  },
+  {
+    "vm_address": "0x1fd3018",
+    "file_offset": "0xaf8f018",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19RGB2HSV_bEEE"
+  },
+  {
+    "vm_address": "0x1fd3077",
+    "file_offset": "0xaf8f077",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19RGB2HSV_fEEE"
+  },
+  {
+    "vm_address": "0x1fd30d6",
+    "file_offset": "0xaf8f0d6",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19RGB2HLS_bEEE"
+  },
+  {
+    "vm_address": "0x1fd3135",
+    "file_offset": "0xaf8f135",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19RGB2HLS_fEEE"
+  },
+  {
+    "vm_address": "0x1fd3194",
+    "file_offset": "0xaf8f194",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19HSV2RGB_bEEE"
+  },
+  {
+    "vm_address": "0x1fd31f3",
+    "file_offset": "0xaf8f1f3",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19HSV2RGB_fEEE"
+  },
+  {
+    "vm_address": "0x1fd3252",
+    "file_offset": "0xaf8f252",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19HLS2RGB_bEEE"
+  },
+  {
+    "vm_address": "0x1fd32fc",
+    "file_offset": "0xaf8f2fc",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_19HLS2RGB_fEEE"
+  },
+  {
+    "vm_address": "0x1fd3478",
+    "file_offset": "0xaf8f478",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9RGB2XYZ_iIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd34ba",
+    "file_offset": "0xaf8f4ba",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9RGB2XYZ_iItEEEE"
+  },
+  {
+    "vm_address": "0x1fd34fc",
+    "file_offset": "0xaf8f4fc",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9RGB2XYZ_fIfEEEE"
+  },
+  {
+    "vm_address": "0x1fd353e",
+    "file_offset": "0xaf8f53e",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9XYZ2RGB_iIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd3580",
+    "file_offset": "0xaf8f580",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9XYZ2RGB_iItEEEE"
+  },
+  {
+    "vm_address": "0x1fd35c2",
+    "file_offset": "0xaf8f5c2",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9XYZ2RGB_fIfEEEE"
+  },
+  {
+    "vm_address": "0x1fd3604",
+    "file_offset": "0xaf8f604",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9RGB2Lab_bEEE"
+  },
+  {
+    "vm_address": "0x1fd3643",
+    "file_offset": "0xaf8f643",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9RGB2Lab_fEEE"
+  },
+  {
+    "vm_address": "0x1fd3682",
+    "file_offset": "0xaf8f682",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9RGB2Luv_bEEE"
+  },
+  {
+    "vm_address": "0x1fd36c1",
+    "file_offset": "0xaf8f6c1",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9RGB2Luv_fEEE"
+  },
+  {
+    "vm_address": "0x1fd3700",
+    "file_offset": "0xaf8f700",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9Lab2RGB_bEEE"
+  },
+  {
+    "vm_address": "0x1fd373f",
+    "file_offset": "0xaf8f73f",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9Lab2RGB_fEEE"
+  },
+  {
+    "vm_address": "0x1fd377e",
+    "file_offset": "0xaf8f77e",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9Luv2RGB_bEEE"
+  },
+  {
+    "vm_address": "0x1fd37bd",
+    "file_offset": "0xaf8f7bd",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_9Luv2RGB_fEEE"
+  },
+  {
+    "vm_address": "0x1fd381b",
+    "file_offset": "0xaf8f81b",
+    "value": "=N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_17RGB2RGBIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd387c",
+    "file_offset": "0xaf8f87c",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_17RGB2RGBItEEEE"
+  },
+  {
+    "vm_address": "0x1fd38dc",
+    "file_offset": "0xaf8f8dc",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_17RGB2RGBIfEEEE"
+  },
+  {
+    "vm_address": "0x1fd393c",
+    "file_offset": "0xaf8f93c",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_110RGB2RGB5x5EEE"
+  },
+  {
+    "vm_address": "0x1fd399d",
+    "file_offset": "0xaf8f99d",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_110RGB5x52RGBEEE"
+  },
+  {
+    "vm_address": "0x1fd39fe",
+    "file_offset": "0xaf8f9fe",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_18RGB2GrayIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd3a5f",
+    "file_offset": "0xaf8fa5f",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_18RGB2GrayItEEEE"
+  },
+  {
+    "vm_address": "0x1fd3ac0",
+    "file_offset": "0xaf8fac0",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_18RGB2GrayIfEEEE"
+  },
+  {
+    "vm_address": "0x1fd3b21",
+    "file_offset": "0xaf8fb21",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_18Gray2RGBIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd3b82",
+    "file_offset": "0xaf8fb82",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_18Gray2RGBItEEEE"
+  },
+  {
+    "vm_address": "0x1fd3be3",
+    "file_offset": "0xaf8fbe3",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_18Gray2RGBIfEEEE"
+  },
+  {
+    "vm_address": "0x1fd3c44",
+    "file_offset": "0xaf8fc44",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111RGB5x52GrayEEE"
+  },
+  {
+    "vm_address": "0x1fd3ca6",
+    "file_offset": "0xaf8fca6",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111Gray2RGB5x5EEE"
+  },
+  {
+    "vm_address": "0x1fd3d08",
+    "file_offset": "0xaf8fd08",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_110RGBA2mRGBAIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd3d6c",
+    "file_offset": "0xaf8fd6c",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_110mRGBA2RGBAIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd3ec8",
+    "file_offset": "0xaf8fec8",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111RGB2YCrCb_iIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd3f2d",
+    "file_offset": "0xaf8ff2d",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111RGB2YCrCb_iItEEEE"
+  },
+  {
+    "vm_address": "0x1fd3f92",
+    "file_offset": "0xaf8ff92",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111RGB2YCrCb_fIfEEEE"
+  },
+  {
+    "vm_address": "0x1fd3ff7",
+    "file_offset": "0xaf8fff7",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111YCrCb2RGB_iIhEEEE"
+  },
+  {
+    "vm_address": "0x1fd405c",
+    "file_offset": "0xaf9005c",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111YCrCb2RGB_iItEEEE"
+  },
+  {
+    "vm_address": "0x1fd40c1",
+    "file_offset": "0xaf900c1",
+    "value": "N2cv4impl12_GLOBAL__N_120CvtColorLoop_InvokerINS_3hal12cpu_baseline12_GLOBAL__N_111YCrCb2RGB_fIfEEEE"
+  },
+  {
+    "vm_address": "0x1fd4f46",
+    "file_offset": "0xaf90f46",
+    "value": "N2cv15DTColumnInvokerE"
+  },
+  {
+    "vm_address": "0x26f7c78",
+    "file_offset": "0xb6b3c78",
+    "value": "tco'."
+  },
+  {
+    "vm_address": "0x2784752",
+    "file_offset": "0xb740752",
+    "value": "TCO's:bN\""
+  },
+  {
+    "vm_address": "0x282b9a6",
+    "file_offset": "0xb7e79a6",
+    "value": "iPX15"
+  },
+  {
+    "vm_address": "0x2b57640",
+    "file_offset": "0xbb13640",
+    "value": "ATCO0"
+  },
+  {
+    "vm_address": "0x311009e",
+    "file_offset": "0xc0cc09e",
+    "value": "`uIpXQ"
+  },
+  {
+    "vm_address": "0x33eaec0",
+    "file_offset": "0xc3a6ec0",
+    "value": "Ipxql"
+  },
+  {
+    "vm_address": "0x3822c5f",
+    "file_offset": "0xc7dec5f",
+    "value": "A(iPx"
+  },
+  {
+    "vm_address": "0x3b22615",
+    "file_offset": "0xcade615",
+    "value": "w qiPX$N"
+  },
+  {
+    "vm_address": "0x3c0b222",
+    "file_offset": "0xcbc7222",
+    "value": "IpxlWAG!kCP"
+  },
+  {
+    "vm_address": "0x3e9b8b9",
+    "file_offset": "0xce578b9",
+    "value": "tCoPo"
+  },
+  {
+    "vm_address": "0x430520c",
+    "file_offset": "0xd2c120c",
+    "value": "sIPXN"
+  },
+  {
+    "vm_address": "0x44d4a6d",
+    "file_offset": "0xd490a6d",
+    "value": "MIPxK"
+  },
+  {
+    "vm_address": "0x4686403",
+    "file_offset": "0xd642403",
+    "value": "[iPxi$"
+  },
+  {
+    "vm_address": "0x478372a",
+    "file_offset": "0xd73f72a",
+    "value": "9IPx,"
+  },
+  {
+    "vm_address": "0x48e11d5",
+    "file_offset": "0xd89d1d5",
+    "value": ";TCO>M"
+  },
+  {
+    "vm_address": "0x5b88d5b",
+    "file_offset": "0xeb44d5b",
+    "value": "KipXM^["
+  },
+  {
+    "vm_address": "0x60915f7",
+    "file_offset": "0xf04d5f7",
+    "value": "aIPX/T:"
+  },
+  {
+    "vm_address": "0x64dd5a8",
+    "file_offset": "0xf4995a8",
+    "value": "tcO21"
+  },
+  {
+    "vm_address": "0x653dd78",
+    "file_offset": "0xf4f9d78",
+    "value": "tCO~ajj"
+  },
+  {
+    "vm_address": "0x675123e",
+    "file_offset": "0xf70d23e",
+    "value": "y3:/ipx"
+  },
+  {
+    "vm_address": "0x6b87881",
+    "file_offset": "0xfb43881",
+    "value": "tcoO_k"
+  },
+  {
+    "vm_address": "0x6d68bc2",
+    "file_offset": "0xfd24bc2",
+    "value": "ipXLW"
+  },
+  {
+    "vm_address": "0x72f5137",
+    "file_offset": "0x102b1137",
+    "value": "Tcok1"
+  },
+  {
+    "vm_address": "0x73db687",
+    "file_offset": "0x10397687",
+    "value": "/>TCo"
+  },
+  {
+    "vm_address": "0x74241a5",
+    "file_offset": "0x103e01a5",
+    "value": "tics'"
+  },
+  {
+    "vm_address": "0x770d660",
+    "file_offset": "0x106c9660",
+    "value": "wpkiipx"
+  },
+  {
+    "vm_address": "0x77c3fb8",
+    "file_offset": "0x1077ffb8",
+    "value": "NSt3__110__function6__funcIZN3jxlL14GetColorBufferER26JxlChunkedFrameInputSourcemmmmPmEUlPKvE_NS_9allocatorIS8_EEFvS7_EEE"
+  },
+  {
+    "vm_address": "0x77c4056",
+    "file_offset": "0x10780056",
+    "value": "ZN3jxlL14GetColorBufferER26JxlChunkedFrameInputSourcemmmmPmEUlPKvE_"
+  },
+  {
+    "vm_address": "0x77e6768",
+    "file_offset": "0x107a2768",
+    "value": "NSt3__110__function6__funcIZN3jxlL14GetColorBufferER26JxlChunkedFrameInputSourcemmmmPmEUlPKvE_NS_9allocatorIS8_EEFvS7_EEE"
+  },
+  {
+    "vm_address": "0x77e67e6",
+    "file_offset": "0x107a27e6",
+    "value": "ZN3jxlL14GetColorBufferER26JxlChunkedFrameInputSourcemmmmPmEUlPKvE_"
+  },
+  {
+    "vm_address": "0x77ea76f",
+    "file_offset": "0x107a676f",
+    "value": "CN3jxl14SpotColorStageE"
+  },
+  {
+    "vm_address": "0x781b383",
+    "file_offset": "0x107d7383",
+    "value": "timedownlifeleftbackcodedatashowonlysitecityopenjustlikefreeworktextyearoverbodyloveformbookplaylivelinehelphomesidemorewordlongthemviewfindpagedaysfullheadtermeachareafromtruemarkableuponhighdatelandnewsevennextcasebothpostusedmadehandherewhatnameLinkblogsizebaseheldmakemainuser') +holdendswithNewsreadweresigntakehavegameseencallpathwellplusmenufilmpartjointhislistgoodneedwayswestjobsmindalsologorichuseslastteamarmyfoodkingwilleastwardbestfirePageknowaway.pngmovethanloadgiveselfnotemuchfeedmanyrockicononcelookhidediedHomerulehostajaxinfoclublawslesshalfsomesuchzone100%onescareTimeracebluefourweekfacehopegavehardlostwhenparkkeptpassshiproomHTMLplanTypedonesavekeepflaglinksoldfivetookratetownjumpthusdarkcardfilefearstaykillthatfallautoever.comtalkshopvotedeepmoderestturnbornbandfellroseurl(skinrolecomeactsagesmeetgold.jpgitemvaryfeltthensenddropViewcopy1.0\"</a>stopelseliestourpack.gifpastcss?graymean&gt;rideshotlatesaidroadvar feeljohnrickportfast'UA-dead</b>poorbilltypeU.S.woodmust2px;Inforankwidewantwalllead[0];paulwavesure$('#waitmassarmsgoesgainlangpaid!-- lockunitrootwalkfirmwifexml\"songtest20pxkindrowstoolfontmailsafestarmapscorerainflowbabyspansays4px;6px;artsfootrealwikiheatsteptriporg/lakeweaktoldFormcastfansbankveryrunsjulytask1px;goalgrewslowedgeid=\"sets5px;.js?40pxif (soonseatnonetubezerosentreedfactintogiftharm18pxcamehillboldzoomvoideasyringfillpeakinitcost3px;jacktagsbitsrolleditknewnear<!--growJSONdutyNamesaleyou lotspainjazzcoldeyesfishwww.risktabsprev10pxrise25pxBlueding300,ballfordearnwildbox.fairlackverspairjunetechif(!pickevil$(\"#warmlorddoespull,000ideadrawhugespotfundburnhrefcellkeystickhourlossfuel12pxsuitdealRSS\"agedgreyGET\"easeaimsgirlaids8px;navygridtips#999warsladycars); }php?helltallwhomzh:"
+  },
+  {
+    "vm_address": "0x781c383",
+    "file_offset": "0x107d8383",
+    "value": "firstvideolightworldmediawhitecloseblackrightsmallbooksplacemusicfieldorderpointvalueleveltableboardhousegroupworksyearsstatetodaywaterstartstyledeathpowerphonenighterrorinputabouttermstitletoolseventlocaltimeslargewordsgamesshortspacefocusclearmodelblockguideradiosharewomenagainmoneyimagenamesyounglineslatercolorgreenfront&amp;watchforcepricerulesbeginaftervisitissueareasbelowindextotalhourslabelprintpressbuiltlinksspeedstudytradefoundsenseundershownformsrangeaddedstillmovedtakenaboveflashfixedoftenotherviewschecklegalriveritemsquickshapehumanexistgoingmoviethirdbasicpeacestagewidthloginideaswrotepagesusersdrivestorebreaksouthvoicesitesmonthwherebuildwhichearthforumthreesportpartyClicklowerlivesclasslayerentrystoryusagesoundcourtyour birthpopuptypesapplyImagebeinguppernoteseveryshowsmeansextramatchtrackknownearlybegansuperpapernorthlearngivennamedendedTermspartsGroupbrandusingwomanfalsereadyaudiotakeswhile.com/livedcasesdailychildgreatjudgethoseunitsneverbroadcoastcoverapplefilescyclesceneplansclickwritequeenpieceemailframeolderphotolimitcachecivilscaleenterthemetheretouchboundroyalaskedwholesincestock namefaithheartemptyofferscopeownedmightalbumthinkbloodarraymajortrustcanonunioncountvalidstoneStyleLoginhappyoccurleft:freshquitefilmsgradeneedsurbanfightbasishoverauto;route.htmlmixedfinalYour slidetopicbrownalonedrawnsplitreachRightdatesmarchquotegoodsLinksdoubtasyncthumballowchiefyouthnovel10px;serveuntilhandsCheckSpacequeryjamesequaltwice0,000Startpanelsongsroundeightshiftworthpostsleadsweeksavoidthesemilesplanesmartalphaplantmarksratesplaysclaimsalestextsstarswrong</h3>thing.org/multiheardPowerstandtokensolid(thisbringshipsstafftriedcallsfullyfactsagentThis //-->adminegyptEvent15px;Emailtrue\"crossspentblogsbox\">notedleavechinasizesguest</h4>robotheavytrue,sevengrandcrimesignsawaredancephase><!--en_US&#39;200px_namelatinenjoyajax.ationsmithU.S. holdspeterindianav\">chainscorecomesdoingpriorShare1990sromanlistsjapanfallstrialowneragree</h2>abusealertopera\"-//WcardshillsteamsPhototruthclean.php?saintmetallouismeantproofbriefrow\">genretrucklooksValueFrame.net/-->"
+  },
+  {
+    "vm_address": "0x781cbbd",
+    "file_offset": "0x107d8bbd",
+    "value": "var makescostsplainadultquesttrainlaborhelpscausemagicmotortheir250pxleaststepsCountcouldglasssidesfundshotelawardmouthmovesparisgivesdutchtexasfruitnull,||[];top\">"
+  },
+  {
+    "vm_address": "0x7820783",
+    "file_offset": "0x107dc783",
+    "value": "profileservicedefaulthimselfdetailscontentsupportstartedmessagesuccessfashion<title>countryaccountcreatedstoriesresultsrunningprocesswritingobjectsvisiblewelcomearticleunknownnetworkcompanydynamicbrowserprivacyproblemServicerespectdisplayrequestreservewebsitehistoryfriendsoptionsworkingversionmillionchannelwindow.addressvisitedweathercorrectproductedirectforwardyou canremovedsubjectcontrolarchivecurrentreadinglibrarylimitedmanagerfurthersummarymachineminutesprivatecontextprogramsocietynumberswrittenenabledtriggersourcesloadingelementpartnerfinallyperfectmeaningsystemskeepingculture&quot;,journalprojectsurfaces&quot;expiresreviewsbalanceEnglishContentthroughPlease opinioncontactaverageprimaryvillageSpanishgallerydeclinemeetingmissionpopularqualitymeasuregeneralspeciessessionsectionwriterscounterinitialreportsfiguresmembersholdingdisputeearlierexpressdigitalpictureAnothermarriedtrafficleadingchangedcentralvictoryimages/reasonsstudiesfeaturelistingmust beschoolsVersionusuallyepisodeplayinggrowingobviousoverlaypresentactions</ul>"
+  },
+  {
+    "vm_address": "0x78211e0",
+    "file_offset": "0x107dd1e0",
+    "value": "paymenttroubleconceptcompareparentsplayersregionsmonitor ''The winningexploreadaptedGalleryproduceabilityenhancecareers). The collectSearch ancientexistedfooter handlerprintedconsoleEasternexportswindowsChannelillegalneutralsuggest_headersigning.html\">settledwesterncausing-webkitclaimedJusticechaptervictimsThomas mozillapromisepartieseditionoutside:false,hundredOlympic_buttonauthorsreachedchronicdemandssecondsprotectadoptedprepareneithergreatlygreateroverallimprovecommandspecialsearch.worshipfundingthoughthighestinsteadutilityquarterCulturetestingclearlyexposedBrowserliberal} catchProjectexamplehide();FloridaanswersallowedEmperordefenseseriousfreedomSeveral-buttonFurtherout of != nulltrainedDenmarkvoid(0)/all.jspreventRequestStephen"
+  },
+  {
+    "vm_address": "0x7821623",
+    "file_offset": "0x107dd623",
+    "value": " severalbecomesselect wedding00.htmlmonarchoff theteacherhighly biologylife ofor evenrise of&raquo;plusonehunting(thoughDouglasjoiningcirclesFor theAncientVietnamvehiclesuch ascrystalvalue =Windowsenjoyeda smallassumed<a id=\"foreign All rihow theDisplayretiredhoweverhidden;battlesseekingcabinetwas notlook atconductget theJanuaryhappensturninga:hoverOnline French lackingtypicalextractenemieseven ifgeneratdecidedare not/searchbeliefs-image:locatedstatic.login\">convertviolententeredfirst\">circuitFinlandchemistshe was10px;\">as suchdivided</span>will beline ofa greatmystery/index.fallingdue to railwaycollegemonsterdescentit withnuclearJewish protestBritishflowerspredictreformsbutton who waslectureinstantsuicidegenericperiodsmarketsSocial fishingcombinegraphicwinners<br /><by the NaturalPrivacycookiesoutcomeresolveSwedishbrieflyPersianso muchCenturydepictscolumnshousingscriptsnext tobearingmappingrevisedjQuery(-width:title\">tooltipSectiondesignsTurkishyounger.match(})();"
+  },
+  {
+    "vm_address": "0x7821be2",
+    "file_offset": "0x107ddbe2",
+    "value": "personsGolden Affairsgrammarformingdestroyidea ofcase ofoldest this is.src = cartoonregistrCommonsMuslimsWhat isin manymarkingrevealsIndeed,equally/show_aoutdoorescape(Austriageneticsystem,In the sittingHe alsoIslandsAcademy"
+  },
+  {
+    "vm_address": "0x7821d16",
+    "file_offset": "0x107ddd16",
+    "value": "DATA[ *kitchenmountedactual dialectmainly _blank'installexpertsif(typeIt also&copy; \">Termsborn inOptionseasterntalkingconcerngained ongoingjustifycriticsfactoryits ownassaultinvitedlastinghis ownhref=\"/\" rel=\"developconcertdiagramdollarsclusterphp?id=alcohol);})();using a><span>vesselsrevivalAddressamateurandroidallegedillnesswalkingcentersqualifymatchesunifiedextinctDefensedied in"
+  },
+  {
+    "vm_address": "0x7822486",
+    "file_offset": "0x107de486",
+    "value": "evidentbe usedkeyCodesixteenIslamic#000000entire widely active (typeofone cancolor =speakerextendsPhysicsterrain<tbody>funeralviewingmiddle cricketprophetshifteddoctorsRussell targetcompactalgebrasocial-bulk ofman and</td>"
+  },
+  {
+    "vm_address": "0x7822679",
+    "file_offset": "0x107de679",
+    "value": "<!-- placinghard to centersort ofclientsstreetsBernardassertstend tofantasydown inharbourFreedomjewelry/about..searchlegendsis mademodern only ononly toimage\" linear painterand notrarely acronymdelivershorter00&amp;as manywidth=\"/* <![Ctitle =of the lowest picked escapeduses ofpeoples PublicMatthewtacticsdamagedway forlaws ofeasy to windowstrong  simple}catch(seventhinfoboxwent topaintedcitizenI don'tretreat. Some ww.\");"
+  },
+  {
+    "vm_address": "0x7822b2b",
+    "file_offset": "0x107deb2b",
+    "value": " rows=\" objectinverse<footerCustomV><\\/scrsolvingChamberslaverywoundedwhereas!= 'undfor allpartly -right:Arabianbacked centuryunit ofmobile-Europe,is homerisk ofdesiredClintoncost ofage of become none ofp&quot;Middle ead')[0Criticsstudios>&copy;group\">assemblmaking pressedwidget.ps:\" ? rebuiltby someFormer editorsdelayedCanonichad thepushingclass=\"but arepartialBabylonbottom carrierCommandits useAs withcoursesa thirddenotesalso inHouston20px;\">accuseddouble goal ofFamous ).bind(priests Onlinein Julyst + \"gconsultdecimalhelpfulrevivedis veryr'+'iptlosing femalesis alsostringsdays ofarrivalfuture <objectforcingString(\" />"
+  },
+  {
+    "vm_address": "0x7822e79",
+    "file_offset": "0x107dee79",
+    "value": " is moreseasonsformer the newis justconsent Searchwas thewhy theshippedbr><br>width: height=made ofcuisineis thata very Admiral fixed;normal MissionPress, ontariocharsettry to invaded=\"true\"spacingis mosta more totallyfall of});"
+  },
+  {
+    "vm_address": "0x7823f6d",
+    "file_offset": "0x107dff6d",
+    "value": "nsaludospodemosmejorarpositionbusinesshomepagesecuritylanguagestandardcampaignfeaturescategoryexternalchildrenreservedresearchexchangefavoritetemplatemilitaryindustryservicesmaterialproductsz-index:commentssoftwarecompletecalendarplatformarticlesrequiredmovementquestionbuildingpoliticspossiblereligionphysicalfeedbackregisterpicturesdisabledprotocolaudiencesettingsactivityelementslearninganythingabstractprogressoverviewmagazineeconomictrainingpressurevarious <strong>propertyshoppingtogetheradvancedbehaviordownloadfeaturedfootballselectedLanguagedistanceremembertrackingpasswordmodifiedstudentsdirectlyfightingnortherndatabasefestivalbreakinglocationinternetdropdownpracticeevidencefunctionmarriageresponseproblemsnegativeprogramsanalysisreleasedbanner\">purchasepoliciesregionalcreativeargumentbookmarkreferrerchemicaldivisioncallbackseparateprojectsconflicthardwareinterestdeliverymountainobtained= false;for(var acceptedcapacitycomputeridentityaircraftemployedproposeddomesticincludesprovidedhospitalverticalcollapseapproachpartnerslogo\"><adaughterauthor\" culturalfamilies/images/assemblypowerfulteachingfinisheddistrictcriticalcgi-bin/purposesrequireselectionbecomingprovidesacademicexerciseactuallymedicineconstantaccidentMagazinedocumentstartingbottom\">observed: &quot;extendedpreviousSoftwarecustomerdecisionstrengthdetailedslightlyplanningtextareacurrencyeveryonestraighttransferpositiveproducedheritageshippingabsolutereceivedrelevantbutton\" violenceanywherebenefitslaunchedrecentlyalliancefollowedmultiplebulletinincludedoccurredinternal$(this).republic><tr><tdcongressrecordedultimatesolution<ul id=\"discoverHome</a>websitesnetworksalthoughentirelymemorialmessagescontinueactive\">somewhatvictoriaWestern  title=\"LocationcontractvisitorsDownloadwithout right\">"
+  },
+  {
+    "vm_address": "0x782492b",
+    "file_offset": "0x107e092b",
+    "value": "coveragechairman.png\" />subjectsRichard whateverprobablyrecoverybaseballjudgmentconnect..css\" /> websitereporteddefault\"/></a>"
+  },
+  {
+    "vm_address": "0x7824d8f",
+    "file_offset": "0x107e0d8f",
+    "value": "The yourselfContact michiganEnglish columbiapriorityprintingdrinkingfacilityreturnedContent officersRussian generate-8859-1\"indicatefamiliar qualitymargin:0 contentviewportcontacts-title\">portable.length eligibleinvolvesatlanticonload=\"default.suppliedpaymentsglossary"
+  },
+  {
+    "vm_address": "0x78253f3",
+    "file_offset": "0x107e13f3",
+    "value": "&nbsp;</<tr><td height:2/productcountry include footer\" &lt;!-- title\"></jquery.</form>"
+  },
+  {
+    "vm_address": "0x7825f83",
+    "file_offset": "0x107e1f83",
+    "value": "resourcescountriesquestionsequipmentcommunityavailablehighlightDTD/xhtmlmarketingknowledgesomethingcontainerdirectionsubscribeadvertisecharacter\" value=\"</select>Australia\" class=\"situationauthorityfollowingprimarilyoperationchallengedevelopedanonymousfunction functionscompaniesstructureagreement\" title=\"potentialeducationargumentssecondarycopyrightlanguagesexclusivecondition</form>"
+  },
+  {
+    "vm_address": "0x782612a",
+    "file_offset": "0x107e212a",
+    "value": "solutionswhen the Analyticstemplatesdangeroussatellitedocumentspublisherimportantprototypeinfluence&raquo;</effectivegenerallytransformbeautifultransportorganizedpublishedprominentuntil thethumbnailNational .focus();over the migrationannouncedfooter\">"
+  },
+  {
+    "vm_address": "0x7826700",
+    "file_offset": "0x107e2700",
+    "value": "microsoftgraduallydiscussedhe becameexecutivejquery.jshouseholdconfirmedpurchasedliterallydestroyedup to thevariationremainingit is notcenturiesJapanese among thecompletedalgorithminterestsrebellionundefinedencourageresizableinvolvingsensitiveuniversalprovision(althoughfeaturingconducted), which continued-header\">February numerous overflow:componentfragmentsexcellentcolspan=\"technicalnear the Advanced source ofexpressedHong Kong Facebookmultiple mechanismelevationoffensive</form>"
+  },
+  {
+    "vm_address": "0x7826e98",
+    "file_offset": "0x107e2e98",
+    "value": "came fromwere usednote thatreceivingExecutiveeven moreaccess tocommanderPoliticalmusiciansdeliciousprisonersadvent ofUTF-8\" /><![CDATA[\">ContactSouthern bgcolor=\"series of. It was in Europepermittedvalidate.appearingofficialsseriously-languageinitiatedextendinglong-terminflationsuch thatgetCookiemarked by</button>implementbut it isincreasesdown the requiringdependent-->"
+  },
+  {
+    "vm_address": "0x78274d2",
+    "file_offset": "0x107e34d2",
+    "value": "&lt;!-- effect ofanalyticswas takenwhere thetook overbelief inAfrikaansas far aspreventedwork witha special<fieldsetChristmasRetrieved"
+  },
+  {
+    "vm_address": "0x782755a",
+    "file_offset": "0x107e355a",
+    "value": "In the back intonortheastmagazines><strong>committeegoverninggroups ofstored inestablisha generalits firsttheir ownpopulatedan objectCaribbeanallow thedistrictswisconsinlocation.; width: inhabitedSocialistJanuary 1</footer>similarlychoice ofthe same specific business The first.length; desire todeal withsince theuserAgentconceivedindex.phpas &quot;engage inrecently,few yearswere also"
+  },
+  {
+    "vm_address": "0x78283a1",
+    "file_offset": "0x107e43a1",
+    "value": "Copyright javascriptconditionseverything<p class=\"technologybackground<a class=\"management&copy; 201javaScriptcharactersbreadcrumbthemselveshorizontalgovernmentCaliforniaactivitiesdiscoveredNavigationtransitionconnectionnavigationappearance</title><mcheckbox\" techniquesprotectionapparentlyas well asunt', 'UA-resolutionoperationstelevisiontranslatedWashingtonnavigator. = window.impression&lt;br&gt;literaturepopulationbgcolor=\"#especially content=\"productionnewsletterpropertiesdefinitionleadershipTechnologyParliamentcomparisonul class=\".indexOf(\"conclusiondiscussioncomponentsbiologicalRevolution_containerunderstoodnoscript><permissioneach otheratmosphere onfocus=\"<form id=\"processingthis.valuegenerationConferencesubsequentwell-knownvariationsreputationphenomenondisciplinelogo.png\" (document,boundariesexpressionsettlementBackgroundout of theenterprise(\"https:\" unescape(\"password\" democratic<a href=\"/wrapper\">"
+  },
+  {
+    "vm_address": "0x7828739",
+    "file_offset": "0x107e4739",
+    "value": "membershiplinguisticpx;paddingphilosophyassistanceuniversityfacilitiesrecognizedpreferenceif (typeofmaintainedvocabularyhypothesis.submit();&amp;nbsp;annotationbehind theFoundationpublisher\"assumptionintroducedcorruptionscientistsexplicitlyinstead ofdimensions onClick=\"considereddepartmentoccupationsoon afterinvestmentpronouncedidentifiedexperimentManagementgeographic\" height=\"link rel=\".replace(/depressionconferencepunishmenteliminatedresistanceadaptationoppositionwell knownsupplementdeterminedh1 class=\"0px;marginmechanicalstatisticscelebratedGovernment"
+  },
+  {
+    "vm_address": "0x78294c5",
+    "file_offset": "0x107e54c5",
+    "value": "<mLaboratoryNovember 2exceptionsIndustrialvariety offloat: lefDuring theassessmenthave been deals withStatisticsoccurrence/ul></div>clearfix\">the publicmany yearswhich wereover time,synonymouscontent\">"
+  },
+  {
+    "vm_address": "0x782a18b",
+    "file_offset": "0x107e618b",
+    "value": "  created byCurrently, bgcolor=\"tabindex=\"disastrousAnalytics also has a><div id=\"</style>"
+  },
+  {
+    "vm_address": "0x782a1e6",
+    "file_offset": "0x107e61e6",
+    "value": "<called forsinger and.src = \"//violationsthis pointconstantlyis locatedrecordingsd from thenederlandsportugu"
+  },
+  {
+    "vm_address": "0x782ab83",
+    "file_offset": "0x107e6b83",
+    "value": "sByTagName(.jpg\" alt=\"1px solid #.gif\" alt=\"transparentinformationapplication\" onclick=\"establishedadvertising.png\" alt=\"environmentperformanceappropriate&amp;mdash;immediately</strong></rather thantemperaturedevelopmentcompetitionplaceholdervisibility:copyright\">0\" height=\"even thoughreplacementdestinationCorporation<ul class=\"AssociationindividualsperspectivesetTimeout(url(http://mathematicsmargin-top:eventually description) no-repeatcollections.JPG|thumb|participate/head><bodyfloat:left;<li class=\"hundreds of"
+  },
+  {
+    "vm_address": "0x782b4e6",
+    "file_offset": "0x107e74e6",
+    "value": "</div>acquisitioncalled the persecutiondesignation{font-size:appeared ininvestigateexperiencedmost likelywidely useddiscussionspresence of (document.extensivelyIt has beenit does notcontrary toinhabitantsimprovementscholarshipconsumptioninstructionfor exampleone or morepx; paddingthe currenta series ofare usuallyrole in thepreviously derivativesevidence ofexperiencescolorschemestated thatcertificate</a></div>"
+  },
+  {
+    "vm_address": "0x782bfec",
+    "file_offset": "0x107e7fec",
+    "value": "Continentaleliminatingwill not bepractice ofin front ofsite of theensure thatto create amississippipotentiallyoutstandingbetter thanwhat is nowsituated inmeta name=\"TraditionalsuggestionsTranslationthe form ofatmosphericideologicalenterprisescalculatingeast of theremnants ofpluginspage/index.php?remained intransformedHe was alsowas alreadystatisticalin favor ofMinistry ofmovement offormulationis required<link rel=\"This is the <a href=\"/popularizedinvolved inare used toand severalmade by theseems to belikely thatPalestiniannamed afterit had beenmost commonto refer tobut this isconsecutivetemporarilyIn general,conventionstakes placesubdivisionterritorialoperationalpermanentlywas largelyoutbreak ofin the pastfollowing a xmlns:og=\"><a class=\"class=\"textConversion may be usedmanufactureafter beingclearfix\">"
+  },
+  {
+    "vm_address": "0x782d34e",
+    "file_offset": "0x107e934e",
+    "value": "<a href=\"/was grantedpeople havecontinuallywas seen asand relatedthe role ofproposed byof the besteach other.Constantinepeople fromdialects ofto revisionwas renameda source ofthe initiallaunched inprovide theto the westwhere thereand similarbetween twois also theEnglish andconditions,that it wasentitled tothemselves.quantity ofransparencythe same asto join thecountry andthis is theThis led toa statementcontrast tolastIndexOfthrough hisis designedthe term isis providedprotect theng</a></li>The currentthe site ofsubstantialexperience,in the Westthey shouldsloven"
+  },
+  {
+    "vm_address": "0x782de07",
+    "file_offset": "0x107e9e07",
+    "value": "Christianityfor example,Professionalrestrictionssuggest thatwas released(such as theremoveClass(unemploymentthe Americanstructure of/index.html published inspan class=\"\"><a href=\"/introductionbelonging toclaimed thatconsequences<meta name=\"Guide to theoverwhelmingagainst the concentrated,"
+  },
+  {
+    "vm_address": "0x7830c65",
+    "file_offset": "0x107ecc65",
+    "value": "<link rel=\" src='http://interested inconventional \" alt=\"\" /></are generallyhas also beenmost popular correspondingcredited withtyle=\"border:</a></span></.gif\" width=\"<iframe src=\"table class=\"inline-block;according to together withapproximatelyparliamentarymore and moredisplay:none;traditionallypredominantly&nbsp;|&nbsp;&nbsp;</span> cellspacing=<input name=\"or\" content=\"controversialproperty=\"og:/x-shockwave-demonstrationsurrounded byNevertheless,was the firstconsiderable Although the collaborationshould not beproportion of<span style=\"known as the shortly afterfor instance,described as /head>"
+  },
+  {
+    "vm_address": "0x783134c",
+    "file_offset": "0x107ed34c",
+    "value": "<div class=\"more commonlyorganisationsfunctionalitywas completed &amp;mdash; participationthe characteran additionalappears to befact that thean example ofsignificantlyonmouseover=\"because they async = true;problems withseems to havethe result of src=\"http://familiar withpossession offunction () {took place inand sometimessubstantially<span></span>is often usedin an attemptgreat deal ofEnvironmentalsuccessfully virtually all20th century,professionalsnecessary to determined bycompatibilitybecause it isDictionary ofmodificationsThe followingmay refer to:Consequently,Internationalalthough somethat would beworld's firstclassified asbottom of the(particularlyalign=\"left\" most commonlybasis for thefoundation ofcontributionspopularity ofcenter of theto reduce thejurisdictionsapproximation onmouseout=\"New Testamentcollection of</span></a></in the Unitedfilm director-strict.dtd\">has been usedreturn to thealthough thischange in theseveral otherbut there areunprecedentedis similar toespecially inweight: bold;is called thecomputationalindicate thatrestricted to"
+  },
+  {
+    "vm_address": "0x7832df5",
+    "file_offset": "0x107eedf5",
+    "value": "<body aspects of thehas since beenEuropean Unionreminiscent ofmore difficultVice Presidentcomposition ofpassed throughmore importantfont-size:11pxexplanation ofthe concept ofwritten in the"
+  },
+  {
+    "vm_address": "0x7833e3a",
+    "file_offset": "0x107efe3a",
+    "value": "<div class=\"characteristics\" method=\"get\" /body>"
+  },
+  {
+    "vm_address": "0x7835fd2",
+    "file_offset": "0x107f1fd2",
+    "value": "<&nbsp;&nbsp;&nbsp;\"><a href=\"http://style=\"float:left;concerned with the=http%3A%2F%2Fwww.in popular culturetype=\"text/css\" />it is possible to Harvard Universitytylesheet\" href=\"/the main characterOxford University  name=\"keywords\" cstyle=\"text-align:the United Kingdomfederal government<div style=\"margin depending on the description of the<div class=\"header.min.js\"></script>destruction of theslightly differentin accordance withtelecommunicationsindicates that theshortly thereafterespecially in the European countriesHowever, there aresrc=\"http://staticsuggested that the\" src=\"http://www.a large number of Telecommunications\" rel=\"nofollow\" tHoly Roman Emperoralmost exclusively\" border=\"0\" alt=\"Secretary of Stateculminating in theCIA World Factbookthe most importantanniversary of thestyle=\"background-<li><em><a href=\"/the Atlantic Oceanstrictly speaking,shortly before thedifferent types ofthe Ottoman Empire><img src=\"http://An Introduction toconsequence of thedeparture from theConfederate Statesindigenous peoplesProceedings of theinformation on thetheories have beeninvolvement in thedivided into threeadjacent countriesis responsible fordissolution of thecollaboration withwidely regarded ashis contemporariesfounding member ofDominican Republicgenerally acceptedthe possibility ofare also availableunder constructionrestoration of thethe general publicis almost entirelypasses through thehas been suggestedcomputer and videoGermanic languages according to the different from theshortly afterwardshref=\"https://www.recent developmentBoard of Directors<div class=\"search| <a href=\"http://In particular, theMultiple footnotesor other substancethousands of yearstranslation of the</div>"
+  },
+  {
+    "vm_address": "0x78514aa",
+    "file_offset": "0x1080d4aa",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeIjEEZN5Adobe2PM21RecompositionDirector53calculateTargetMasksFromHoleInvAndTConstraintNonLMCAFERKNS5_3LIR6Point2IjEEbRKNS8_4ViewERNS8_24CPUAlignedRecycledPlanesESF_NS6_10SearchTypeEE3$_0KNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7851814",
+    "file_offset": "0x1080d814",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeImEENS_8internal17parallel_for_bodyIZN5Adobe2PM21RecompositionDirector59calculateTargetAndSourceMasksFromHoleAndTConstAndValidMasksEbmRKNS7_3LIR6Point2IjEESE_RKNSA_4ViewESH_PSG_bbbNS8_10SearchTypeEbE3$_0mEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7851ac8",
+    "file_offset": "0x1080dac8",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeImEENS_8internal17parallel_for_bodyIZN5Adobe2PM21RecompositionDirector59calculateTargetAndSourceMasksFromHoleAndTConstAndValidMasksEbmRKNS7_3LIR6Point2IjEESE_RKNSA_4ViewESH_PSG_bbbNS8_10SearchTypeEbE3$_1mEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7851be7",
+    "file_offset": "0x1080dbe7",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeImEENS_8internal17parallel_for_bodyIZN5Adobe2PM21RecompositionDirector67calculateTargetAndSourceMasksFromHoleAndTConstAndValidMasksScanlineERKNS7_3LIR6Point2IjEESE_E3$_0mEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7851ce4",
+    "file_offset": "0x1080dce4",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeImEENS_8internal17parallel_for_bodyIZN5Adobe2PM21RecompositionDirector67calculateTargetAndSourceMasksFromHoleAndTConstAndValidMasksScanlineERKNS7_3LIR6Point2IjEESE_E3$_1mEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7858c38",
+    "file_offset": "0x10814c38",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeIiEEN5Adobe2PM12InitDistBodyILb1ENS6_11Similarity2IfffEES9_NS6_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS6_15PatchStatisticsILb1ES9_NS5_3LIR6Point2IfEEEELb1EEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7858e3d",
+    "file_offset": "0x10814e3d",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeIiEEN5Adobe2PM12InitDistBodyILb0ENS5_3LIR6Point2ItEENS9_IiEENS6_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS6_15PatchStatisticsILb0ESA_SB_EELb1EEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7858fe0",
+    "file_offset": "0x10814fe0",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeIiEEN5Adobe2PM12InitDistBodyILb1ENS6_11Similarity2IfffEES9_NS6_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS6_15PatchStatisticsILb1ES9_NS5_3LIR6Point2IfEEEELb1EEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x78591d4",
+    "file_offset": "0x108151d4",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeIiEEN5Adobe2PM12InitDistBodyILb0ENS5_3LIR6Point2ItEENS9_IiEENS6_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS6_15PatchStatisticsILb0ESA_SB_EELb1EEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7868c70",
+    "file_offset": "0x10824c70",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeImEENS_8internal17parallel_for_bodyIZN5Adobe2PM21RecompositionDirector2EMERNS8_20PMPatchStatisticsPtrERKNS8_7EMParamERKNS8_14UnifiedPMViewsERKNS8_19InitializeVoteViewsENS8_15VoteWeightViewsEmmbE3$_0mEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7868d8a",
+    "file_offset": "0x10824d8a",
+    "value": "N3tbb10interface98internal9start_forINS_13blocked_rangeImEENS_8internal17parallel_for_bodyIZN5Adobe2PM21RecompositionDirector2EMERNS8_20PMPatchStatisticsPtrERKNS8_7EMParamERKNS8_14UnifiedPMViewsERKNS8_19InitializeVoteViewsENS8_15VoteWeightViewsEmmbE3$_2mEEKNS_16auto_partitionerEEE"
+  },
+  {
+    "vm_address": "0x7878d50",
+    "file_offset": "0x10834d50",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederINSE_IiEEEEEEvRKT_miiiiiiEUlRKSL_RSM_E_SL_EE"
+  },
+  {
+    "vm_address": "0x7878f1f",
+    "file_offset": "0x10834f1f",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederINSE_IiEEEEEEvRKT_miiiiiiEUlRKSL_RSM_E_SL_EE"
+  },
+  {
+    "vm_address": "0x7879077",
+    "file_offset": "0x10835077",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSN_E_S6_EE"
+  },
+  {
+    "vm_address": "0x78791ce",
+    "file_offset": "0x108351ce",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSN_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787932f",
+    "file_offset": "0x1083532f",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederINSE_IiEEEEEEvRKT_miiiiiiEUlRKSL_RSM_E_SL_EE"
+  },
+  {
+    "vm_address": "0x787947a",
+    "file_offset": "0x1083547a",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederINSE_IiEEEEEEvRKT_miiiiiiEUlRKSL_RSM_E_SL_EE"
+  },
+  {
+    "vm_address": "0x78795bf",
+    "file_offset": "0x108355bf",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSN_E_S6_EE"
+  },
+  {
+    "vm_address": "0x7879703",
+    "file_offset": "0x10835703",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSN_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787a1b1",
+    "file_offset": "0x108361b1",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSK_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787a2fb",
+    "file_offset": "0x108362fb",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSK_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787a43f",
+    "file_offset": "0x1083643f",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSL_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787a582",
+    "file_offset": "0x10836582",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSL_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787a6cf",
+    "file_offset": "0x108366cf",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSK_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787a806",
+    "file_offset": "0x10836806",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSK_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787a937",
+    "file_offset": "0x10836937",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSL_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787aa67",
+    "file_offset": "0x10836a67",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_15CBRNGStreamSIMDIN4r12312AESNI1xm128iEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSL_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787b489",
+    "file_offset": "0x10837489",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederINSF_IiEEEEEEvRKT_miiiiiiEUlRKSM_RSN_E_SM_EE"
+  },
+  {
+    "vm_address": "0x787b5ec",
+    "file_offset": "0x108375ec",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederINSF_IiEEEEEEvRKT_miiiiiiEUlRKSM_RSN_E_SM_EE"
+  },
+  {
+    "vm_address": "0x787b749",
+    "file_offset": "0x10837749",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSO_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787b8a5",
+    "file_offset": "0x108378a5",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSO_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787ba0b",
+    "file_offset": "0x10837a0b",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederINSF_IiEEEEEEvRKT_miiiiiiEUlRKSM_RSN_E_SM_EE"
+  },
+  {
+    "vm_address": "0x787bb5b",
+    "file_offset": "0x10837b5b",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb1ENS4_11Similarity2IfffEES7_NS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb1ES7_NS3_3LIR6Point2IfEEEELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederINSF_IiEEEEEEvRKT_miiiiiiEUlRKSM_RSN_E_SM_EE"
+  },
+  {
+    "vm_address": "0x787bca5",
+    "file_offset": "0x10837ca5",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSO_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787bdee",
+    "file_offset": "0x10837dee",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb1ENS8_11Similarity2IfffEESB_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb1ESB_NS5_IfEEEELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSO_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787c8c9",
+    "file_offset": "0x108388c9",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSL_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787ca18",
+    "file_offset": "0x10838a18",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSL_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787cb61",
+    "file_offset": "0x10838b61",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSM_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787cca9",
+    "file_offset": "0x10838ca9",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_50SkipInactivePatchSingleCombinedTargetAndActiveMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSM_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787cdfb",
+    "file_offset": "0x10838dfb",
+    "value": "N3tbb10interface98internal23parallel_do_feeder_implIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSL_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787cf37",
+    "file_offset": "0x10838f37",
+    "value": "N3tbb10interface98internal17do_iteration_taskIZNK5Adobe2PM10SearchBodyILb0ENS3_3LIR6Point2ItEENS7_IiEENS4_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS4_15PatchStatisticsILb0ES8_S9_EELb1EE10searchTasKINS4_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS9_EEEEvRKT_miiiiiiEUlRKS9_RSL_E_S9_EE"
+  },
+  {
+    "vm_address": "0x787d06d",
+    "file_offset": "0x1083906d",
+    "value": "N3tbb10interface98internal12do_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSM_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787d1a2",
+    "file_offset": "0x108391a2",
+    "value": "N3tbb10interface98internal22do_iteration_task_iterIPN5Adobe3LIR6Point2IiEEZNKS3_2PM10SearchBodyILb0ENS5_ItEES6_NS8_11CBRNGStreamIN4r12314Threefry4x32_RILj20EEEEENS8_15PatchStatisticsILb0ESA_S6_EELb1EE10searchTasKINS8_31SkipInactivePatchOnlyTargetMaskELb0ENS0_18parallel_do_feederIS6_EEEEvRKT_miiiiiiEUlRKS6_RSM_E_S6_EE"
+  },
+  {
+    "vm_address": "0x787fc01",
+    "file_offset": "0x1083bc01",
+    "value": "N3spl11RectContentE"
+  },
+  {
+    "vm_address": "0x78858f5",
+    "file_offset": "0x108418f5",
+    "value": "NSt3__120__shared_ptr_emplaceIN3spl21ConvertColorOperationENS_9allocatorIS2_EEEE"
+  },
+  {
+    "vm_address": "0x7885946",
+    "file_offset": "0x10841946",
+    "value": "N3spl21ConvertColorOperationE"
+  },
+  {
+    "vm_address": "0x788c602",
+    "file_offset": "0x10848602",
+    "value": "NSt3__120__shared_ptr_emplaceIN3spl24GetColorChannelOperationENS_9allocatorIS2_EEEE"
+  },
+  {
+    "vm_address": "0x788c656",
+    "file_offset": "0x10848656",
+    "value": "N3spl24GetColorChannelOperationE"
+  },
+  {
+    "vm_address": "0x788ca10",
+    "file_offset": "0x10848a10",
+    "value": "NSt3__120__shared_ptr_emplaceIN3spl11RectContentENS_9allocatorIS2_EEEE"
+  },
+  {
+    "vm_address": "0x788da94",
+    "file_offset": "0x10849a94",
+    "value": "NSt3__120__shared_ptr_emplaceIN3spl30KeepLargestComponentsOperationENS_9allocatorIS2_EEEE"
+  },
+  {
+    "vm_address": "0x788daee",
+    "file_offset": "0x10849aee",
+    "value": "N3spl30KeepLargestComponentsOperationE"
+  },
+  {
+    "vm_address": "0x7895c00",
+    "file_offset": "0x10851c00",
+    "value": "NSt3__110__function6__funcIZN3spl14CallCVFunctionIZNS2_8CVEngine12convertColorERKNS_10shared_ptrIKNS2_5ImageEEERKNS5_IS6_EENS2_15EConversionTypeEE3$_0EENS2_10OpResponseET_NS2_23EExpectedImageAlignmentEEUlRKNS5_INS2_17IExecutionContextEEEE_NS_9allocatorISN_EEFNS_6vectorINS2_13MemoryPointerENS2_13CStdAllocatorISR_NS2_16sGlobalAllocatorEEEEESM_EEE"
+  },
+  {
+    "vm_address": "0x7895d5b",
+    "file_offset": "0x10851d5b",
+    "value": "ZN3spl14CallCVFunctionIZNS_8CVEngine12convertColorERKNSt3__110shared_ptrIKNS_5ImageEEERKNS3_IS4_EENS_15EConversionTypeEE3$_0EENS_10OpResponseET_NS_23EExpectedImageAlignmentEEUlRKNS3_INS_17IExecutionContextEEEE_"
+  },
+  {
+    "vm_address": "0x7895e2e",
+    "file_offset": "0x10851e2e",
+    "value": "NSt3__110__function6__funcIZN3spl14CallCVFunctionIZNS2_8CVEngine12convertColorERKNS_10shared_ptrIKNS2_5ImageEEERKNS5_IS6_EENS2_15EConversionTypeEE3$_0EENS2_10OpResponseET_NS2_23EExpectedImageAlignmentEEUlPNS2_17IProgressReporterEE_NS_9allocatorISL_EEFNS2_21EngineOperationStatusESK_EEE"
+  },
+  {
+    "vm_address": "0x7895f4c",
+    "file_offset": "0x10851f4c",
+    "value": "ZN3spl14CallCVFunctionIZNS_8CVEngine12convertColorERKNSt3__110shared_ptrIKNS_5ImageEEERKNS3_IS4_EENS_15EConversionTypeEE3$_0EENS_10OpResponseET_NS_23EExpectedImageAlignmentEEUlPNS_17IProgressReporterEE_"
+  },
+  {
+    "vm_address": "0x78a5310",
+    "file_offset": "0x10861310",
+    "value": "NSt3__110__function6__funcIZN3spl14CallCVFunctionIZNS2_8CVEngine15getColorChannelERKNS_10shared_ptrIKNS2_5ImageEEEiRKNS5_IS6_EEE3$_0EENS2_10OpResponseET_NS2_23EExpectedImageAlignmentEEUlRKNS5_INS2_17IExecutionContextEEEE_NS_9allocatorISM_EEFNS_6vectorINS2_13MemoryPointerENS2_13CStdAllocatorISQ_NS2_16sGlobalAllocatorEEEEESL_EEE"
+  },
+  {
+    "vm_address": "0x78a5459",
+    "file_offset": "0x10861459",
+    "value": "ZN3spl14CallCVFunctionIZNS_8CVEngine15getColorChannelERKNSt3__110shared_ptrIKNS_5ImageEEEiRKNS3_IS4_EEE3$_0EENS_10OpResponseET_NS_23EExpectedImageAlignmentEEUlRKNS3_INS_17IExecutionContextEEEE_"
+  },
+  {
+    "vm_address": "0x78a551b",
+    "file_offset": "0x1086151b",
+    "value": "NSt3__110__function6__funcIZN3spl14CallCVFunctionIZNS2_8CVEngine15getColorChannelERKNS_10shared_ptrIKNS2_5ImageEEEiRKNS5_IS6_EEE3$_0EENS2_10OpResponseET_NS2_23EExpectedImageAlignmentEEUlPNS2_17IProgressReporterEE_NS_9allocatorISK_EEFNS2_21EngineOperationStatusESJ_EEE"
+  },
+  {
+    "vm_address": "0x78a5627",
+    "file_offset": "0x10861627",
+    "value": "ZN3spl14CallCVFunctionIZNS_8CVEngine15getColorChannelERKNSt3__110shared_ptrIKNS_5ImageEEEiRKNS3_IS4_EEE3$_0EENS_10OpResponseET_NS_23EExpectedImageAlignmentEEUlPNS_17IProgressReporterEE_"
+  },
+  {
+    "vm_address": "0x78a5ba2",
+    "file_offset": "0x10861ba2",
+    "value": "NSt3__110__function6__funcIZN3spl14CallCVFunctionIZNS2_8CVEngine21keepLargestComponentsERKNS_10shared_ptrIKNS2_5ImageEEERKNS5_IS6_EEiihE3$_0EENS2_10OpResponseET_NS2_23EExpectedImageAlignmentEEUlRKNS5_INS2_17IExecutionContextEEEE_NS_9allocatorISM_EEFNS_6vectorINS2_13MemoryPointerENS2_13CStdAllocatorISQ_NS2_16sGlobalAllocatorEEEEESL_EEE"
+  },
+  {
+    "vm_address": "0x78a5cf3",
+    "file_offset": "0x10861cf3",
+    "value": "ZN3spl14CallCVFunctionIZNS_8CVEngine21keepLargestComponentsERKNSt3__110shared_ptrIKNS_5ImageEEERKNS3_IS4_EEiihE3$_0EENS_10OpResponseET_NS_23EExpectedImageAlignmentEEUlRKNS3_INS_17IExecutionContextEEEE_"
+  },
+  {
+    "vm_address": "0x78a5dbd",
+    "file_offset": "0x10861dbd",
+    "value": "NSt3__110__function6__funcIZN3spl14CallCVFunctionIZNS2_8CVEngine21keepLargestComponentsERKNS_10shared_ptrIKNS2_5ImageEEERKNS5_IS6_EEiihE3$_0EENS2_10OpResponseET_NS2_23EExpectedImageAlignmentEEUlPNS2_17IProgressReporterEE_NS_9allocatorISK_EEFNS2_21EngineOperationStatusESJ_EEE"
+  },
+  {
+    "vm_address": "0x78a5ed1",
+    "file_offset": "0x10861ed1",
+    "value": "ZN3spl14CallCVFunctionIZNS_8CVEngine21keepLargestComponentsERKNSt3__110shared_ptrIKNS_5ImageEEERKNS3_IS4_EEiihE3$_0EENS_10OpResponseET_NS_23EExpectedImageAlignmentEEUlPNS_17IProgressReporterEE_"
+  },
+  {
+    "vm_address": "0x78b2d31",
+    "file_offset": "0x1086ed31",
+    "value": "$$$/CRaw/BatchDialog/Metadata/CopyrightContact=Copyright & Contact Info Only"
+  },
+  {
+    "vm_address": "0x78b6e8b",
+    "file_offset": "0x10872e8b",
+    "value": "$$$/CRaw/EditPanelsToShowDialog/Label/Optics=Optics"
+  },
+  {
+    "vm_address": "0x78b742d",
+    "file_offset": "0x1087342d",
+    "value": "CRaw/EditableLabel/EditControl"
+  },
+  {
+    "vm_address": "0x78b768c",
+    "file_offset": "0x1087368c",
+    "value": "Bad index in EditCorrection"
+  },
+  {
+    "vm_address": "0x78ba319",
+    "file_offset": "0x10876319",
+    "value": "CRaw/MaskHelpWindow/KBSC/LeftColumn"
+  },
+  {
+    "vm_address": "0x78ba33d",
+    "file_offset": "0x1087633d",
+    "value": "CRaw/MaskHelpWindow/KBSC/RightColumn"
+  },
+  {
+    "vm_address": "0x78bbbfb",
+    "file_offset": "0x10877bfb",
+    "value": "enhance_menu_cmd_outcome"
+  },
+  {
+    "vm_address": "0x78bc0cf",
+    "file_offset": "0x108780cf",
+    "value": "Bad colorMode in SetColorMode"
+  },
+  {
+    "vm_address": "0x78bf830",
+    "file_offset": "0x1087b830",
+    "value": "GetCorrectionValues"
+  },
+  {
+    "vm_address": "0x78bf844",
+    "file_offset": "0x1087b844",
+    "value": "GetCorrectionValues - Out of range group index"
+  },
+  {
+    "vm_address": "0x78bf885",
+    "file_offset": "0x1087b885",
+    "value": "SetCurrentCorrectionValues active group out of range"
+  },
+  {
+    "vm_address": "0x78bf93d",
+    "file_offset": "0x1087b93d",
+    "value": "SetComponentSubtractMode"
+  },
+  {
+    "vm_address": "0x78bf956",
+    "file_offset": "0x1087b956",
+    "value": "SetComponentSubtractMode invalid group index."
+  },
+  {
+    "vm_address": "0x78bf984",
+    "file_offset": "0x1087b984",
+    "value": "SetComponentSubtractMode invalid component index."
+  },
+  {
+    "vm_address": "0x78bf9b6",
+    "file_offset": "0x1087b9b6",
+    "value": "Redundant call to SetComponentSubtractMode."
+  },
+  {
+    "vm_address": "0x78bf9e2",
+    "file_offset": "0x1087b9e2",
+    "value": "SetComponentInverted"
+  },
+  {
+    "vm_address": "0x78bf9f7",
+    "file_offset": "0x1087b9f7",
+    "value": "SetComponentInverted invalid group index."
+  },
+  {
+    "vm_address": "0x78bfa21",
+    "file_offset": "0x1087ba21",
+    "value": "SetComponentInverted invalid component index."
+  },
+  {
+    "vm_address": "0x78bfa4f",
+    "file_offset": "0x1087ba4f",
+    "value": "SetComponentInverted already in requested mode"
+  },
+  {
+    "vm_address": "0x78bfb5e",
+    "file_offset": "0x1087bb5e",
+    "value": "GetComponentTool"
+  },
+  {
+    "vm_address": "0x78bfbaa",
+    "file_offset": "0x1087bbaa",
+    "value": "GetComponent"
+  },
+  {
+    "vm_address": "0x78bfbb7",
+    "file_offset": "0x1087bbb7",
+    "value": "GetComponent invalid group index."
+  },
+  {
+    "vm_address": "0x78bfbd9",
+    "file_offset": "0x1087bbd9",
+    "value": "GetComponent invalid component index."
+  },
+  {
+    "vm_address": "0x78c8532",
+    "file_offset": "0x10884532",
+    "value": "CRaw/Masking/List/SubtractComponentButton"
+  },
+  {
+    "vm_address": "0x78c855c",
+    "file_offset": "0x1088455c",
+    "value": "CRaw/Masking/List/IntersectComponentButton"
+  },
+  {
+    "vm_address": "0x78c85a1",
+    "file_offset": "0x108845a1",
+    "value": "Masking2_SubtractComponent.png"
+  },
+  {
+    "vm_address": "0x78c85c0",
+    "file_offset": "0x108845c0",
+    "value": "Masking2_IntersectComponent.png"
+  },
+  {
+    "vm_address": "0x78c89cc",
+    "file_offset": "0x108849cc",
+    "value": "CRaw/Masking/List/ShowNewSubtractComponentMenu"
+  },
+  {
+    "vm_address": "0x78c89fb",
+    "file_offset": "0x108849fb",
+    "value": "CRaw/Masking/List/ShowNewIntersectComponentMenu"
+  },
+  {
+    "vm_address": "0x78cb197",
+    "file_offset": "0x10887197",
+    "value": "CRaw/Masking/PersonMaskOptions/BelowListContents"
+  },
+  {
+    "vm_address": "0x78cc659",
+    "file_offset": "0x10888659",
+    "value": "CRaw/Masking/ToolControls/InvertComponentButton"
+  },
+  {
+    "vm_address": "0x78ccc42",
+    "file_offset": "0x10888c42",
+    "value": "CRaw/MaskPane/PointColor/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78ccc6b",
+    "file_offset": "0x10888c6b",
+    "value": "CRaw/MaskPane/PointColor/Reset/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78ccc9c",
+    "file_offset": "0x10888c9c",
+    "value": "CRaw/MaskPane/PointColor/Adjust/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78ccccc",
+    "file_offset": "0x10888ccc",
+    "value": "CRaw/MaskPane/PointColor/Adjust/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78cccfe",
+    "file_offset": "0x10888cfe",
+    "value": "CRaw/MaskPane/PointColor/Adjust/Switch"
+  },
+  {
+    "vm_address": "0x78ccd25",
+    "file_offset": "0x10888d25",
+    "value": "CRaw/MaskPane/PointColor/Adjust/Case/Open"
+  },
+  {
+    "vm_address": "0x78ccd4f",
+    "file_offset": "0x10888d4f",
+    "value": "CRaw/MaskPane/PointColor/Adjust/Case/Closed"
+  },
+  {
+    "vm_address": "0x78ccd7b",
+    "file_offset": "0x10888d7b",
+    "value": "CRaw/MaskPane/PointColor/HueSatRamp"
+  },
+  {
+    "vm_address": "0x78ccd9f",
+    "file_offset": "0x10888d9f",
+    "value": "CRaw/MaskPane/PointColor/LumRamp"
+  },
+  {
+    "vm_address": "0x78ccdc0",
+    "file_offset": "0x10888dc0",
+    "value": "CRaw/MaskPane/PointColor/Open/PointColorDropper"
+  },
+  {
+    "vm_address": "0x78ccdf0",
+    "file_offset": "0x10888df0",
+    "value": "CRaw/MaskPane/PointColor/Closed/PointColorDropper"
+  },
+  {
+    "vm_address": "0x78cce22",
+    "file_offset": "0x10888e22",
+    "value": "CRaw/MaskPane/PointColor/Open/SwatchPane"
+  },
+  {
+    "vm_address": "0x78cce4b",
+    "file_offset": "0x10888e4b",
+    "value": "CRaw/MaskPane/PointColor/Closed/SwatchPane"
+  },
+  {
+    "vm_address": "0x78cce76",
+    "file_offset": "0x10888e76",
+    "value": "CRaw/MaskPane/PointColor/Adjust/Blocks"
+  },
+  {
+    "vm_address": "0x78cce9d",
+    "file_offset": "0x10888e9d",
+    "value": "CRaw/MaskPane/PointColor/VisButton"
+  },
+  {
+    "vm_address": "0x78ccec0",
+    "file_offset": "0x10888ec0",
+    "value": "CRaw/MaskPane/PointColor/Slider/HueShift"
+  },
+  {
+    "vm_address": "0x78ccee9",
+    "file_offset": "0x10888ee9",
+    "value": "CRaw/MaskPane/PointColor/Slider/SatShift"
+  },
+  {
+    "vm_address": "0x78ccf12",
+    "file_offset": "0x10888f12",
+    "value": "CRaw/MaskPane/PointColor/Slider/LumShift"
+  },
+  {
+    "vm_address": "0x78ccf3b",
+    "file_offset": "0x10888f3b",
+    "value": "CRaw/MaskPane/PointColor/Range/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78ccf6a",
+    "file_offset": "0x10888f6a",
+    "value": "CRaw/MaskPane/PointColor/Range/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78ccf9b",
+    "file_offset": "0x10888f9b",
+    "value": "CRaw/MaskPane/PointColor/Slider/Range/Amount"
+  },
+  {
+    "vm_address": "0x78ccfc8",
+    "file_offset": "0x10888fc8",
+    "value": "CRaw/MaskPane/PointColor/Hue/MinValueLabel"
+  },
+  {
+    "vm_address": "0x78ccff3",
+    "file_offset": "0x10888ff3",
+    "value": "CRaw/MaskPane/PointColor/Hue/MaxValueLabel"
+  },
+  {
+    "vm_address": "0x78cd01e",
+    "file_offset": "0x1088901e",
+    "value": "CRaw/MaskPane/PointColor/Slider/Range/Hue"
+  },
+  {
+    "vm_address": "0x78cd048",
+    "file_offset": "0x10889048",
+    "value": "CRaw/MaskPane/PointColor/Sat/MinValueLabel"
+  },
+  {
+    "vm_address": "0x78cd073",
+    "file_offset": "0x10889073",
+    "value": "CRaw/MaskPane/PointColor/Sat/MaxValueLabel"
+  },
+  {
+    "vm_address": "0x78cd09e",
+    "file_offset": "0x1088909e",
+    "value": "CRaw/MaskPane/PointColor/Slider/Range/Sat"
+  },
+  {
+    "vm_address": "0x78cd0c8",
+    "file_offset": "0x108890c8",
+    "value": "CRaw/MaskPane/PointColor/HueRange/Label"
+  },
+  {
+    "vm_address": "0x78cd0f0",
+    "file_offset": "0x108890f0",
+    "value": "CRaw/MaskPane/PointColor/SatRange/Label"
+  },
+  {
+    "vm_address": "0x78cd118",
+    "file_offset": "0x10889118",
+    "value": "CRaw/MaskPane/PointColor/LumRange/Label"
+  },
+  {
+    "vm_address": "0x78cd140",
+    "file_offset": "0x10889140",
+    "value": "CRaw/MaskPane/PointColor/Lum/MinValueLabel"
+  },
+  {
+    "vm_address": "0x78cd16b",
+    "file_offset": "0x1088916b",
+    "value": "CRaw/MaskPane/PointColor/Lum/MaxValueLabel"
+  },
+  {
+    "vm_address": "0x78cd196",
+    "file_offset": "0x10889196",
+    "value": "CRaw/MaskPane/PointColor/Slider/Range/Lum"
+  },
+  {
+    "vm_address": "0x78cd1c0",
+    "file_offset": "0x108891c0",
+    "value": "CRaw/MaskPane/PointColor/HueSat/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78cd1f0",
+    "file_offset": "0x108891f0",
+    "value": "CRaw/MaskPane/PointColor/HueSat/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78cd222",
+    "file_offset": "0x10889222",
+    "value": "CRaw/MaskPane/PointColor/HueSat/Switch"
+  },
+  {
+    "vm_address": "0x78cd249",
+    "file_offset": "0x10889249",
+    "value": "CRaw/MaskPane/PointColor/HueSat/Case/Open"
+  },
+  {
+    "vm_address": "0x78cd273",
+    "file_offset": "0x10889273",
+    "value": "CRaw/MaskPane/PointColor/HueSat/Case/Closed"
+  },
+  {
+    "vm_address": "0x78cd29f",
+    "file_offset": "0x1088929f",
+    "value": "CRaw/MaskPane/PointColor/HS"
+  },
+  {
+    "vm_address": "0x78cd2bb",
+    "file_offset": "0x108892bb",
+    "value": "CRaw/MaskPane/PointColor/Reset"
+  },
+  {
+    "vm_address": "0x78cd2da",
+    "file_offset": "0x108892da",
+    "value": "CRaw/MaskPane/PointColor/Delete"
+  },
+  {
+    "vm_address": "0x78cd445",
+    "file_offset": "0x10889445",
+    "value": "pointcolor-entered"
+  },
+  {
+    "vm_address": "0x78cd458",
+    "file_offset": "0x10889458",
+    "value": "PointColor-local"
+  },
+  {
+    "vm_address": "0x78ce6b1",
+    "file_offset": "0x1088a6b1",
+    "value": "GetComponentType: Null component"
+  },
+  {
+    "vm_address": "0x78ce76d",
+    "file_offset": "0x1088a76d",
+    "value": "SetComponentName"
+  },
+  {
+    "vm_address": "0x78ce9af",
+    "file_offset": "0x1088a9af",
+    "value": "CRaw/Masking/NewSubtractComponentBase"
+  },
+  {
+    "vm_address": "0x78cea03",
+    "file_offset": "0x1088aa03",
+    "value": "CRaw/Masking/NewIntersectComponentBase"
+  },
+  {
+    "vm_address": "0x78d06ac",
+    "file_offset": "0x1088c6ac",
+    "value": "$$$/CRaw/PointColor/Message/Title=Point Color"
+  },
+  {
+    "vm_address": "0x78d06ef",
+    "file_offset": "0x1088c6ef",
+    "value": "PointColor-global"
+  },
+  {
+    "vm_address": "0x78d0701",
+    "file_offset": "0x1088c701",
+    "value": "$$$/CRaw/PointColor/Message/AlreadySampled=This color has already been sampled."
+  },
+  {
+    "vm_address": "0x78d0751",
+    "file_offset": "0x1088c751",
+    "value": "$$$/CRaw/PointColor/Message/MaxSamples=Only 8 samples are supported."
+  },
+  {
+    "vm_address": "0x78d0796",
+    "file_offset": "0x1088c796",
+    "value": "$$$/CRaw/PointColor/Message/TooNeutral=Cannot sample a color here.^nPlease choose a more saturated area."
+  },
+  {
+    "vm_address": "0x78d07ff",
+    "file_offset": "0x1088c7ff",
+    "value": "$$$/CRaw/PointColor/Message/TooDark=Cannot sample a color here.^nPlease click on a brighter area."
+  },
+  {
+    "vm_address": "0x78d0861",
+    "file_offset": "0x1088c861",
+    "value": "$$$/CRaw/PointColor/Message/Error=Point Color has encountered an error."
+  },
+  {
+    "vm_address": "0x78d08bd",
+    "file_offset": "0x1088c8bd",
+    "value": "CRaw/PointColor/Menu"
+  },
+  {
+    "vm_address": "0x78d08d2",
+    "file_offset": "0x1088c8d2",
+    "value": "CRaw/PointColor/Menu/Base"
+  },
+  {
+    "vm_address": "0x78d08ec",
+    "file_offset": "0x1088c8ec",
+    "value": "$$$/CRaw/PointColor/Menu/DeleteSwatch=Delete Swatch"
+  },
+  {
+    "vm_address": "0x78d0920",
+    "file_offset": "0x1088c920",
+    "value": "$$$/CRaw/PointColor/Menu/DeleteAllSwatches=Delete All Swatches"
+  },
+  {
+    "vm_address": "0x78d097e",
+    "file_offset": "0x1088c97e",
+    "value": "$$$/CRaw/PointColor/Dropper/PV1or2/FirstLine=Point Color is not supported"
+  },
+  {
+    "vm_address": "0x78d09c8",
+    "file_offset": "0x1088c9c8",
+    "value": "$$$/CRaw/PointColor/Dropper/FirstLine=Use the Point Color Dropper"
+  },
+  {
+    "vm_address": "0x78d0a0a",
+    "file_offset": "0x1088ca0a",
+    "value": "$$$/CRaw/PointColor/Dropper/PV1or2/SecondLine=in this Process Version"
+  },
+  {
+    "vm_address": "0x78d0a50",
+    "file_offset": "0x1088ca50",
+    "value": "$$$/CRaw/PointColor/Dropper/SecondLine=to add samples."
+  },
+  {
+    "vm_address": "0x78d0a87",
+    "file_offset": "0x1088ca87",
+    "value": "$$$/CRaw/PointColor/Dropper/TooNeutral=This color is too neutral."
+  },
+  {
+    "vm_address": "0x78d0ac9",
+    "file_offset": "0x1088cac9",
+    "value": "$$$/CRaw/PointColor/Dropper/TooDark=This color is too dark."
+  },
+  {
+    "vm_address": "0x78d0b1d",
+    "file_offset": "0x1088cb1d",
+    "value": "CRPointColorRamp"
+  },
+  {
+    "vm_address": "0x78d0b2e",
+    "file_offset": "0x1088cb2e",
+    "value": "CRPointColorLumRamp"
+  },
+  {
+    "vm_address": "0x78d0b8d",
+    "file_offset": "0x1088cb8d",
+    "value": "CRPointColorHSLabels"
+  },
+  {
+    "vm_address": "0x78d2a9e",
+    "file_offset": "0x1088ea9e",
+    "value": "DNGLossyLimitCount"
+  },
+  {
+    "vm_address": "0x78d42d5",
+    "file_offset": "0x108902d5",
+    "value": "CRPointColorRangeSlider"
+  },
+  {
+    "vm_address": "0x78d5381",
+    "file_offset": "0x10891381",
+    "value": "$$$/CRaw/RenameStyleDialog/LimitColor=Limit to Color Images"
+  },
+  {
+    "vm_address": "0x78d64fc",
+    "file_offset": "0x108924fc",
+    "value": "CRSelectedRetouchSpotControlsHelper::UpdateFillPopup - Unknown fill method: %d"
+  },
+  {
+    "vm_address": "0x78d654c",
+    "file_offset": "0x1089254c",
+    "value": "CRSelectedRetouchSpotControlsHelper::UpdateFillPopup - Unknown spot type: %d"
+  },
+  {
+    "vm_address": "0x78d65aa",
+    "file_offset": "0x108925aa",
+    "value": "CRSelectedRetouchSpotControlsHelper::HandleFillPopup - Unexpected station index: %d"
+  },
+  {
+    "vm_address": "0x78d7b1c",
+    "file_offset": "0x10893b1c",
+    "value": "CRaw/SettingsPane/ShowHide/Optics"
+  },
+  {
+    "vm_address": "0x78d7ccd",
+    "file_offset": "0x10893ccd",
+    "value": "CRaw/SettingsPane/Optics/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78d7e3e",
+    "file_offset": "0x10893e3e",
+    "value": "CRaw/SettingsPane/Optics/UseProfiles/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78d7ea5",
+    "file_offset": "0x10893ea5",
+    "value": "CRaw/SettingsPane/Optics/Defringe/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78d81e4",
+    "file_offset": "0x108941e4",
+    "value": "CRaw/SettingsPane/Optics/Reset/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78d8471",
+    "file_offset": "0x10894471",
+    "value": "CRaw/SettingsPane/Optics/UseProfiles/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78d84dc",
+    "file_offset": "0x108944dc",
+    "value": "CRaw/SettingsPane/Optics/Defringe/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78d8510",
+    "file_offset": "0x10894510",
+    "value": "CRaw/SettingsPane/Optics/Defringe/Label"
+  },
+  {
+    "vm_address": "0x78d86c7",
+    "file_offset": "0x108946c7",
+    "value": "CRaw/SettingsPane/OpticsCorrections/Switch"
+  },
+  {
+    "vm_address": "0x78d86f2",
+    "file_offset": "0x108946f2",
+    "value": "CRaw/SettingsPane/Optics/Profile/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78d8723",
+    "file_offset": "0x10894723",
+    "value": "CRaw/SettingsPane/Optics/Manual/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78d89c8",
+    "file_offset": "0x108949c8",
+    "value": "CRaw/SettingsPane/Optics/StatusDisclosablePane"
+  },
+  {
+    "vm_address": "0x78d96fa",
+    "file_offset": "0x108956fa",
+    "value": "CRaw/SettingsPane/PostCropVignetteHighlightContrast"
+  },
+  {
+    "vm_address": "0x78dac63",
+    "file_offset": "0x10896c63",
+    "value": "CRaw/SettingsPane/ColorMixer/PointColor/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78dacc8",
+    "file_offset": "0x10896cc8",
+    "value": "CRaw/SettingsPane/ColorMixer/Case/PointColor"
+  },
+  {
+    "vm_address": "0x78dacf5",
+    "file_offset": "0x10896cf5",
+    "value": "CRaw/SettingsPane/Mixer/PointColor"
+  },
+  {
+    "vm_address": "0x78dad18",
+    "file_offset": "0x10896d18",
+    "value": "CRaw/SettingsPane/PointColor/Adjust/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78dad4c",
+    "file_offset": "0x10896d4c",
+    "value": "CRaw/SettingsPane/PointColor/Adjust/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78dad82",
+    "file_offset": "0x10896d82",
+    "value": "CRaw/SettingsPane/PointColor/Adjust/Switch"
+  },
+  {
+    "vm_address": "0x78dadad",
+    "file_offset": "0x10896dad",
+    "value": "CRaw/SettingsPane/PointColor/Adjust/Case/Open"
+  },
+  {
+    "vm_address": "0x78daddb",
+    "file_offset": "0x10896ddb",
+    "value": "CRaw/SettingsPane/PointColor/Adjust/Case/Closed"
+  },
+  {
+    "vm_address": "0x78dae0b",
+    "file_offset": "0x10896e0b",
+    "value": "CRaw/PointColor/HueSatRamp"
+  },
+  {
+    "vm_address": "0x78dae26",
+    "file_offset": "0x10896e26",
+    "value": "CRaw/PointColor/LumRamp"
+  },
+  {
+    "vm_address": "0x78dae3e",
+    "file_offset": "0x10896e3e",
+    "value": "CRaw/PointColor/Open/PointColorDropper"
+  },
+  {
+    "vm_address": "0x78dae65",
+    "file_offset": "0x10896e65",
+    "value": "CRaw/PointColor/Closed/PointColorDropper"
+  },
+  {
+    "vm_address": "0x78dae8e",
+    "file_offset": "0x10896e8e",
+    "value": "CRaw/PointColor/Open/SwatchPane"
+  },
+  {
+    "vm_address": "0x78daeae",
+    "file_offset": "0x10896eae",
+    "value": "CRaw/PointColor/Closed/SwatchPane"
+  },
+  {
+    "vm_address": "0x78daed0",
+    "file_offset": "0x10896ed0",
+    "value": "CRaw/PointColor/Adjust/Blocks"
+  },
+  {
+    "vm_address": "0x78daeee",
+    "file_offset": "0x10896eee",
+    "value": "CRaw/SettingsPane/PointColor/VisButton"
+  },
+  {
+    "vm_address": "0x78daf15",
+    "file_offset": "0x10896f15",
+    "value": "CRaw/SettingsPane/PointColor/Slider/HueShift"
+  },
+  {
+    "vm_address": "0x78daf42",
+    "file_offset": "0x10896f42",
+    "value": "CRaw/SettingsPane/PointColor/Slider/SatShift"
+  },
+  {
+    "vm_address": "0x78daf6f",
+    "file_offset": "0x10896f6f",
+    "value": "CRaw/SettingsPane/PointColor/Slider/LumShift"
+  },
+  {
+    "vm_address": "0x78daf9c",
+    "file_offset": "0x10896f9c",
+    "value": "CRaw/SettingsPane/PointColor/Range/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78dafcf",
+    "file_offset": "0x10896fcf",
+    "value": "CRaw/SettingsPane/PointColor/Range/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78db004",
+    "file_offset": "0x10897004",
+    "value": "CRaw/SettingsPane/PointColor/Slider/Range/Amount"
+  },
+  {
+    "vm_address": "0x78db035",
+    "file_offset": "0x10897035",
+    "value": "CRaw/SettingsPane/PointColor/Hue/MinValueLabel"
+  },
+  {
+    "vm_address": "0x78db064",
+    "file_offset": "0x10897064",
+    "value": "CRaw/SettingsPane/PointColor/Hue/MaxValueLabel"
+  },
+  {
+    "vm_address": "0x78db093",
+    "file_offset": "0x10897093",
+    "value": "CRaw/SettingsPane/PointColor/Slider/Range/Hue"
+  },
+  {
+    "vm_address": "0x78db0c1",
+    "file_offset": "0x108970c1",
+    "value": "CRaw/SettingsPane/PointColor/Sat/MinValueLabel"
+  },
+  {
+    "vm_address": "0x78db0f0",
+    "file_offset": "0x108970f0",
+    "value": "CRaw/SettingsPane/PointColor/Sat/MaxValueLabel"
+  },
+  {
+    "vm_address": "0x78db11f",
+    "file_offset": "0x1089711f",
+    "value": "CRaw/SettingsPane/PointColor/Slider/Range/Sat"
+  },
+  {
+    "vm_address": "0x78db14d",
+    "file_offset": "0x1089714d",
+    "value": "CRaw/SettingsPane/PointColor/HueRange/Label"
+  },
+  {
+    "vm_address": "0x78db179",
+    "file_offset": "0x10897179",
+    "value": "CRaw/SettingsPane/PointColor/SatRange/Label"
+  },
+  {
+    "vm_address": "0x78db1a5",
+    "file_offset": "0x108971a5",
+    "value": "CRaw/SettingsPane/PointColor/LumRange/Label"
+  },
+  {
+    "vm_address": "0x78db1d1",
+    "file_offset": "0x108971d1",
+    "value": "CRaw/SettingsPane/PointColor/Lum/MinValueLabel"
+  },
+  {
+    "vm_address": "0x78db200",
+    "file_offset": "0x10897200",
+    "value": "CRaw/SettingsPane/PointColor/Lum/MaxValueLabel"
+  },
+  {
+    "vm_address": "0x78db22f",
+    "file_offset": "0x1089722f",
+    "value": "CRaw/SettingsPane/PointColor/Slider/Range/Lum"
+  },
+  {
+    "vm_address": "0x78db25d",
+    "file_offset": "0x1089725d",
+    "value": "CRaw/SettingsPane/PointColor/HueSat/DisclosablePane"
+  },
+  {
+    "vm_address": "0x78db291",
+    "file_offset": "0x10897291",
+    "value": "CRaw/SettingsPane/PointColor/HueSat/DisclosureControl"
+  },
+  {
+    "vm_address": "0x78db2c7",
+    "file_offset": "0x108972c7",
+    "value": "CRaw/SettingsPane/PointColor/HueSat/Switch"
+  },
+  {
+    "vm_address": "0x78db2f2",
+    "file_offset": "0x108972f2",
+    "value": "CRaw/SettingsPane/PointColor/HueSat/Case/Open"
+  },
+  {
+    "vm_address": "0x78db320",
+    "file_offset": "0x10897320",
+    "value": "CRaw/SettingsPane/PointColor/HueSat/Case/Closed"
+  },
+  {
+    "vm_address": "0x78db350",
+    "file_offset": "0x10897350",
+    "value": "CRaw/SettingsPane/PointColor/HS"
+  },
+  {
+    "vm_address": "0x78e253f",
+    "file_offset": "0x1089e53f",
+    "value": "CRaw/SubsetDialog/Group/Optics"
+  },
+  {
+    "vm_address": "0x78e28e9",
+    "file_offset": "0x1089e8e9",
+    "value": "CRaw/SubsetDialog/PointColor"
+  },
+  {
+    "vm_address": "0x78e2d4c",
+    "file_offset": "0x1089ed4c",
+    "value": "CRaw/SubsetDialog/DisclosablePane/Optics"
+  },
+  {
+    "vm_address": "0x78e3455",
+    "file_offset": "0x1089f455",
+    "value": "$$$/CRaw/SubsetPopup/PointColor=Point Color"
+  },
+  {
+    "vm_address": "0x78e34b1",
+    "file_offset": "0x1089f4b1",
+    "value": "$$$/CRaw/SubsetPopup/Optics=Optics"
+  },
+  {
+    "vm_address": "0x78e41e5",
+    "file_offset": "0x108a01e5",
+    "value": "CRaw/Tool/PointColorDropper"
+  },
+  {
+    "vm_address": "0x78e4201",
+    "file_offset": "0x108a0201",
+    "value": "CRaw/Tool/PointColorMaskingDropper"
+  },
+  {
+    "vm_address": "0x78e7850",
+    "file_offset": "0x108a3850",
+    "value": "CRaw/ImageSizing/LimitCount/Edit"
+  },
+  {
+    "vm_address": "0x78e8bfd",
+    "file_offset": "0x108a4bfd",
+    "value": "$$$/CRaw/BatchDialog/DNG/LossySize/LimitCount=Limit Pixel Count to ^0MP"
+  },
+  {
+    "vm_address": "0x78e9dfc",
+    "file_offset": "0x108a5dfc",
+    "value": "controlHighlightColor"
+  },
+  {
+    "vm_address": "0x78e9ea8",
+    "file_offset": "0x108a5ea8",
+    "value": "controlLightHighlightColor"
+  },
+  {
+    "vm_address": "0x78e9f45",
+    "file_offset": "0x108a5f45",
+    "value": "controlTextColor"
+  },
+  {
+    "vm_address": "0x78e9f56",
+    "file_offset": "0x108a5f56",
+    "value": "disabledControlTextColor"
+  },
+  {
+    "vm_address": "0x78e9f6f",
+    "file_offset": "0x108a5f6f",
+    "value": "windowFrameTextColor"
+  },
+  {
+    "vm_address": "0x78e9f84",
+    "file_offset": "0x108a5f84",
+    "value": "selectedControlTextColor"
+  },
+  {
+    "vm_address": "0x78e9f9d",
+    "file_offset": "0x108a5f9d",
+    "value": "selectedMenuItemTextColor"
+  },
+  {
+    "vm_address": "0x78e9fb7",
+    "file_offset": "0x108a5fb7",
+    "value": "textColor"
+  },
+  {
+    "vm_address": "0x78ebe64",
+    "file_offset": "0x108a7e64",
+    "value": "OwlTabFrontCont.png"
+  },
+  {
+    "vm_address": "0x78ecc26",
+    "file_offset": "0x108a8c26",
+    "value": "kBind_PortCoordinates"
+  },
+  {
+    "vm_address": "0x78f5093",
+    "file_offset": "0x108b1093",
+    "value": "cv::BinaryFunc cv::getConvertFunc(int, int)"
+  },
+  {
+    "vm_address": "0x78f6ba6",
+    "file_offset": "0x108b2ba6",
+    "value": "cv::BinaryFunc cv::getConvertScaleFunc(int, int)"
+  },
+  {
+    "vm_address": "0x78f71a4",
+    "file_offset": "0x108b31a4",
+    "value": "cv::CountNonZeroFunc cv::getCountNonZeroTab(int)"
+  },
+  {
+    "vm_address": "0x78f956c",
+    "file_offset": "0x108b556c",
+    "value": "cv::Size cv::getContinuousSize2D(cv::Mat &, cv::Mat &, int)"
+  },
+  {
+    "vm_address": "0x78f95d1",
+    "file_offset": "0x108b55d1",
+    "value": "getContinuousSize2D"
+  },
+  {
+    "vm_address": "0x78f961b",
+    "file_offset": "0x108b561b",
+    "value": "cv::Size cv::getContinuousSize2D(cv::Mat &, cv::Mat &, cv::Mat &, int)"
+  },
+  {
+    "vm_address": "0x78fd336",
+    "file_offset": "0x108b9336",
+    "value": "    C++ flags (Release):         -fsigned-char -W -Wall -Werror=return-type -Werror=non-virtual-dtor -Werror=address -Werror=sequence-point -Wformat -Werror=format-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Winit-self -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -Wno-deprecated-enum-enum-conversion -Wno-deprecated-anon-enum-enum-conversion -fdiagnostics-show-option -Wno-long-long -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -O3 -DNDEBUG  -DNDEBUG"
+  },
+  {
+    "vm_address": "0x78fd5dc",
+    "file_offset": "0x108b95dc",
+    "value": "    C++ flags (Debug):           -fsigned-char -W -Wall -Werror=return-type -Werror=non-virtual-dtor -Werror=address -Werror=sequence-point -Wformat -Werror=format-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Winit-self -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -Wno-deprecated-enum-enum-conversion -Wno-deprecated-anon-enum-enum-conversion -fdiagnostics-show-option -Wno-long-long -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -g  -O0 -DDEBUG -D_DEBUG"
+  },
+  {
+    "vm_address": "0x78fd907",
+    "file_offset": "0x108b9907",
+    "value": "    C flags (Release):           -fsigned-char -W -Wall -Werror=return-type -Werror=non-virtual-dtor -Werror=address -Werror=sequence-point -Wformat -Werror=format-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Winit-self -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -Wno-deprecated-enum-enum-conversion -Wno-deprecated-anon-enum-enum-conversion -fdiagnostics-show-option -Wno-long-long -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -O3 -DNDEBUG  -DNDEBUG"
+  },
+  {
+    "vm_address": "0x78fdbad",
+    "file_offset": "0x108b9bad",
+    "value": "    C flags (Debug):             -fsigned-char -W -Wall -Werror=return-type -Werror=non-virtual-dtor -Werror=address -Werror=sequence-point -Wformat -Werror=format-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Winit-self -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -Wno-deprecated-enum-enum-conversion -Wno-deprecated-anon-enum-enum-conversion -fdiagnostics-show-option -Wno-long-long -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -g  -O0 -DDEBUG -D_DEBUG"
+  },
+  {
+    "vm_address": "0x78ff748",
+    "file_offset": "0x108bb748",
+    "value": "internal_applyNamePartConfigToSpecificTag"
+  },
+  {
+    "vm_address": "0x78ff797",
+    "file_offset": "0x108bb797",
+    "value": "internal_applyNamePartConfigToMatchingTags"
+  },
+  {
+    "vm_address": "0x78fffe3",
+    "file_offset": "0x108bbfe3",
+    "value": "Ptr<cv::BaseColumnFilter> cv::cpu_baseline::getColumnSumFilter(int, int, int, int, double)"
+  },
+  {
+    "vm_address": "0x7900067",
+    "file_offset": "0x108bc067",
+    "value": "getColumnSumFilter"
+  },
+  {
+    "vm_address": "0x7900ffc",
+    "file_offset": "0x108bcffc",
+    "value": "void cv::cvtColor(cv::InputArray, cv::OutputArray, int, int)"
+  },
+  {
+    "vm_address": "0x7901039",
+    "file_offset": "0x108bd039",
+    "value": "cvtColor"
+  },
+  {
+    "vm_address": "0x79012d5",
+    "file_offset": "0x108bd2d5",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2HSV_b>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2HSV_b]"
+  },
+  {
+    "vm_address": "0x790147b",
+    "file_offset": "0x108bd47b",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2HSV_f>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2HSV_f]"
+  },
+  {
+    "vm_address": "0x79015c8",
+    "file_offset": "0x108bd5c8",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2HLS_b>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2HLS_b]"
+  },
+  {
+    "vm_address": "0x7901781",
+    "file_offset": "0x108bd781",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2HLS_f>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2HLS_f]"
+  },
+  {
+    "vm_address": "0x7901862",
+    "file_offset": "0x108bd862",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::HSV2RGB_b>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::HSV2RGB_b]"
+  },
+  {
+    "vm_address": "0x79019af",
+    "file_offset": "0x108bd9af",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::HSV2RGB_f>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::HSV2RGB_f]"
+  },
+  {
+    "vm_address": "0x7901afc",
+    "file_offset": "0x108bdafc",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::HLS2RGB_b>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::HLS2RGB_b]"
+  },
+  {
+    "vm_address": "0x7901cb5",
+    "file_offset": "0x108bdcb5",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::HLS2RGB_f>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::HLS2RGB_f]"
+  },
+  {
+    "vm_address": "0x79025ea",
+    "file_offset": "0x108be5ea",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::RGB2XYZ_i<uchar> >::operator()(const cv::Range &) const [Cvt = cv::RGB2XYZ_i<uchar>]"
+  },
+  {
+    "vm_address": "0x79026d7",
+    "file_offset": "0x108be6d7",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::RGB2XYZ_i<ushort> >::operator()(const cv::Range &) const [Cvt = cv::RGB2XYZ_i<ushort>]"
+  },
+  {
+    "vm_address": "0x79027c9",
+    "file_offset": "0x108be7c9",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::RGB2XYZ_f<float> >::operator()(const cv::Range &) const [Cvt = cv::RGB2XYZ_f<float>]"
+  },
+  {
+    "vm_address": "0x79028ae",
+    "file_offset": "0x108be8ae",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::XYZ2RGB_i<uchar> >::operator()(const cv::Range &) const [Cvt = cv::XYZ2RGB_i<uchar>]"
+  },
+  {
+    "vm_address": "0x790299b",
+    "file_offset": "0x108be99b",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::XYZ2RGB_i<ushort> >::operator()(const cv::Range &) const [Cvt = cv::XYZ2RGB_i<ushort>]"
+  },
+  {
+    "vm_address": "0x7902a8d",
+    "file_offset": "0x108bea8d",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::XYZ2RGB_f<float> >::operator()(const cv::Range &) const [Cvt = cv::XYZ2RGB_f<float>]"
+  },
+  {
+    "vm_address": "0x7902b72",
+    "file_offset": "0x108beb72",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::RGB2Lab_b>::operator()(const cv::Range &) const [Cvt = cv::RGB2Lab_b]"
+  },
+  {
+    "vm_address": "0x7902c41",
+    "file_offset": "0x108bec41",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::RGB2Lab_f>::operator()(const cv::Range &) const [Cvt = cv::RGB2Lab_f]"
+  },
+  {
+    "vm_address": "0x7902d10",
+    "file_offset": "0x108bed10",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::RGB2Luv_b>::operator()(const cv::Range &) const [Cvt = cv::RGB2Luv_b]"
+  },
+  {
+    "vm_address": "0x7902e6f",
+    "file_offset": "0x108bee6f",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::RGB2Luv_f>::operator()(const cv::Range &) const [Cvt = cv::RGB2Luv_f]"
+  },
+  {
+    "vm_address": "0x7902efc",
+    "file_offset": "0x108beefc",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::Lab2RGB_b>::operator()(const cv::Range &) const [Cvt = cv::Lab2RGB_b]"
+  },
+  {
+    "vm_address": "0x7903012",
+    "file_offset": "0x108bf012",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::Lab2RGB_f>::operator()(const cv::Range &) const [Cvt = cv::Lab2RGB_f]"
+  },
+  {
+    "vm_address": "0x79030e4",
+    "file_offset": "0x108bf0e4",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::Luv2RGB_b>::operator()(const cv::Range &) const [Cvt = cv::Luv2RGB_b]"
+  },
+  {
+    "vm_address": "0x790323f",
+    "file_offset": "0x108bf23f",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::Luv2RGB_f>::operator()(const cv::Range &) const [Cvt = cv::Luv2RGB_f]"
+  },
+  {
+    "vm_address": "0x7903ea5",
+    "file_offset": "0x108bfea5",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB<unsigned char> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB<unsigned char>]"
+  },
+  {
+    "vm_address": "0x7903fa1",
+    "file_offset": "0x108bffa1",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB<unsigned short> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB<unsigned short>]"
+  },
+  {
+    "vm_address": "0x790409f",
+    "file_offset": "0x108c009f",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB<float> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB<float>]"
+  },
+  {
+    "vm_address": "0x790418b",
+    "file_offset": "0x108c018b",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB5x5>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2RGB5x5]"
+  },
+  {
+    "vm_address": "0x790426e",
+    "file_offset": "0x108c026e",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB5x52RGB>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB5x52RGB]"
+  },
+  {
+    "vm_address": "0x7904351",
+    "file_offset": "0x108c0351",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2Gray<uchar> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2Gray<uchar>]"
+  },
+  {
+    "vm_address": "0x790443f",
+    "file_offset": "0x108c043f",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2Gray<ushort> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2Gray<ushort>]"
+  },
+  {
+    "vm_address": "0x790452f",
+    "file_offset": "0x108c052f",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2Gray<float> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2Gray<float>]"
+  },
+  {
+    "vm_address": "0x790461d",
+    "file_offset": "0x108c061d",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB<unsigned char> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB<unsigned char>]"
+  },
+  {
+    "vm_address": "0x790471b",
+    "file_offset": "0x108c071b",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB<unsigned short> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB<unsigned short>]"
+  },
+  {
+    "vm_address": "0x790481b",
+    "file_offset": "0x108c081b",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB<float> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB<float>]"
+  },
+  {
+    "vm_address": "0x7904909",
+    "file_offset": "0x108c0909",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB5x52Gray>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB5x52Gray]"
+  },
+  {
+    "vm_address": "0x79049ee",
+    "file_offset": "0x108c09ee",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB5x5>::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::Gray2RGB5x5]"
+  },
+  {
+    "vm_address": "0x7904ad3",
+    "file_offset": "0x108c0ad3",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGBA2mRGBA<uchar> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGBA2mRGBA<uchar>]"
+  },
+  {
+    "vm_address": "0x7904bc5",
+    "file_offset": "0x108c0bc5",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::mRGBA2RGBA<uchar> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::mRGBA2RGBA<uchar>]"
+  },
+  {
+    "vm_address": "0x79062f0",
+    "file_offset": "0x108c22f0",
+    "value": "cvtColorYUV2Gray_ch"
+  },
+  {
+    "vm_address": "0x7906313",
+    "file_offset": "0x108c2313",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2YCrCb_i<uchar> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2YCrCb_i<uchar>]"
+  },
+  {
+    "vm_address": "0x7906407",
+    "file_offset": "0x108c2407",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2YCrCb_i<ushort> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2YCrCb_i<ushort>]"
+  },
+  {
+    "vm_address": "0x79064fd",
+    "file_offset": "0x108c24fd",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::RGB2YCrCb_f<float> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::RGB2YCrCb_f<float>]"
+  },
+  {
+    "vm_address": "0x79065f1",
+    "file_offset": "0x108c25f1",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::YCrCb2RGB_i<uchar> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::YCrCb2RGB_i<uchar>]"
+  },
+  {
+    "vm_address": "0x79066e5",
+    "file_offset": "0x108c26e5",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::YCrCb2RGB_i<ushort> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::YCrCb2RGB_i<ushort>]"
+  },
+  {
+    "vm_address": "0x79067db",
+    "file_offset": "0x108c27db",
+    "value": "virtual void cv::impl::(anonymous namespace)::CvtColorLoop_Invoker<cv::hal::cpu_baseline::(anonymous namespace)::YCrCb2RGB_f<float> >::operator()(const cv::Range &) const [Cvt = cv::hal::cpu_baseline::(anonymous namespace)::YCrCb2RGB_f<float>]"
+  },
+  {
+    "vm_address": "0x790718e",
+    "file_offset": "0x108c318e",
+    "value": "cvFindNextContour"
+  },
+  {
+    "vm_address": "0x792b9ff",
+    "file_offset": "0x108e79ff",
+    "value": "$$$/CRaw/Masking/Tips/NotCompatibleWithPhoto=^[^0^] is not supported on this photo."
+  },
+  {
+    "vm_address": "0x7940d49",
+    "file_offset": "0x108fcd49",
+    "value": "SetConstantAirlight"
+  },
+  {
+    "vm_address": "0x7940d65",
+    "file_offset": "0x108fcd65",
+    "value": "dstConstantAirlight"
+  },
+  {
+    "vm_address": "0x79429a4",
+    "file_offset": "0x108fe9a4",
+    "value": "uConstantColor"
+  },
+  {
+    "vm_address": "0x79438d1",
+    "file_offset": "0x108ff8d1",
+    "value": "pointColorTableBuf"
+  },
+  {
+    "vm_address": "0x7943aa2",
+    "file_offset": "0x108ffaa2",
+    "value": "PointColorTableBuf"
+  },
+  {
+    "vm_address": "0x7943ab5",
+    "file_offset": "0x108ffab5",
+    "value": "fPointColorTableBufferOffset"
+  },
+  {
+    "vm_address": "0x7943ae7",
+    "file_offset": "0x108ffae7",
+    "value": "fPointColorTableBuffer"
+  },
+  {
+    "vm_address": "0x7944284",
+    "file_offset": "0x10900284",
+    "value": "Modified SDR snapshot by copying Crop, Geometry, and Optics from HDR params"
+  },
+  {
+    "vm_address": "0x795acc2",
+    "file_offset": "0x10916cc2",
+    "value": "$$$/CRaw/Style/Premium/Description/SubjectConcerts=Photos of live performances have never looked so good as they do with these presets."
+  },
+  {
+    "vm_address": "0x795b9cd",
+    "file_offset": "0x109179cd",
+    "value": "Optics"
+  },
+  {
+    "vm_address": "0x795b9d4",
+    "file_offset": "0x109179d4",
+    "value": "$$$/CRaw/Style/Description/OpticsPreset=^[^0^] is a preset that only changes the lens profile and chromatic aberration settings."
+  },
+  {
+    "vm_address": "0x795e645",
+    "file_offset": "0x1091a645",
+    "value": "$$$/CRaw/Style/Group/Optics=Optics"
+  },
+  {
+    "vm_address": "0x795f915",
+    "file_offset": "0x1091b915",
+    "value": "$$$/CRaw/Style/Preset/Optics/CACorrection=CA Correction"
+  },
+  {
+    "vm_address": "0x795f95d",
+    "file_offset": "0x1091b95d",
+    "value": "$$$/CRaw/Style/Preset/Optics/LensCorrection=Lens Correction"
+  },
+  {
+    "vm_address": "0x795f9ae",
+    "file_offset": "0x1091b9ae",
+    "value": "$$$/CRaw/Style/Preset/Optics/LensCACorrection=Lens + CA Correction"
+  },
+  {
+    "vm_address": "0x796354a",
+    "file_offset": "0x1091f54a",
+    "value": "SetConstant requires valid cmdBuf"
+  },
+  {
+    "vm_address": "0x7963813",
+    "file_offset": "0x1091f813",
+    "value": "cr_image::SetConstant queue"
+  },
+  {
+    "vm_address": "0x796382f",
+    "file_offset": "0x1091f82f",
+    "value": "SetConstantSimpleGpu queue"
+  },
+  {
+    "vm_address": "0x796384a",
+    "file_offset": "0x1091f84a",
+    "value": "SetConstantSimpleGpu area"
+  },
+  {
+    "vm_address": "0x7963864",
+    "file_offset": "0x1091f864",
+    "value": "SetConstantSimpleGpu cmdBuf"
+  },
+  {
+    "vm_address": "0x7963880",
+    "file_offset": "0x1091f880",
+    "value": "SetConstantSimpleGpu"
+  },
+  {
+    "vm_address": "0x7963bb8",
+    "file_offset": "0x1091fbb8",
+    "value": "cr_local_brush_params_updater::GetBrushComponentCopy - invalid indices"
+  },
+  {
+    "vm_address": "0x79642b1",
+    "file_offset": "0x109202b1",
+    "value": "cr_local_component_tracker::GetComponentCopy - invalid indices"
+  },
+  {
+    "vm_address": "0x79642f0",
+    "file_offset": "0x109202f0",
+    "value": "cr_local_component_tracker::SetComponent - invalid indices"
+  },
+  {
+    "vm_address": "0x79646d4",
+    "file_offset": "0x109206d4",
+    "value": "PointColor"
+  },
+  {
+    "vm_address": "0x79663ad",
+    "file_offset": "0x109223ad",
+    "value": "ZY Optics"
+  },
+  {
+    "vm_address": "0x79663c2",
+    "file_offset": "0x109223c2",
+    "value": "Venus Optics"
+  },
+  {
+    "vm_address": "0x7966fa0",
+    "file_offset": "0x10922fa0",
+    "value": "LocalPointColors"
+  },
+  {
+    "vm_address": "0x7967121",
+    "file_offset": "0x10923121",
+    "value": "GetCorrectionsForSubset"
+  },
+  {
+    "vm_address": "0x796830c",
+    "file_offset": "0x1092430c",
+    "value": "$$$/Clio/StatusCode/HTTP/NotConnectedError=Please check your internet connection and try again."
+  },
+  {
+    "vm_address": "0x796a5eb",
+    "file_offset": "0x109265eb",
+    "value": "Bad optColorMaskImage"
+  },
+  {
+    "vm_address": "0x796d617",
+    "file_offset": "0x10929617",
+    "value": "GetConnectedAccountsInfo"
+  },
+  {
+    "vm_address": "0x796d668",
+    "file_offset": "0x10929668",
+    "value": "GetConnectedAccountsInfo: doc not object: %s"
+  },
+  {
+    "vm_address": "0x796d6ed",
+    "file_offset": "0x109296ed",
+    "value": "GetConnectedAccountsInfo: ok not object: %s"
+  },
+  {
+    "vm_address": "0x7971937",
+    "file_offset": "0x1092d937",
+    "value": "dstCopyBackPipeBufferArea"
+  },
+  {
+    "vm_address": "0x79719a4",
+    "file_offset": "0x1092d9a4",
+    "value": "dstCopyBackPipeBufArea"
+  },
+  {
+    "vm_address": "0x7973215",
+    "file_offset": "0x1092f215",
+    "value": "PostCropVignetteHighlightContrast"
+  },
+  {
+    "vm_address": "0x7973f20",
+    "file_offset": "0x1092ff20",
+    "value": "PointColors"
+  },
+  {
+    "vm_address": "0x799498b",
+    "file_offset": "0x1095098b",
+    "value": "$$$/CRaw/EnhanceDialog/RawDetailsNotCompatible=Raw Details is not compatible with this photo format."
+  },
+  {
+    "vm_address": "0x7994d9e",
+    "file_offset": "0x10950d9e",
+    "value": "$$$/CRaw/EnhanceDialog/SRNotCompatible=Super Resolution is not currently compatible with this photo format."
+  },
+  {
+    "vm_address": "0x7997823",
+    "file_offset": "0x10953823",
+    "value": "SendOversizedAnalyticsEvents"
+  },
+  {
+    "vm_address": "0x7997840",
+    "file_offset": "0x10953840",
+    "value": "SendOversizedAnalyticsEvents: error sending oversized analytics info."
+  },
+  {
+    "vm_address": "0x79978af",
+    "file_offset": "0x109538af",
+    "value": "SendOversizedAnalyticsEvents: error sending oversized content info."
+  },
+  {
+    "vm_address": "0x799c26a",
+    "file_offset": "0x1095826a",
+    "value": "DebugTextColor"
+  },
+  {
+    "vm_address": "0x799d212",
+    "file_offset": "0x10959212",
+    "value": "TestComputeCompute"
+  },
+  {
+    "vm_address": "0x799d225",
+    "file_offset": "0x10959225",
+    "value": "TestComputeSpeedCompute"
+  },
+  {
+    "vm_address": "0x799d2b3",
+    "file_offset": "0x109592b3",
+    "value": "TestShader1_BufInPlace_2D_R32FloatCompute"
+  },
+  {
+    "vm_address": "0x799d2dd",
+    "file_offset": "0x109592dd",
+    "value": "TestShader1_BufPingPong_2D_R32FloatCompute"
+  },
+  {
+    "vm_address": "0x799e98c",
+    "file_offset": "0x1095a98c",
+    "value": "DehazeTrMSetConstantAirlightCompute"
+  },
+  {
+    "vm_address": "0x799f661",
+    "file_offset": "0x1095b661",
+    "value": "SortPhase4LocalSortCompute"
+  },
+  {
+    "vm_address": "0x799f70e",
+    "file_offset": "0x1095b70e",
+    "value": "WarpPlanesDifferentCompute"
+  },
+  {
+    "vm_address": "0x799fbe1",
+    "file_offset": "0x1095bbe1",
+    "value": "kComputeFunction_TestCompute"
+  },
+  {
+    "vm_address": "0x799fbfe",
+    "file_offset": "0x1095bbfe",
+    "value": "kComputeFunction_TestComputeSpeed"
+  },
+  {
+    "vm_address": "0x79a1958",
+    "file_offset": "0x1095d958",
+    "value": "kComputeFunction_DehazeTrMSetConstantAirlight"
+  },
+  {
+    "vm_address": "0x79a32da",
+    "file_offset": "0x1095f2da",
+    "value": "GetConstantTexture"
+  },
+  {
+    "vm_address": "0x79a32ed",
+    "file_offset": "0x1095f2ed",
+    "value": "Mismatch queue specified in GetConstantTexture"
+  },
+  {
+    "vm_address": "0x79a331c",
+    "file_offset": "0x1095f31c",
+    "value": "Unrecognized id (%d) in GetConstantTexture"
+  },
+  {
+    "vm_address": "0x79a3347",
+    "file_offset": "0x1095f347",
+    "value": "Bad id in GetConstantTexture"
+  },
+  {
+    "vm_address": "0x79a3fa1",
+    "file_offset": "0x1095ffa1",
+    "value": "GetComputePipelineNumThreads: id"
+  },
+  {
+    "vm_address": "0x79a41f9",
+    "file_offset": "0x109601f9",
+    "value": "TestCompute"
+  },
+  {
+    "vm_address": "0x79a4205",
+    "file_offset": "0x10960205",
+    "value": "TestComputeSpeed"
+  },
+  {
+    "vm_address": "0x79a55c1",
+    "file_offset": "0x109615c1",
+    "value": "DehazeTrMSetConstantAirlight"
+  },
+  {
+    "vm_address": "0x79a6f00",
+    "file_offset": "0x10962f00",
+    "value": "SetComputeUsageRequest"
+  },
+  {
+    "vm_address": "0x79a6f2b",
+    "file_offset": "0x10962f2b",
+    "value": "LatestComputeUsageResult"
+  },
+  {
+    "vm_address": "0x79a7031",
+    "file_offset": "0x10963031",
+    "value": "uDstColorTransformLUT"
+  },
+  {
+    "vm_address": "0x79a8dc1",
+    "file_offset": "0x10964dc1",
+    "value": "First pass statistics file name"
+  },
+  {
+    "vm_address": "0x79ab9a5",
+    "file_offset": "0x109679a5",
+    "value": "transfer-characteristics"
+  },
+  {
+    "vm_address": "0x79ab9be",
+    "file_offset": "0x109679be",
+    "value": "Transfer characteristics (CICP) of input content:"
+  },
+  {
+    "vm_address": "0x79ade41",
+    "file_offset": "0x10969e41",
+    "value": "Failed to allocate coeff_buf_pool->tcoeff"
+  },
+  {
+    "vm_address": "0x79af1b5",
+    "file_offset": "0x1096b1b5",
+    "value": "transfer_characteristics out of range [AOM_CICP_TC_BT_709..AOM_CICP_TC_HLG]"
+  },
+  {
+    "vm_address": "0x79b1f68",
+    "file_offset": "0x1096df68",
+    "value": "ipxcpucodec_init_ctx_options failed"
+  },
+  {
+    "vm_address": "0x79b1f8c",
+    "file_offset": "0x1096df8c",
+    "value": "ipxcpucodec_set_thread_count failed"
+  },
+  {
+    "vm_address": "0x79b1fb0",
+    "file_offset": "0x1096dfb0",
+    "value": "ipxcpucodec_init_decoder failed"
+  },
+  {
+    "vm_address": "0x79b1fd0",
+    "file_offset": "0x1096dfd0",
+    "value": "ipxcpucodec_init_image_geometry failed"
+  },
+  {
+    "vm_address": "0x79b1ff7",
+    "file_offset": "0x1096dff7",
+    "value": "ipxcpucodec_init_image_format_cfg failed"
+  },
+  {
+    "vm_address": "0x79b2020",
+    "file_offset": "0x1096e020",
+    "value": "ipxcpucodec_init_decode_options failed"
+  },
+  {
+    "vm_address": "0x79b20f6",
+    "file_offset": "0x1096e0f6",
+    "value": "Unsupported Nikon DistortionImageHeightSpec %u"
+  },
+  {
+    "vm_address": "0x79b2125",
+    "file_offset": "0x1096e125",
+    "value": "Unsupported Nikon DistortionCompensationMethod %u"
+  },
+  {
+    "vm_address": "0x79b2157",
+    "file_offset": "0x1096e157",
+    "value": "Unsupported Nikon LateralCAImageHeightSpec %u"
+  },
+  {
+    "vm_address": "0x79b21b1",
+    "file_offset": "0x1096e1b1",
+    "value": "ReadNikonCompressed_Scalar"
+  },
+  {
+    "vm_address": "0x79b2e8d",
+    "file_offset": "0x1096ee8d",
+    "value": "dng_pixel_buffer::SetConstant: planes = 0"
+  },
+  {
+    "vm_address": "0x79b2eb7",
+    "file_offset": "0x1096eeb7",
+    "value": "SetConstant: area OOB"
+  },
+  {
+    "vm_address": "0x79b2ecd",
+    "file_offset": "0x1096eecd",
+    "value": "SetConstant: planes overflow"
+  },
+  {
+    "vm_address": "0x79b2eea",
+    "file_offset": "0x1096eeea",
+    "value": "SetConstant: planes range"
+  },
+  {
+    "vm_address": "0x79b306e",
+    "file_offset": "0x1096f06e",
+    "value": "Invalid fBlackLevelRepeatCols"
+  },
+  {
+    "vm_address": "0x79b308c",
+    "file_offset": "0x1096f08c",
+    "value": "Bad fBlackLevelRepeatCols in dng_linearization_info::MaxBlackLevel"
+  },
+  {
+    "vm_address": "0x79b3e37",
+    "file_offset": "0x1096fe37",
+    "value": "JxlDecoderGetColorAsICCProfile"
+  },
+  {
+    "vm_address": "0x79b41b0",
+    "file_offset": "0x109701b0",
+    "value": "JxlEncoderSetColorEncoding"
+  },
+  {
+    "vm_address": "0x79b4d28",
+    "file_offset": "0x10970d28",
+    "value": "ipxcpucodec_decode_default_callback_begin_write_output_stripe"
+  },
+  {
+    "vm_address": "0x79b4fc1",
+    "file_offset": "0x10970fc1",
+    "value": "ipxcpucodec_dec_validate_output_config_critsect"
+  },
+  {
+    "vm_address": "0x79b59ba",
+    "file_offset": "0x109719ba",
+    "value": "_ftco_decode_parse_slice_header_xs"
+  },
+  {
+    "vm_address": "0x79b5a44",
+    "file_offset": "0x10971a44",
+    "value": "_ftco_dec_stage1_unit_idwt_h1_l12_lbl"
+  },
+  {
+    "vm_address": "0x79b5aa0",
+    "file_offset": "0x10971aa0",
+    "value": "_ftco_dec_stage1_unit_packing_lbl"
+  },
+  {
+    "vm_address": "0x79b62b0",
+    "file_offset": "0x109722b0",
+    "value": "(!(RowsAtCompileTime!=Dynamic) || (nbRows==RowsAtCompileTime)) && (!(ColsAtCompileTime!=Dynamic) || (nbCols==ColsAtCompileTime)) && (!(RowsAtCompileTime==Dynamic && MaxRowsAtCompileTime!=Dynamic) || (nbRows<=MaxRowsAtCompileTime)) && (!(ColsAtCompileTime==Dynamic && MaxColsAtCompileTime!=Dynamic) || (nbCols<=MaxColsAtCompileTime)) && nbRows>=0 && nbCols>=0 && \"Invalid sizes when resizing a matrix or array.\""
+  },
+  {
+    "vm_address": "0x79b64d4",
+    "file_offset": "0x109724d4",
+    "value": "(dataPtr == 0) || ( nbRows >= 0 && (RowsAtCompileTime == Dynamic || RowsAtCompileTime == nbRows) && nbCols >= 0 && (ColsAtCompileTime == Dynamic || ColsAtCompileTime == nbCols))"
+  },
+  {
+    "vm_address": "0x79b6e6d",
+    "file_offset": "0x10972e6d",
+    "value": "nbRows >= 0 && (RowsAtCompileTime == Dynamic || RowsAtCompileTime == nbRows) && nbCols >= 0 && (ColsAtCompileTime == Dynamic || ColsAtCompileTime == nbCols)"
+  },
+  {
+    "vm_address": "0x79b9da9",
+    "file_offset": "0x10975da9",
+    "value": "ftco_dec_start_mt"
+  },
+  {
+    "vm_address": "0x79bb049",
+    "file_offset": "0x10977049",
+    "value": "_ftco_dec_stage_bayer1_unit_execute"
+  },
+  {
+    "vm_address": "0x79bb081",
+    "file_offset": "0x10977081",
+    "value": "_ftco_dec_stage_bayer2_unit_execute"
+  },
+  {
+    "vm_address": "0x79bb526",
+    "file_offset": "0x10977526",
+    "value": "EnableMovieDriftCorrection"
+  },
+  {
+    "vm_address": "0x79bc6a2",
+    "file_offset": "0x109786a2",
+    "value": "/Volumes/Workarea/Builds/ws/r17.2/macuniversal/acr/camera_raw/libjxl/libjxl/lib/jxl/enc_heuristics.cc"
+  },
+  {
+    "vm_address": "0x79bc93f",
+    "file_offset": "0x1097893f",
+    "value": "dec_state.output_encoding_info.MaybeSetColorEncoding( ColorEncoding::LinearSRGB(is_gray))"
+  },
+  {
+    "vm_address": "0x79bcd7a",
+    "file_offset": "0x10978d7a",
+    "value": "cfl_heuristics.Init(rect)"
+  },
+  {
+    "vm_address": "0x79bcd94",
+    "file_offset": "0x10978d94",
+    "value": "acs_heuristics.Init(*opsin, rect, initial_quant_field, initial_quant_masking, initial_quant_masking1x1, &matrices)"
+  },
+  {
+    "vm_address": "0x79bce07",
+    "file_offset": "0x10978e07",
+    "value": "Enc Heuristics"
+  },
+  {
+    "vm_address": "0x79bce16",
+    "file_offset": "0x10978e16",
+    "value": "RunOnPool(pool, 0, num_tiles, prepare, process_tile, \"Enc Heuristics\")"
+  },
+  {
+    "vm_address": "0x79bce5d",
+    "file_offset": "0x10978e5d",
+    "value": "acs_heuristics.Finalize(frame_dim, ac_strategy, aux_out)"
+  },
+  {
+    "vm_address": "0x79bd858",
+    "file_offset": "0x10979858",
+    "value": "acs_heuristics.PrepareForThreads(num_threads)"
+  },
+  {
+    "vm_address": "0x79bd886",
+    "file_offset": "0x10979886",
+    "value": "cfl_heuristics.PrepareForThreads(num_threads)"
+  },
+  {
+    "vm_address": "0x79bd90f",
+    "file_offset": "0x1097990f",
+    "value": "cfl_heuristics.ComputeTile( r, *opsin, rect, matrices, nullptr, nullptr, nullptr, false, thread, &cmap)"
+  },
+  {
+    "vm_address": "0x79bd977",
+    "file_offset": "0x10979977",
+    "value": "acs_heuristics.ProcessRect(r, cmap, &ac_strategy, thread)"
+  },
+  {
+    "vm_address": "0x79bda07",
+    "file_offset": "0x10979a07",
+    "value": "cfl_heuristics.ComputeTile( r, *opsin, rect, matrices, &ac_strategy, &raw_quant_field, &quantizer, cparams.speed_tier >= SpeedTier::kWombat, thread, &cmap)"
+  },
+  {
+    "vm_address": "0x79c36d1",
+    "file_offset": "0x1097f6d1",
+    "value": "ChooseUintConfigs(params, tokens, *context_map, &clustered_histograms, codes, &log_alpha_size)"
+  },
+  {
+    "vm_address": "0x79c8625",
+    "file_offset": "0x10984625",
+    "value": "SetColorTransformFromJpegData( *jpeg_data, &frame_header->color_transform)"
+  },
+  {
+    "vm_address": "0x79c951d",
+    "file_offset": "0x1098551d",
+    "value": "LossyFrameHeuristics(frame_header, enc_state, enc_modular, linear, opsin, rect, cms, pool, aux_out)"
+  },
+  {
+    "vm_address": "0x79c95e2",
+    "file_offset": "0x109855e2",
+    "value": "ComputeARHeuristics(frame_header, enc_state, orig_opsin, rect, pool)"
+  },
+  {
+    "vm_address": "0x79cb187",
+    "file_offset": "0x10987187",
+    "value": "scratch_space_end == block_y + CfLHeuristics::ItemsPerThread()"
+  },
+  {
+    "vm_address": "0x79cd5be",
+    "file_offset": "0x109895be",
+    "value": "tree_samples.SetProperties( stream_options_[start].splitting_heuristics_properties, stream_options_[start].wp_tree_mode)"
+  },
+  {
+    "vm_address": "0x79cda43",
+    "file_offset": "0x10989a43",
+    "value": "%s:%d: JXL_FAILURE: Invalid HybridUintConfig"
+  },
+  {
+    "vm_address": "0x79cda71",
+    "file_offset": "0x10989a71",
+    "value": "DecodeUintConfig(log_alpha_size, &cfg, br)"
+  },
+  {
+    "vm_address": "0x79cdaba",
+    "file_offset": "0x10989aba",
+    "value": "DecodeUintConfig( 8, &code->lz77.length_uint_config, br)"
+  },
+  {
+    "vm_address": "0x79cdb71",
+    "file_offset": "0x10989b71",
+    "value": "DecodeUintConfigs(code->log_alpha_size, &code->uint_config, br)"
+  },
+  {
+    "vm_address": "0x79cf396",
+    "file_offset": "0x1098b396",
+    "value": "ComputeBestTree( tree_samples, options.splitting_heuristics_node_threshold * required_cost, multiplier_info, static_prop_range, options.fast_decode_multiplier, &tree)"
+  },
+  {
+    "vm_address": "0x79cf5b4",
+    "file_offset": "0x1098b5b4",
+    "value": "tree_samples_storage.SetProperties( options.splitting_heuristics_properties, options.wp_tree_mode)"
+  },
+  {
+    "vm_address": "0x79d5614",
+    "file_offset": "0x10991614",
+    "value": "visitor.VisitConst(fields)"
+  },
+  {
+    "vm_address": "0x79d6668",
+    "file_offset": "0x10992668",
+    "value": "builder.AddStage(GetConvolveNoiseStage(num_c))"
+  },
+  {
+    "vm_address": "0x79d68be",
+    "file_offset": "0x109928be",
+    "value": "builder.AddStage(GetSpotColorStage(i, eci.spot_color))"
+  },
+  {
+    "vm_address": "0x79dbd80",
+    "file_offset": "0x10997d80",
+    "value": "((SizeAtCompileTime == Dynamic && (MaxSizeAtCompileTime==Dynamic || size<=MaxSizeAtCompileTime)) || SizeAtCompileTime == size) && size>=0"
+  },
+  {
+    "vm_address": "0x79dbe80",
+    "file_offset": "0x10997e80",
+    "value": "a_startRow >= 0 && blockRows >= 0 && a_startRow <= xpr.rows() - blockRows && a_startCol >= 0 && blockCols >= 0 && a_startCol <= xpr.cols() - blockCols"
+  },
+  {
+    "vm_address": "0x79dbf17",
+    "file_offset": "0x10997f17",
+    "value": "(i>=0) && ( ((BlockRows==1) && (BlockCols==XprType::ColsAtCompileTime) && i<xpr.rows()) ||((BlockRows==XprType::RowsAtCompileTime) && (BlockCols==1) && i<xpr.cols()))"
+  },
+  {
+    "vm_address": "0x79dd335",
+    "file_offset": "0x10999335",
+    "value": "upsample output via copy from targetConstraintPlanesROIFILL level %2d: "
+  },
+  {
+    "vm_address": "0x79dd650",
+    "file_offset": "0x10999650",
+    "value": "scaleStatistics=> m_curDominantOffsetLocSortedByDecreasingFreq vectors and their m_dominantOffsetProbabilityDistribution frequencies after scaling"
+  },
+  {
+    "vm_address": "0x79ddf32",
+    "file_offset": "0x10999f32",
+    "value": "-max_statistics_size"
+  },
+  {
+    "vm_address": "0x79df631",
+    "file_offset": "0x1099b631",
+    "value": "m_targetConstraintROIFILLMipMap.levelCount()>1"
+  },
+  {
+    "vm_address": "0x79df660",
+    "file_offset": "0x1099b660",
+    "value": "m_targetConstraintROIFILLMipMapBase.rootView().dimensions()==tcrfDim"
+  },
+  {
+    "vm_address": "0x79df7f6",
+    "file_offset": "0x1099b7f6",
+    "value": "MatConstIterator"
+  },
+  {
+    "vm_address": "0x79e1385",
+    "file_offset": "0x1099d385",
+    "value": "-tconstraint_mask"
+  },
+  {
+    "vm_address": "0x79e1397",
+    "file_offset": "0x1099d397",
+    "value": "-tconstraint"
+  },
+  {
+    "vm_address": "0x79e20f2",
+    "file_offset": "0x1099e0f2",
+    "value": "!(previewLevel && lastComposition)"
+  },
+  {
+    "vm_address": "0x79e3340",
+    "file_offset": "0x1099f340",
+    "value": "m_pmdp.g_ciim->m_inputTargetConstraintGreyMask->planes()->topLeftFringe() == PM2_TCM_TLF && m_pmdp.g_ciim->m_inputTargetConstraintGreyMask->planes()->bottomRightFringe() == PM2_TCM_TLF"
+  },
+  {
+    "vm_address": "0x79e7ea9",
+    "file_offset": "0x109a3ea9",
+    "value": "calling getBlobSize() on an empty RectContent"
+  },
+  {
+    "vm_address": "0x79e7ed7",
+    "file_offset": "0x109a3ed7",
+    "value": "calling toBlob() on an empty RectContent"
+  },
+  {
+    "vm_address": "0x79e7f00",
+    "file_offset": "0x109a3f00",
+    "value": "RectContent"
+  },
+  {
+    "vm_address": "0x79ee055",
+    "file_offset": "0x109aa055",
+    "value": "convertColor"
+  },
+  {
+    "vm_address": "0x79ef01d",
+    "file_offset": "0x109ab01d",
+    "value": "GetColorChannel"
+  },
+  {
+    "vm_address": "0x79ef7f4",
+    "file_offset": "0x109ab7f4",
+    "value": "keepLargestComponents"
+  },
+  {
+    "vm_address": "0x79ef80a",
+    "file_offset": "0x109ab80a",
+    "value": "maxNumKeptComponents"
+  },
+  {
+    "vm_address": "0x79f008b",
+    "file_offset": "0x109ac08b",
+    "value": "enable_diagnostics"
+  },
+  {
+    "vm_address": "0x79f0ce5",
+    "file_offset": "0x109acce5",
+    "value": "cannot call Variable::setContent on a variable with frozen cache identity"
+  },
+  {
+    "vm_address": "0x79f0d2f",
+    "file_offset": "0x109acd2f",
+    "value": "cannot Variable::adoptContent from an empty variable"
+  },
+  {
+    "vm_address": "0x79f0d64",
+    "file_offset": "0x109acd64",
+    "value": "cannot Variable::adoptContent from a variable with empty content"
+  },
+  {
+    "vm_address": "0x79f1f14",
+    "file_offset": "0x109adf14",
+    "value": "internal error: invalid rect item in getComputedValueFromRectVar"
+  },
+  {
+    "vm_address": "0x79f1f6d",
+    "file_offset": "0x109adf6d",
+    "value": "internal error: invalid rect item in getComputedValueFromImageVar"
+  },
+  {
+    "vm_address": "0x79fd2b1",
+    "file_offset": "0x109b92b1",
+    "value": "Bad 'stco' size or count"
+  },
+  {
+    "vm_address": "0x79fda7b",
+    "file_offset": "0x109b9a7b",
+    "value": "Offset from 'stco' or 'co64' is not into kept box"
+  },
+  {
+    "vm_address": "0x7a02e0c",
+    "file_offset": "0x109bee0c",
+    "value": "SubjectCode"
+  },
+  {
+    "vm_address": "0x7a02eae",
+    "file_offset": "0x109beeae",
+    "value": "Results listings and statistics"
+  },
+  {
+    "vm_address": "0x7a02fbf",
+    "file_offset": "0x109befbf",
+    "value": "Statistics"
+  },
+  {
+    "vm_address": "0x7a04e87",
+    "file_offset": "0x109c0e87",
+    "value": "XMP_Enforce failed: (isRIFFContainer | isLISTContainer) in /Volumes/Workarea/Builds/ws/r17.2/macuniversal/acr/camera_raw/xmp/toolkit/XMPFiles/source/FormatSupport/RIFF.cpp at line 437"
+  },
+  {
+    "vm_address": "0x7a09174",
+    "file_offset": "0x109c5174",
+    "value": "setContentView:"
+  },
+  {
+    "vm_address": "0x7a097f8",
+    "file_offset": "0x109c57f8",
+    "value": "setContentSize:"
+  },
+  {
+    "vm_address": "0x7a09819",
+    "file_offset": "0x109c5819",
+    "value": "setControlSize:"
+  },
+  {
+    "vm_address": "0x7a09add",
+    "file_offset": "0x109c5add",
+    "value": "blitCommandEncoder"
+  },
+  {
+    "vm_address": "0x7a09fdd",
+    "file_offset": "0x109c5fdd",
+    "value": "controlTextColor"
+  },
+  {
+    "vm_address": "0x7a0a384",
+    "file_offset": "0x109c6384",
+    "value": "currentContext"
+  },
+  {
+    "vm_address": "0x7a0a5e6",
+    "file_offset": "0x109c65e6",
+    "value": "disabledControlTextColor"
+  },
+  {
+    "vm_address": "0x7a0ada4",
+    "file_offset": "0x109c6da4",
+    "value": "initControl:mondoEdit:"
+  },
+  {
+    "vm_address": "0x7a0c868",
+    "file_offset": "0x109c8868",
+    "value": "setColorSpace:"
+  },
+  {
+    "vm_address": "0x7a0c877",
+    "file_offset": "0x109c8877",
+    "value": "setColorspace:"
+  },
+  {
+    "vm_address": "0x7a0c886",
+    "file_offset": "0x109c8886",
+    "value": "setCompareFunction:"
+  },
+  {
+    "vm_address": "0x7a0c89a",
+    "file_offset": "0x109c889a",
+    "value": "setComputeFunction:"
+  },
+  {
+    "vm_address": "0x7a0c8ae",
+    "file_offset": "0x109c88ae",
+    "value": "setComputePipelineState:"
+  },
+  {
+    "vm_address": "0x7a0c8c7",
+    "file_offset": "0x109c88c7",
+    "value": "setComputeUnits:"
+  },
+  {
+    "vm_address": "0x7a0c8d8",
+    "file_offset": "0x109c88d8",
+    "value": "setContentsScale:"
+  },
+  {
+    "vm_address": "0x7a0c8ea",
+    "file_offset": "0x109c88ea",
+    "value": "setControlsStyle:"
+  },
+  {
+    "vm_address": "0x7a0c8fc",
+    "file_offset": "0x109c88fc",
+    "value": "setCornerRadius:"
+  },
+  {
+    "vm_address": "0x7a0c91e",
+    "file_offset": "0x109c891e",
+    "value": "setCurrentContext:"
+  },
+  {
+    "vm_address": "0x7a0cd09",
+    "file_offset": "0x109c8d09",
+    "value": "setInsertionPointColor:"
+  },
+  {
+    "vm_address": "0x7a0d26b",
+    "file_offset": "0x109c926b",
+    "value": "setTextColor:"
+  },
+  {
+    "vm_address": "0x7a0e008",
+    "file_offset": "0x109ca008",
+    "value": "{CROneLineTextOverlayProperties=\"_vptr$CRBaseOverlayProperties\"^^?\"fWindowPadding\"d\"fTextColor_sRGB\"{dng_vector_4=\"_vptr$dng_vector\"^^?\"fCount\"I\"fData\"[4d]}\"fBackgroundColor_sRGB\"{dng_vector_4=\"_vptr$dng_vector\"^^?\"fCount\"I\"fData\"[4d]}\"fStrokeColor_sRGB\"{dng_vector_4=\"_vptr$dng_vector\"^^?\"fCount\"I\"fData\"[4d]}\"fStrokeWidth\"d\"fCornerRadius\"d\"fText\"{dng_string=\"fData\"{shared_ptr<const std::basic_string<char, std::char_traits<char>, dng_std_allocator<char>>>=\"__ptr_\"^v\"__cntrl_\"^{__shared_weak_count}}}\"fFontName\"{dng_string=\"fData\"{shared_ptr<const std::basic_string<char, std::char_traits<char>, dng_std_allocator<char>>>=\"__ptr_\"^v\"__cntrl_\"^{__shared_weak_count}}}\"fFontSize\"d}"
+  },
+  {
+    "vm_address": "0x7a0e2b3",
+    "file_offset": "0x109ca2b3",
+    "value": "{CRBubbleTextOverlayProperties=\"_vptr$CRBaseOverlayProperties\"^^?\"fWindowPadding\"d\"fTextColor_sRGB\"{dng_vector_4=\"_vptr$dng_vector\"^^?\"fCount\"I\"fData\"[4d]}\"fBackgroundColor_sRGB\"{dng_vector_4=\"_vptr$dng_vector\"^^?\"fCount\"I\"fData\"[4d]}\"fCornerRadius\"d\"fText\"{dng_string=\"fData\"{shared_ptr<const std::basic_string<char, std::char_traits<char>, dng_std_allocator<char>>>=\"__ptr_\"^v\"__cntrl_\"^{__shared_weak_count}}}\"fFontName\"{dng_string=\"fData\"{shared_ptr<const std::basic_string<char, std::char_traits<char>, dng_std_allocator<char>>>=\"__ptr_\"^v\"__cntrl_\"^{__shared_weak_count}}}\"fFontSize\"d\"fTextFramePadding\"d\"fTriangleSize\"d\"fOffset\"{dng_point_real64=\"v\"d\"h\"d}\"fLineHeightScaleFactor\"d}"
+  },
+  {
+    "vm_address": "0x81d401b",
+    "file_offset": "0x1119001b",
+    "value": ">TcO?"
+  },
+  {
+    "vm_address": "0x83c895b",
+    "file_offset": "0x1138495b",
+    "value": "@_CFErrorGetCode"
+  },
+  {
+    "vm_address": "0x83c932d",
+    "file_offset": "0x1138532d",
+    "value": "@_CGContextConcatCTM"
+  },
+  {
+    "vm_address": "0x83eea9c",
+    "file_offset": "0x113aaa9c",
+    "value": "_CFErrorGetCode"
+  },
+  {
+    "vm_address": "0x83ef1fe",
+    "file_offset": "0x113ab1fe",
+    "value": "_CGContextConcatCTM"
+  },
+  {
+    "vm_address": "0x84e838f",
+    "file_offset": "0x114a438f",
+    "value": "FIPxZ"
+  }
+]

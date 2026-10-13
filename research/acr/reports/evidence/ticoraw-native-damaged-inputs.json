@@ -1,0 +1,12 @@
+[
+  {
+    "case": "truncated",
+    "rejected": true,
+    "error": "native Nikon HE open failed: LibRaw unpack failed: Input/output error"
+  },
+  {
+    "case": "bad-precinct-length",
+    "rejected": true,
+    "error": "native Nikon HE open failed: LibRaw unpack failed: Corrupted data or unexpected EOF"
+  }
+]

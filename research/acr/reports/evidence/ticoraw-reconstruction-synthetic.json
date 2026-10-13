@@ -1,0 +1,79 @@
+{
+  "model_origin": "ACR 17.2 ARM64 FUN_013c8bc8 scalar tail",
+  "reference": "redlamp-libraw 4abfcd2 step2_bayer_rows, not Adobe execution",
+  "scope": "whole-image replicated edges, LUT enabled, shift 2, bits 14",
+  "seed": 3520,
+  "cases": [
+    {
+      "rows": 1,
+      "columns": 1,
+      "amplitude": 5000,
+      "pixels": 4,
+      "different": 0
+    },
+    {
+      "rows": 1,
+      "columns": 1,
+      "amplitude": 80000,
+      "pixels": 4,
+      "different": 0
+    },
+    {
+      "rows": 1,
+      "columns": 19,
+      "amplitude": 5000,
+      "pixels": 76,
+      "different": 0
+    },
+    {
+      "rows": 1,
+      "columns": 19,
+      "amplitude": 80000,
+      "pixels": 76,
+      "different": 0
+    },
+    {
+      "rows": 7,
+      "columns": 1,
+      "amplitude": 5000,
+      "pixels": 28,
+      "different": 0
+    },
+    {
+      "rows": 7,
+      "columns": 1,
+      "amplitude": 80000,
+      "pixels": 28,
+      "different": 0
+    },
+    {
+      "rows": 7,
+      "columns": 19,
+      "amplitude": 5000,
+      "pixels": 532,
+      "different": 0
+    },
+    {
+      "rows": 7,
+      "columns": 19,
+      "amplitude": 80000,
+      "pixels": 532,
+      "different": 0
+    },
+    {
+      "rows": 32,
+      "columns": 64,
+      "amplitude": 5000,
+      "pixels": 8192,
+      "different": 0
+    },
+    {
+      "rows": 32,
+      "columns": 64,
+      "amplitude": 80000,
+      "pixels": 8192,
+      "different": 0
+    }
+  ],
+  "all_equal": true
+}

@@ -1,0 +1,46 @@
+{
+  "program": "/Camera_Raw_arm64.analysis-383152",
+  "acr_slice_sha256": "09978d95dfe76b18495fea9550b051a89f4598ab0fd4734d69d22d330496f40a",
+  "read_only": true,
+  "prediction": {
+    "address": "07790200",
+    "bytes": 8192,
+    "sha256": "90a1e710131dc3ba098c39e4c8696b8019c032feb4589a198f40c328072b7b38",
+    "formula_entries": 8192,
+    "formula_mismatches": 0,
+    "index": "(gtli << 9) | (previous_gcli << 5) | unary",
+    "range": "gtli and previous_gcli 0..15, unary 0..31",
+    "sentinel": 255
+  },
+  "dequant": {
+    "address": "07792200",
+    "sha256": "51d8d390f6f1d3c3204e4b641f4c33b314017340692b0ead5d620ff77d18706e",
+    "values": [
+      87381,
+      74898,
+      69905,
+      67650,
+      66576,
+      66052,
+      65793,
+      65664,
+      65600,
+      65568,
+      65552,
+      65544,
+      65540,
+      65538,
+      65537,
+      0
+    ],
+    "last_value_is_sentinel": true
+  },
+  "xref_classification": {
+    "prediction": "DATA refs in FUN_013e3d84 incl 013e47ec,013e48dc,013e5574",
+    "dequant": "DATA at 013e4f98, PARAM at 013e4d90; neither is a function call"
+  },
+  "limitations": [
+    "These tables were read before ghidra-project tools became unavailable on resume.",
+    "No Adobe code was executed; shift4/profile/subband mapping require additional tracing."
+  ]
+}
