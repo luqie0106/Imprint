@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import PreviewCanvas from "../components/PreviewCanvas.vue";
 import AdjustmentPanel from "../components/AdjustmentPanel.vue";
+import AcrColorControls from "../components/AcrColorControls.vue";
 import RgbHistogram from "../components/RgbHistogram.vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -18,6 +19,11 @@ import {
   sharedSelectedPhotoId, sharePhotoSource,
   type DehazeAlgorithm, type DehazeParams, type NonlocalMode, type PhotoSource,
 } from "../stores/photoSource";
+import {
+  cloneAcrColorConfig, createDefaultAcrColorConfig, getAcrColorConfig,
+  parseAcrColorRenderStatus,
+  type AcrColorConfig, type AcrColorRenderStatus,
+} from "../stores/acrColor";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images,
   LoaderCircle, RotateCcw,
@@ -92,6 +98,7 @@ const originalPhotoId = ref("");
 const originalSessionId = ref("");
 const originalFullResolution = ref(false);
 const nonlocalRenderStatus = ref<"off" | "active" | "fallback">("off");
+const acrColorRenderStatus = ref<AcrColorRenderStatus>("off");
 const nonlocalRenderReason = ref("");
 const autoExposurePreview = ref<{
   sessionId: string; photoId: string; enabled: boolean;
@@ -158,6 +165,7 @@ const dehazeAutoMode = computed({
     if (!enabled) sharedDehazeNonlocalByPhoto.value[selectedId.value] = "off";
     nonlocalRenderStatus.value = "off";
     nonlocalRenderReason.value = "";
+    acrColorRenderStatus.value = "off";
   },
 });
 const dehazeNonlocalMode = computed<NonlocalMode>({
@@ -179,6 +187,8 @@ const dehazeAutoExposure = computed({
 });
 const basicParams = computed<BasicParams>(() => basicByPhoto.value[selectedId.value] ?? basicDefaults);
 const ricohPresetId = computed(() => sharedPresetByPhoto.value[selectedId.value] ?? null);
+const acrColorConfig = computed(() => getAcrColorConfig(selectedId.value));
+const displayedAcrColorStatus = computed(() => previewMode.value === "original" ? "off" : acrColorRenderStatus.value);
 const nonlocalRenderStatusText = computed(() => {
   if (dehazeNonlocalMode.value === "off" || nonlocalRenderStatus.value === "off") return "";
   if (nonlocalRenderStatus.value === "active") return "实际已启用";
@@ -537,6 +547,7 @@ interface PreviewAsset {
   nonlocalReason: string;
   autoExposureEV: number | null;
   autoExposureReason: AutoExposureReason;
+  acrColorStatus: AcrColorRenderStatus;
 }
 interface PreviewRequestContext {
   generation: number;
@@ -549,6 +560,7 @@ interface PreviewRequestContext {
   nonlocalMode: NonlocalMode;
   basicParams: BasicParams;
   ricohPresetId: string | null;
+  acrColor: AcrColorConfig;
   renderBackend: string;
   basicBackend: string;
   ricohBackend: string;
@@ -566,6 +578,10 @@ function capturePreviewContext(): PreviewRequestContext {
     nonlocalMode: sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off",
     basicParams: { ...basicParams.value },
     ricohPresetId: ricohPresetId.value,
+    acrColor: cloneAcrColorConfig({
+      ...acrColorConfig.value,
+      enabled: ricohPresetId.value ? false : acrColorConfig.value.enabled,
+    }),
     renderBackend: renderBackend.value,
     basicBackend: basicBackend.value,
     ricohBackend: ricohBackend.value,
@@ -586,6 +602,7 @@ function createPreviewBody(
     nonlocal_mode: context.nonlocalMode,
     basic_params: context.basicParams,
     ricoh_preset_id: context.ricohPresetId,
+    acr_color: mode === "original" ? createDefaultAcrColorConfig() : context.acrColor,
     max_edge: 1800, preview_level: previewLevel, full_resolution: fullResolution,
     mode, color_manage_srgb: true, render_backend: context.renderBackend,
     basic_backend: context.basicBackend, ricoh_backend: context.ricohBackend,
@@ -631,10 +648,11 @@ async function fetchPreview(
   const exposureReasonHeader = headers.get("X-Auto-Exposure-Reason") ?? "off";
   const autoExposureReason: AutoExposureReason = ["off", "target_reached", "highlight_limited", "applied", "black"]
     .includes(exposureReasonHeader) ? exposureReasonHeader as AutoExposureReason : "off";
+  const acrColorStatus = parseAcrColorRenderStatus(headers.get("X-ACR-Color-Status"));
   const url = createPreviewUrl(blob);
   return {
     url, width: Number(width) || 0, height: Number(height) || 0,
-    nonlocalStatus, nonlocalReason, autoExposureEV, autoExposureReason,
+    nonlocalStatus, nonlocalReason, autoExposureEV, autoExposureReason, acrColorStatus,
   };
 }
 
@@ -678,6 +696,7 @@ async function refreshPreview(
     enhancedUrl.value = enhanced.url;
     nonlocalRenderStatus.value = enhanced.nonlocalStatus;
     nonlocalRenderReason.value = enhanced.nonlocalReason;
+    acrColorRenderStatus.value = enhanced.acrColorStatus;
     autoExposurePreview.value = {
       sessionId: context.sessionId,
       photoId: context.photoId,
@@ -844,6 +863,7 @@ function scheduleDraggingPreview(includeOriginal = false) {
     previewError.value = "";
     nonlocalRenderStatus.value = "off";
     nonlocalRenderReason.value = "";
+    acrColorRenderStatus.value = "off";
   } else {
     draggingPreviewIncludeOriginal ||= includeOriginal;
   }
@@ -876,6 +896,7 @@ function schedulePreview(includeOriginal = false, schedule: PreviewSchedule = "p
   const generation = ++previewGeneration;
   nonlocalRenderStatus.value = "off";
   nonlocalRenderReason.value = "";
+  acrColorRenderStatus.value = "off";
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) {
     previewLoading.value = false;
     return;
@@ -1212,6 +1233,13 @@ onBeforeUnmount(() => {
 
       <aside class="enhance-right-column adjustment-sidebar space-y-3">
         <RgbHistogram :src="previewImageUrl" :session-id="sessionId" :photo-id="selectedId" />
+        <AcrColorControls
+          :photo-id="selectedId"
+          :preset-applied="Boolean(ricohPresetId)"
+          :showing-original="previewMode === 'original'"
+          :status="displayedAcrColorStatus"
+          @change="scheduleParameterPreview()"
+        />
         <AdjustmentPanel title="基础参数">
           <template #actions>
             <button type="button" @click="basicByPhoto[selectedId] = { ...basicDefaults }" :disabled="!selectedId" class="rounded px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 hover:text-blue-600 disabled:opacity-40 dark:hover:bg-zinc-800 dark:text-zinc-200">重置</button>

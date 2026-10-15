@@ -478,6 +478,120 @@ def _library_candidates() -> list[Path]:
 
 
 def _configure_library(library: ctypes.CDLL) -> None:
+    acr_flare = getattr(library, "im_native_acr_flare_u16_rgb", None)
+    if acr_flare is not None:
+        acr_flare.argtypes = [ctypes.c_uint32, ctypes.c_uint32,
+                             ctypes.POINTER(ctypes.c_uint16), ctypes.c_size_t,
+                             ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                             ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        acr_flare.restype = ctypes.c_int
+    acr_project = getattr(library, "im_native_acr_project_srgb_rgb8", None)
+    if acr_project is not None:
+        acr_project.argtypes = [ctypes.c_uint32, ctypes.c_uint32,
+                               ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                               ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                               ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
+        acr_project.restype = ctypes.c_int
+    acr_scale = getattr(library, "im_native_acr_scale_sdr_rgbf32", None)
+    if acr_scale is not None:
+        acr_scale.argtypes = [ctypes.c_uint32, ctypes.c_uint32,
+                             ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                             ctypes.c_float, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+        acr_scale.restype = ctypes.c_int
+    profile_camera_prepare = getattr(library, "im_native_acr_prepare_profile_camera", None)
+    if profile_camera_prepare is not None:
+        profile_camera_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                          ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        profile_camera_prepare.restype = ctypes.c_int
+    neutral_prepare = getattr(library, "im_native_acr_prepare_camera_neutral", None)
+    if neutral_prepare is not None:
+        neutral_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                   ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        neutral_prepare.restype = ctypes.c_int
+    white_resolve = getattr(library, "im_native_acr_resolve_white", None)
+    if white_resolve is not None:
+        white_resolve.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                 ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        white_resolve.restype = ctypes.c_int
+    colorspec_prepare = getattr(library, "im_native_acr_prepare_colorspec", None)
+    if colorspec_prepare is not None:
+        colorspec_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                     ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        colorspec_prepare.restype = ctypes.c_int
+    camera_prepare = getattr(library, "im_native_acr_prepare_camera_stage", None)
+    if camera_prepare is not None:
+        camera_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                  ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        camera_prepare.restype = ctypes.c_int
+    exposure_prepare = getattr(library, "im_native_acr_prepare_exposure", None)
+    if exposure_prepare is not None:
+        exposure_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                     ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        exposure_prepare.restype = ctypes.c_int
+    exposure_limit_log = getattr(library, "im_native_acr_exposure_limit_log_rgbf32", None)
+    if exposure_limit_log is not None:
+        exposure_limit_log.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+            ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        exposure_limit_log.restype = ctypes.c_int
+    source_limit_u16 = getattr(library, "im_native_acr_source_limit_scene_u16_rgb", None)
+    if source_limit_u16 is not None:
+        source_limit_u16.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint16),
+            ctypes.c_size_t, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        source_limit_u16.restype = ctypes.c_int
+    profile_tone_exposure = getattr(library, "im_native_acr_profile_tone_exposure_rgbf32", None)
+    if profile_tone_exposure is not None:
+        profile_tone_exposure.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+            ctypes.c_int, ctypes.c_double, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+        profile_tone_exposure.restype = ctypes.c_int
+    profile_tone = getattr(library, "im_native_acr_profile_tone_rgbf32", None)
+    if profile_tone is not None:
+        profile_tone.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+            ctypes.c_int, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+        ]
+        profile_tone.restype = ctypes.c_int
+    white_temperature = getattr(library, "im_native_acr_white_temperature", None)
+    if white_temperature is not None:
+        white_temperature.argtypes = [ctypes.c_double, ctypes.c_double,
+                                      ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        white_temperature.restype = ctypes.c_int
+    for symbol in ("im_native_acr_hsl_sdr_rgbf32", "im_native_acr_grading_sdr_rgbf32",
+                   "im_native_acr_rendered_hsl_sdr_rgbf32",
+                   "im_native_acr_camera_float_rgbf32"):
+        function = getattr(library, symbol, None)
+        if function is not None:
+            function.argtypes = [
+                ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ]
+            function.restype = ctypes.c_int
+    tone_prepared = getattr(library, "im_native_acr_tone_prepared_sdr_rgbf32", None)
+    if tone_prepared is not None:
+        tone_prepared.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+        ]
+        tone_prepared.restype = ctypes.c_int
+    tone_prepared_mode = getattr(
+        library, "im_native_acr_tone_prepared_sdr_mode_rgbf32", None)
+    if tone_prepared_mode is not None:
+        tone_prepared_mode.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+        ]
+        tone_prepared_mode.restype = ctypes.c_int
     renderer = ctypes.c_void_p
     uint16_pointer = ctypes.POINTER(ctypes.c_uint16)
     library.im_renderer_create.argtypes = [ctypes.c_int, ctypes.POINTER(renderer)]
@@ -1497,6 +1611,529 @@ def native_ricoh(
     if was_uint8:
         return _compact_native_rgb8(output16)
     return output16
+
+
+def _native_acr_color_sdr(rgb: np.ndarray, controls: object, symbol: str,
+                          control_count: int | tuple[int, ...]) -> np.ndarray:
+    """Run one recovered CPU color stage; input/output is linear ProPhoto.
+
+    This entry point does not select a profile, apply tone/display conversion,
+    or certify Adobe output. Older native libraries fail explicitly.
+    """
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.size > _MAX_IMAGE_VALUES):
+        raise ValueError("ACR color input must be a nonempty float32 HxWx3 array")
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    counts = (control_count,) if isinstance(control_count, int) else control_count
+    if values.ndim != 1 or values.size not in counts or not np.isfinite(values).all():
+        raise ValueError(f"ACR color controls must contain {control_count} finite values")
+    source = np.ascontiguousarray(rgb)
+    library, _ = _get_library()
+    function = getattr(library, symbol, None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide recovered SDR color operators")
+    output = np.empty_like(source)
+    height, width = source.shape[:2]
+    status = function(width, height, source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                      source.size, values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      values.size, output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size)
+    if status == 1:
+        raise ValueError("Native SDR color operator rejected input range or controls")
+    if status:
+        raise NativeRendererError(f"Native SDR color operator failed (status {status})")
+    return output
+
+
+def native_acr_white_temperature(xy: object) -> tuple[float, float]:
+    """Recover temperature/tint with the C++ CPU fixed-table projection."""
+    values = np.asarray(xy, dtype=np.float64)
+    if values.shape != (2,) or not np.isfinite(values).all():
+        raise ValueError("white chromaticity must contain two finite values")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_white_temperature", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide recovered white projection")
+    result = np.empty(2, dtype=np.float64)
+    status = function(float(values[0]), float(values[1]),
+                      result.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), 2)
+    if status == 1:
+        raise ValueError("Native white projection rejected chromaticity")
+    if status:
+        raise NativeRendererError(f"Native white projection failed (status {status})")
+    return float(result[0]), float(result[1])
+
+
+def native_acr_hsl_sdr(rgb: np.ndarray, controls: object) -> np.ndarray:
+    """Apply H/S/L jointly, with optional 25th Vibrance, using C++ CPU."""
+    return _native_acr_color_sdr(rgb, controls, "im_native_acr_hsl_sdr_rgbf32", (24, 25))
+
+
+def native_acr_grading_sdr(rgb: np.ndarray, controls: object) -> np.ndarray:
+    """Apply four color wheels, Blending and Balance using C++ CPU."""
+    return _native_acr_color_sdr(rgb, controls, "im_native_acr_grading_sdr_rgbf32", 14)
+
+
+def native_acr_flare_u16(rgb: np.ndarray, controls: object) -> np.ndarray:
+    """Compute the explicit uint16 edge2 source-pyramid flare subset in C++."""
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.uint16
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.size > _MAX_IMAGE_VALUES):
+        raise ValueError("ACR flare requires nonempty uint16 HxWx3 input")
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (7,) or not np.isfinite(values).all():
+        raise ValueError("ACR flare requires seven finite prepared controls")
+    source = np.ascontiguousarray(rgb)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_flare_u16_rgb", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR source flare")
+    output = np.empty(6, dtype=np.float64)
+    height, width = source.shape[:2]
+    status = function(width, height, source.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)),
+                      source.size, values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      values.size, output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR source flare rejected input or controls")
+    if status:
+        raise NativeRendererError(f"Native ACR source flare failed (status {status})")
+    return output
+
+
+def native_acr_project_srgb(rgb: np.ndarray, prophoto_to_pcs: object) -> np.ndarray:
+    """Project an explicit native working-space matrix to Imprint display sRGB8."""
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.size > _MAX_IMAGE_VALUES):
+        raise ValueError("ACR display projection requires nonempty float32 HxWx3 input")
+    matrix = np.ascontiguousarray(prophoto_to_pcs, dtype=np.float64).reshape(-1)
+    if matrix.shape != (9,) or not np.isfinite(matrix).all():
+        raise ValueError("ACR display projection requires nine finite matrix values")
+    source = np.ascontiguousarray(rgb)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_project_srgb_rgb8", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR display projection")
+    output = np.empty(source.shape, dtype=np.uint8)
+    height, width = source.shape[:2]
+    status = function(width, height, source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                      source.size, matrix.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      matrix.size, output.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR display projection rejected input")
+    if status:
+        raise NativeRendererError(f"Native ACR display projection failed (status {status})")
+    return output
+
+
+def native_acr_scale_sdr(rgb: np.ndarray, gain: float) -> np.ndarray:
+    """Preserve Imprint's existing clipped linear gain using native CPU pixels."""
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.size > _MAX_IMAGE_VALUES or not np.isfinite(gain) or gain < 0):
+        raise ValueError("ACR SDR scaling requires nonempty float32 RGB and finite nonnegative gain")
+    source = np.ascontiguousarray(rgb)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_scale_sdr_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR SDR scaling")
+    output = np.empty_like(source)
+    height, width = source.shape[:2]
+    status = function(width, height, source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                      source.size, float(gain), output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                      output.size)
+    if status == 1:
+        raise ValueError("Native ACR SDR scaling rejected input or gain")
+    if status:
+        raise NativeRendererError(f"Native ACR SDR scaling failed (status {status})")
+    return output
+
+
+def native_acr_prepare_profile_camera(controls: object) -> np.ndarray:
+    """Compose native neutral, ColorSpec and camera parameter factories."""
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (75,) or not np.isfinite(values).all():
+        raise ValueError("ACR profile-camera preparation requires 75 finite controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_profile_camera", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR profile-camera preparation")
+    output = np.empty(65, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR profile-camera preparation rejected controls")
+    if status:
+        raise NativeRendererError(f"Native ACR profile-camera preparation failed (status {status})")
+    return output
+
+
+def native_acr_prepare_camera_neutral(neutral: object) -> np.ndarray:
+    """Prepare three source CameraNeutral fields using the native scalar setter."""
+    values = np.ascontiguousarray(neutral, dtype=np.float64)
+    if values.shape != (3,) or not np.isfinite(values).all():
+        raise ValueError("ACR neutral preparation requires three finite values")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_camera_neutral", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR neutral preparation")
+    output = np.empty(3, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR neutral preparation rejected values")
+    if status:
+        raise NativeRendererError(f"Native ACR neutral preparation failed (status {status})")
+    return output
+
+
+def native_acr_resolve_white(controls: object) -> np.ndarray:
+    """Resolve a prepared source neutral and explicit mode using C++ CPU.
+
+    The 68-input/26-output layout is documented in the native header. This
+    adapter does not normalize metadata, infer WB or generate algorithm output.
+    """
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (68,) or not np.isfinite(values).all():
+        raise ValueError("ACR white resolution requires 68 finite prepared controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_resolve_white", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR white resolution")
+    output = np.empty(26, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR white resolution rejected controls")
+    if status:
+        raise NativeRendererError(f"Native ACR white resolution failed (status {status})")
+    return output
+
+
+def native_acr_prepare_colorspec(controls: object) -> np.ndarray:
+    """Construct a finite RGB ColorSpec in C++ from explicit profile and white data.
+
+    Caller resolves white xy, illuminant endpoints and compatible calibration.
+    The 64-input/22-output layout is documented in the native header.
+    """
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (64,) or not np.isfinite(values).all():
+        raise ValueError("ACR ColorSpec requires 64 finite prepared controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_colorspec", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR ColorSpec preparation")
+    output = np.empty(22, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR ColorSpec preparation rejected controls")
+    if status:
+        raise NativeRendererError(f"Native ACR ColorSpec preparation failed (status {status})")
+    return output
+
+
+def native_acr_prepare_camera_stage(controls: object) -> np.ndarray:
+    """Prepare camera matrices, gains and compensation in C++ CPU.
+
+    The 31 inputs must already contain resolved ColorSpec and AnalogBalance
+    data. See the native header for ordering; no metadata inference or Python
+    numerical fallback is performed here.
+    """
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (31,) or not np.isfinite(values).all():
+        raise ValueError("ACR camera preparation requires 31 finite prepared controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_camera_stage", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR camera preparation")
+    output = np.empty(30, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR camera preparation rejected controls")
+    if status:
+        raise NativeRendererError(f"Native ACR camera preparation failed (status {status})")
+    return output
+
+
+def native_acr_source_limit_scene_u16(rgb: np.ndarray, controls: object) -> np.ndarray:
+    """Native zero-pedestal scene/no-filter source pyramid through limitEV88.
+
+    The caller establishes this explicit source domain and supplies the 22
+    prepared controls. This is not an automatic RAW/metadata adapter.
+    """
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.uint16
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.shape[0] * rgb.shape[1] > (1 << 26)):
+        raise ValueError("ACR scene source limit requires nonempty uint16 HxWx3")
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (22,) or not np.isfinite(values).all():
+        raise ValueError("ACR scene source limit requires 22 finite prepared controls")
+    source = np.ascontiguousarray(rgb)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_source_limit_scene_u16_rgb", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide scene uint16 source limit")
+    output = np.empty(24, dtype=np.float64)
+    status = function(source.shape[1], source.shape[0],
+                      source.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), source.size,
+                      values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR scene source limit rejected prepared input")
+    if status:
+        raise NativeRendererError(f"Native ACR scene source limit failed (status {status})")
+    return output
+
+
+def native_acr_exposure_limit_log(rgb: np.ndarray, controls: object, epsilon: float) -> np.ndarray:
+    """Compute per-plane high statistics and limitEV88 from prepared log pixels.
+
+    This buffer adapter does not prepare a RAW source, infer metadata, or
+    substitute display RGB/gray for source camera-plane log samples.
+    See the native header for the 17 controls and 15 output lanes.
+    """
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.shape[0] * rgb.shape[1] > (1 << 26)):
+        raise ValueError("ACR exposure limit requires nonempty prepared float32 log HxWx3")
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (17,) or not np.isfinite(values).all():
+        raise ValueError("ACR exposure limit requires 17 finite prepared controls")
+    if not np.isfinite(epsilon) or epsilon <= 0 or epsilon > 2.0 ** -12:
+        raise ValueError("ACR exposure limit requires source epsilon in (0,2^-12]")
+    source = np.ascontiguousarray(rgb)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_exposure_limit_log_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide prepared log exposure limit")
+    output = np.empty(15, dtype=np.float64)
+    status = function(source.shape[1], source.shape[0],
+                      source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size,
+                      values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      float(epsilon), output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      output.size)
+    if status == 1:
+        raise ValueError("Native ACR exposure limit rejected prepared input")
+    if status:
+        raise NativeRendererError(f"Native ACR exposure limit failed (status {status})")
+    return output
+
+
+def native_acr_prepare_exposure(controls: object) -> np.ndarray:
+    """Prepare modern EV lanes in C++; source inputs must already be resolved.
+
+    See im_native_acr_prepare_exposure's header contract for input/output order.
+    This adapter performs no metadata inference or numerical algorithm fallback.
+    """
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (10,) or not np.isfinite(values).all():
+        raise ValueError("ACR exposure requires ten finite prepared controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_exposure", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR exposure preparation")
+    output = np.empty(19, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR exposure preparation rejected controls")
+    if status:
+        raise NativeRendererError(f"Native ACR exposure preparation failed (status {status})")
+    return output
+
+
+def native_acr_profile_tone(rgb: np.ndarray, points: object, *, modern: bool = True,
+                            curve_ev18: float = 0.0) -> np.ndarray:
+    """Profile natural spline/MMHG, optionally preceded by prepared negative curveEV18.
+
+    curve_ev18 is a resolved native context lane, not manual Exposure.
+    """
+    if not np.isfinite(curve_ev18) or curve_ev18 < -120 or curve_ev18 > 0:
+        raise ValueError("ACR profile negative curveEV18 must be finite in [-120,0]")
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.size > _MAX_IMAGE_VALUES):
+        raise ValueError("ACR profile tone requires nonempty float32 HxWx3 input")
+    curve = np.ascontiguousarray(points, dtype=np.float64)
+    if curve.ndim != 2 or curve.shape[1] != 2 or not 2 <= curve.shape[0] <= 65536:
+        raise ValueError("ACR profile tone requires 2..65536 x,y points")
+    source = np.ascontiguousarray(rgb)
+    library, _ = _get_library()
+    symbol = ("im_native_acr_profile_tone_rgbf32" if curve_ev18 == 0 else
+              "im_native_acr_profile_tone_exposure_rgbf32")
+    function = getattr(library, symbol, None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR profile tone")
+    output = np.empty_like(source)
+    height, width = source.shape[:2]
+    arguments = (width, height, source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                 source.size, curve.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                 curve.shape[0], int(bool(modern)))
+    if curve_ev18 != 0:
+        arguments += (float(curve_ev18),)
+    status = function(*arguments, output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR profile tone rejected input or curve")
+    if status:
+        raise NativeRendererError(f"Native ACR profile tone failed (status {status})")
+    return output
+
+
+def native_acr_rendered_hsl_sdr(rgb: np.ndarray, controls: object) -> np.ndarray:
+    """Apply inverse/forward default-tone normalization around HSL/Vibrance."""
+    return _native_acr_color_sdr(rgb, controls, "im_native_acr_rendered_hsl_sdr_rgbf32", (24, 25))
+
+
+def native_acr_camera_float(rgb: np.ndarray, controls: object) -> np.ndarray:
+    """Run the recovered CPU camera component on gain-sorted camera RGB.
+
+    Input channels must already be ordered by descending gain and may exceed
+    one. The result is interleaved RGB with fixed ProPhoto channel semantics;
+    this function does not select a profile or run later rendering stages.
+    """
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.size > _MAX_IMAGE_VALUES):
+        raise ValueError("ACR camera input must be a nonempty float32 HxWx3 array")
+    if not np.isfinite(rgb).all() or np.any(rgb < 0.0):
+        raise ValueError("ACR camera input must be finite and nonnegative")
+    values = np.asarray(controls, dtype=np.float64)
+    if values.shape != (13,) or not np.isfinite(values).all():
+        raise ValueError("ACR camera controls must contain 13 finite values")
+    if np.any(np.abs(values) > np.finfo(np.float32).max):
+        raise ValueError("ACR camera controls must be representable as float32")
+    source = np.ascontiguousarray(rgb)
+    parameters = np.ascontiguousarray(values)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_camera_float_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide the recovered camera operator")
+    output = np.empty_like(source)
+    height, width = source.shape[:2]
+    status = function(
+        width, height, source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size,
+        parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), parameters.size,
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+    )
+    if status == 1:
+        raise ValueError("Native camera operator rejected controls or input")
+    if status:
+        raise NativeRendererError(f"Native camera operator failed (status {status})")
+    return output
+
+
+def native_acr_tone_prepared_sdr(guide_rgb: np.ndarray, tone_rgb: np.ndarray,
+                                 controls: object) -> np.ndarray:
+    """Run the recovered CPU tone subset on two already prepared RGB domains.
+
+    ``guide_rgb`` is the image domain entering MakeGrayLog after camera and
+    earlier preparation; ``tone_rgb`` is the image domain at the enabled tone
+    stage. They must share geometry, but can contain different pixel values.
+    Neither input is treated as arbitrary sRGB. Controls are source epsilon,
+    EV90/98/100, Shadows2012 UI, Highlights2012 UI, nonnegative Clarity2012 UI,
+    and integer sigma mode (0..2). Negative clarity and GPU execution are not
+    part of this recovered operator.
+    """
+    for name, image in (("guide", guide_rgb), ("tone", tone_rgb)):
+        if (not isinstance(image, np.ndarray) or image.dtype != np.float32
+                or image.ndim != 3 or image.shape[2] != 3
+                or min(image.shape[:2]) <= 0 or image.size > _MAX_IMAGE_VALUES):
+            raise ValueError(f"ACR tone {name} input must be a nonempty float32 HxWx3 array")
+        if not np.isfinite(image).all() or np.any(image < 0.0):
+            raise ValueError(f"ACR tone {name} input must be finite and nonnegative")
+    if guide_rgb.shape != tone_rgb.shape:
+        raise ValueError("ACR tone guide and tone inputs must have identical geometry")
+
+    values = np.asarray(controls, dtype=np.float64)
+    if values.shape != (8,) or not np.isfinite(values).all():
+        raise ValueError("ACR tone controls must contain 8 finite values")
+    if (values[0] <= 0.0 or values[0] > 2.0 ** -12
+            or np.float32(values[0]) == 0.0
+            or np.any(values[1:4] < -120.0) or np.any(values[1:4] > 120.0)
+            or not -100.0 <= values[4] <= 100.0
+            or not -100.0 <= values[5] <= 100.0
+            or not 0.0 <= values[6] <= 100.0
+            or values[7] not in (0.0, 1.0, 2.0)):
+        raise ValueError("ACR tone controls are outside the recovered operator domain")
+
+    guide = np.ascontiguousarray(guide_rgb)
+    tone = np.ascontiguousarray(tone_rgb)
+    parameters = np.ascontiguousarray(values)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_tone_prepared_sdr_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide the recovered tone operator")
+    output = np.empty_like(tone)
+    height, width = tone.shape[:2]
+    status = function(
+        width, height,
+        guide.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        tone.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), tone.size,
+        parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), parameters.size,
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+    )
+    if status == 1:
+        raise ValueError("Native tone operator rejected input or controls")
+    if status:
+        raise NativeRendererError(f"Native tone operator failed (status {status})")
+    return output
+
+
+def native_acr_tone_prepared_sdr_mode(guide_rgb: np.ndarray, tone_rgb: np.ndarray,
+                                      controls: object) -> np.ndarray:
+    """Run the prepared SDR tone subset with an explicit output mode.
+
+    Controls are the existing eight values followed by output mode (0 keeps
+    RGB ratios; 1 writes clamped mapped linear gray). Mode 1 assumes the tone
+    stage has already been selected by the caller; this operator does not
+    decide whether a stage exists or prepare normalized anchor inputs.
+    """
+    for name, image in (("guide", guide_rgb), ("tone", tone_rgb)):
+        if (not isinstance(image, np.ndarray) or image.dtype != np.float32
+                or image.ndim != 3 or image.shape[2] != 3
+                or min(image.shape[:2]) <= 0 or image.size > _MAX_IMAGE_VALUES):
+            raise ValueError(f"ACR tone {name} input must be a nonempty float32 HxWx3 array")
+        if not np.isfinite(image).all() or np.any(image < 0.0):
+            raise ValueError(f"ACR tone {name} input must be finite and nonnegative")
+    if guide_rgb.shape != tone_rgb.shape:
+        raise ValueError("ACR tone guide and tone inputs must have identical geometry")
+
+    values = np.asarray(controls, dtype=np.float64)
+    if values.shape != (9,) or not np.isfinite(values).all():
+        raise ValueError("ACR tone mode controls must contain 9 finite values")
+    if (values[0] <= 0.0 or values[0] > 2.0 ** -12
+            or np.float32(values[0]) == 0.0
+            or np.any(values[1:4] < -120.0) or np.any(values[1:4] > 120.0)
+            or not -100.0 <= values[4] <= 100.0
+            or not -100.0 <= values[5] <= 100.0
+            or not 0.0 <= values[6] <= 100.0
+            or values[7] not in (0.0, 1.0, 2.0)
+            or values[8] not in (0.0, 1.0)):
+        raise ValueError("ACR tone mode controls are outside the recovered operator domain")
+
+    guide = np.ascontiguousarray(guide_rgb)
+    tone = np.ascontiguousarray(tone_rgb)
+    parameters = np.ascontiguousarray(values)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_tone_prepared_sdr_mode_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide the tone output mode operator")
+    output = np.empty_like(tone)
+    height, width = tone.shape[:2]
+    status = function(
+        width, height,
+        guide.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        tone.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), tone.size,
+        parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), parameters.size,
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+    )
+    if status == 1:
+        raise ValueError("Native tone output mode operator rejected input or controls")
+    if status:
+        raise NativeRendererError(f"Native tone output mode operator failed (status {status})")
+    return output
 
 
 def get_native_status() -> dict[str, object]:

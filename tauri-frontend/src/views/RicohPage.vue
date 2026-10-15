@@ -3,6 +3,7 @@ import { photoExportRunning } from "../stores/photoExport";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import PreviewCanvas from "../components/PreviewCanvas.vue";
 import AdjustmentPanel from "../components/AdjustmentPanel.vue";
+import AcrColorControls from "../components/AcrColorControls.vue";
 import RgbHistogram from "../components/RgbHistogram.vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
@@ -16,6 +17,10 @@ import {
   sharedPhotoSource, sharedPresetByPhoto, sharedSelectedPhotoId, sharePhotoSource,
   type PhotoSource,
 } from "../stores/photoSource";
+import {
+  cloneAcrColorConfig, createDefaultAcrColorConfig, getAcrColorConfig,
+  parseAcrColorRenderStatus, type AcrColorConfig, type AcrColorRenderStatus,
+} from "../stores/acrColor";
 import {
   Columns2, FolderOpen, Image as ImageIcon, ImagePlus, Images, LoaderCircle,
   Maximize2, Minus, Plus, Rows2, Sparkles,
@@ -75,6 +80,7 @@ const selectedId = ref("");
 const originalUrl = ref("");
 const originalFullResolution = ref(false);
 const effectUrl = ref("");
+const acrColorRenderStatus = ref<AcrColorRenderStatus>("off");
 const mode = ref<PreviewMode>("effect");
 const split = ref(50);
 const previewViewport = ref<HTMLElement | null>(null);
@@ -96,6 +102,8 @@ const message = ref("");
 const currentFile = computed(() => files.value.find(file => file.photo_id === selectedId.value));
 const basicParams = computed<BasicParams>(() => basicParamsByPhoto.value[selectedId.value] ?? defaultBasicParams);
 const dehazeParams = computed(() => sharedDehazeByPhoto.value[selectedId.value]);
+const acrColorConfig = computed(() => getAcrColorConfig(selectedId.value));
+const displayedAcrColorStatus = computed(() => mode.value === "original" ? "off" : acrColorRenderStatus.value);
 const effectReady = computed(() => Boolean(effectUrl.value));
 const showComparePreview = computed(() => mode.value === "compare" && effectReady.value);
 const previewImageUrl = computed(() => mode.value !== "original" && effectReady.value ? effectUrl.value : originalUrl.value);
@@ -351,7 +359,7 @@ function releasePreview() {
   originalFullResolution.value = false;
   effectUrl.value = "";
 }
-interface PreviewAsset { url: string; width: number; height: number }
+interface PreviewAsset { url: string; width: number; height: number; acrColorStatus: AcrColorRenderStatus }
 interface PreviewRequestContext {
   baseUrl: string;
   token: number;
@@ -363,6 +371,7 @@ interface PreviewRequestContext {
   nonlocalMode: string;
   basicParams: BasicParams;
   presetId: string | null;
+  acrColor: AcrColorConfig;
   renderBackend: string;
   basicBackend: string;
   ricohBackend: string;
@@ -382,6 +391,10 @@ function capturePreviewContext(token: number, fullResolution: boolean): PreviewR
     nonlocalMode: sharedDehazeNonlocalByPhoto.value[selectedId.value] ?? "off",
     basicParams: cloneBasicParams(basicParams.value),
     presetId: selectedPreset.value || null,
+    acrColor: cloneAcrColorConfig({
+      ...acrColorConfig.value,
+      enabled: selectedPreset.value ? false : acrColorConfig.value.enabled,
+    }),
     renderBackend: renderBackend.value,
     basicBackend: basicBackend.value,
     ricohBackend: ricohBackend.value,
@@ -397,6 +410,7 @@ function createPreviewBody(context: PreviewRequestContext, mode: "original" | "d
     auto_mode: context.autoMode, auto_exposure: context.autoExposure,
     nonlocal_mode: context.nonlocalMode, basic_params: context.basicParams,
     ricoh_preset_id: context.presetId,
+    acr_color: mode === "original" ? createDefaultAcrColorConfig() : context.acrColor,
     max_edge: 1800, preview_level: context.previewLevel, full_resolution: context.fullResolution,
     mode, color_manage_srgb: true, render_backend: context.renderBackend,
     basic_backend: context.basicBackend, ricoh_backend: context.ricohBackend,
@@ -425,12 +439,14 @@ async function requestPreview(body: Record<string, unknown>, context: PreviewReq
   }
   const width = headers.get("X-Image-Width");
   const height = headers.get("X-Image-Height");
+  const acrColorStatus = parseAcrColorRenderStatus(headers.get("X-ACR-Color-Status"));
   const url = createPreviewUrl(blob);
   if (context.token !== generation) releasePreviewUrl(url);
   return {
     url: context.token === generation ? url : "",
     width: Number(width) || 0,
     height: Number(height) || 0,
+    acrColorStatus,
   };
 }
 
@@ -480,6 +496,7 @@ async function refreshPreview(includeOriginal: boolean, context: PreviewRequestC
     }
     if (effectUrl.value) releasePreviewUrl(effectUrl.value);
     effectUrl.value = effect.url;
+    acrColorRenderStatus.value = effect.acrColorStatus;
     if (effect.width && effect.height) {
       if (context.fullResolution) {
         sourceImageWidth.value = effect.width;
@@ -500,6 +517,7 @@ function schedulePreview(includeOriginal = false, immediate = false) {
   window.clearTimeout(previewTimer);
   window.clearTimeout(fullResolutionTimer);
   const token = ++generation;
+  acrColorRenderStatus.value = "off";
   if (!sessionId.value || !selectedId.value || !BASE_URL.value) return;
   const fastContext = capturePreviewContext(token, false);
   const fullContext = capturePreviewContext(token, true);
@@ -711,6 +729,13 @@ onBeforeUnmount(() => {
       </main>
       <aside class="adjustment-sidebar min-h-0 space-y-3">
         <RgbHistogram :src="previewImageUrl" :session-id="sessionId" :photo-id="selectedId" />
+        <AcrColorControls
+          :photo-id="selectedId"
+          :preset-applied="Boolean(selectedPreset)"
+          :showing-original="mode === 'original'"
+          :status="displayedAcrColorStatus"
+          @change="schedulePreview()"
+        />
         <AdjustmentPanel title="基础参数">
           <template #actions>
             <button type="button" @click="resetBasicParams" :disabled="!selectedId" title="重置当前照片基础参数" aria-label="重置当前照片基础参数" class="rounded px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-zinc-800 dark:text-zinc-200">重置</button>

@@ -27,12 +27,20 @@ import native_dense
 from native_renderer import (
     NativeRendererError, native_camera_profile, native_camera_profile_transfer,
     clear_camera_profile_gpu_cache,
+    native_acr_white_temperature,
+    native_acr_hsl_sdr, native_acr_grading_sdr, native_acr_profile_tone,
+    native_acr_prepare_profile_camera, native_acr_camera_float,
+    native_acr_scale_sdr, native_acr_project_srgb,
 )
 from dng_writer import _embedded_profile_tags
 from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profile_dng
 
 
 PROFILE_PREVIEW_VERSION = "camera-profile-preview-v3-gpu-stages"
+PROFILE_PREVIEW_VERSION += "-acr-camera-v1"
+_ACR_PROFILE_WHITE_ENABLED = os.environ.get("IMPRINT_ACR_PROFILE_WHITE") == "1"
+if _ACR_PROFILE_WHITE_ENABLED:
+    PROFILE_PREVIEW_VERSION += "-acr-white-cpp-v1"
 _backend_context = threading.local()
 
 
@@ -549,6 +557,12 @@ def transfer_enhancement(
 
 
 def _estimate_cct(xy: np.ndarray) -> float:
+    # Opt-in single-stage ACR comparison. Do not silently substitute McCamy
+    # when the requested C++ operator is absent; the caller can report its
+    # existing profile-render failure status. All other profile stages retain
+    # their existing semantics, so this does not certify a complete ACR profile.
+    if _ACR_PROFILE_WHITE_ENABLED:
+        return native_acr_white_temperature(xy)[0]
     denominator = float(xy[1] - 0.1858)
     if not math.isfinite(denominator) or abs(denominator) < 1e-12:
         raise ValueError("invalid white chromaticity")
@@ -634,12 +648,32 @@ def _project_srgb(rgb: np.ndarray) -> np.ndarray:
     return np.clip(np.rint(encoded * 255.0), 0.0, 255.0).astype(np.uint8)
 
 
+def _acr_profile_camera_controls(profile: Profile, neutral: np.ndarray) -> np.ndarray:
+    """Build the explicit supported-scene inputs for native ACR preparation."""
+    identity = np.eye(3, dtype=np.float64).reshape(-1)
+    controls = np.concatenate((
+        np.ones(3, dtype=np.float64),  # AnalogBalance, identity in this subset.
+        np.asarray(profile.color_matrix1, dtype=np.float64).reshape(-1),
+        np.asarray(profile.color_matrix2, dtype=np.float64).reshape(-1),
+        identity,  # CameraCalibration1 and 2 are validated as identity.
+        identity,
+        np.asarray(profile.forward_matrix1, dtype=np.float64).reshape(-1),
+        np.asarray(profile.forward_matrix2, dtype=np.float64).reshape(-1),
+        np.asarray([2850.0, 6500.0, 0.3457, 0.3585, 1.0, 1.0, 1.0], dtype=np.float64),
+        np.asarray(neutral, dtype=np.float64),  # Native preparation owns normalization/quantization.
+        np.zeros(8, dtype=np.float64),  # mode 0, six calibration values, shadow tint 0.
+    ))
+    if controls.shape != (75,):
+        raise ValueError("ACR profile-camera controls must contain 75 values")
+    return controls
+
+
 def render_profile(
     camera_u16: np.ndarray,
     neutral: tuple[float, float, float] | np.ndarray,
     profile: Profile,
     exposure_ev: float,
-    *, backend: str = "cpu",
+    *, backend: str = "cpu", acr_color: dict[str, Any] | None = None,
 ) -> np.ndarray:
     """Render camera-space uint16 RGB through a validated DNG profile."""
     if camera_u16.dtype != np.uint16 or camera_u16.ndim != 3 or camera_u16.shape[2] != 3:
@@ -651,6 +685,54 @@ def render_profile(
         raise ValueError("neutral must contain three finite positive values")
     if not math.isfinite(float(exposure_ev)) or abs(float(exposure_ev)) > 32:
         raise ValueError("exposure_ev must be finite and within a supported range")
+    if acr_color is not None and acr_color.get("enabled", False):
+        _backend_context.profile = "python"
+        # This manual scene-camera experiment supports only identity calibration
+        # and mode 0. Metadata preparation, camera pixels and display projection
+        # stay in the explicit native path; the user-facing look table remains
+        # the existing profile operation.
+        hsl = np.asarray(acr_color.get("hsl", np.zeros(25)), dtype=np.float64)
+        grading = np.asarray(acr_color.get("grading", [0.0] * 12 + [50.0, 0.0]), dtype=np.float64)
+        if hsl.shape != (25,) or grading.shape != (14,):
+            raise ValueError("ACR experiment requires HSL25 and Grading14 controls")
+        if min(camera_u16.shape[:2]) <= 0:
+            raise ValueError("ACR experiment requires a nonempty camera image")
+        prepared = native_acr_prepare_profile_camera(
+            _acr_profile_camera_controls(profile, neutral_array),
+        )
+        if prepared.shape != (65,) or not np.isfinite(prepared).all():
+            raise ValueError("native ACR profile-camera preparation returned invalid output")
+        sorted_matrix = prepared[35:44]
+        gains = prepared[47:50]
+        raw_order = prepared[53:56]
+        prophoto_to_pcs = prepared[56:65]
+        if (not np.equal(raw_order, np.floor(raw_order)).all()
+                or sorted(raw_order.tolist()) != [0.0, 1.0, 2.0]):
+            raise ValueError("native ACR profile-camera preparation returned invalid plane indices")
+        order = raw_order.astype(np.intp)
+        camera_controls = np.concatenate((
+            gains[order[:2]], np.asarray([1.0, 1.0]), sorted_matrix,
+        ))
+        exposure_scale = np.float32(
+            2.0 ** (float(exposure_ev) + profile.baseline_exposure_offset)
+        )
+        output = np.empty(camera_u16.shape, dtype=np.uint8)
+        for start in range(0, camera_u16.shape[0], 128):
+            end = min(start + 128, camera_u16.shape[0])
+            camera = camera_u16[start:end].astype(np.float32) / np.float32(65535.0)
+            sorted_camera = np.ascontiguousarray(camera[..., order], dtype=np.float32)
+            based = native_acr_camera_float(sorted_camera, camera_controls)
+            exposed = native_acr_scale_sdr(based, exposure_scale)
+            looked = np.ascontiguousarray(_apply_look(exposed, profile), dtype=np.float32)
+            colored = native_acr_hsl_sdr(looked, hsl)
+            if acr_color.get("profile_tone", True):
+                toned = native_acr_profile_tone(colored, profile.tone_curve)
+            else:
+                toned = np.ascontiguousarray(_apply_tone(colored, profile.tone_curve), dtype=np.float32)
+            graded = native_acr_grading_sdr(toned, grading)
+            output[start:end] = native_acr_project_srgb(graded, prophoto_to_pcs)
+        _backend_context.profile = "cpp_cpu_acr"
+        return output
     matrix, white = _camera_transform(profile, neutral_array)
     exposure_scale = np.float32(2.0 ** (float(exposure_ev) + profile.baseline_exposure_offset))
     _backend_context.profile = "python"

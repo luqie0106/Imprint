@@ -1,122 +1,319 @@
-# Operating systems and editors
+# ============================================================
+# Imprint / photo_sort
+# Python + C++ + CMake + Rust + Tauri + Vue
+# ============================================================
+
+
+# ============================================================
+# 1. Operating systems
+# ============================================================
+
 .DS_Store
 .AppleDouble
 .LSOverride
 ._*
+
 Thumbs.db
 Thumbs.db:encryptable
 ehthumbs.db
 ehthumbs_vista.db
 *.stackdump
 [Dd]esktop.ini
+
+
+# ============================================================
+# 2. Editors and IDEs
+# ============================================================
+
+.vscode/
+.idea/
+
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
+
 *~
 *.swp
 *.swo
-.vscode/
-.idea/
 
-# Python caches, environments, and packaging output
+
+# ============================================================
+# 3. Python caches and environments
+# ============================================================
+
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-*.dylib
-*.dll
+
 .Python
+
 .env
+.env.*
+!.env.example
+!.env.sample
+
 .venv/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
-build/
-develop-eggs/
-dist/
-/dist-python/
-/tauri-frontend/dist-python/
-downloads/
-eggs/
+
+*.egg-info/
+*.egg
 .eggs/
+eggs/
+
+develop-eggs/
+.installed.cfg
+MANIFEST
+
+pip-wheel-metadata/
+share/python-wheels/
+
+
+# ============================================================
+# 4. Python packaging
+# ============================================================
+
+build/
+dist/
+develop-eggs/
+downloads/
 lib/
 lib64/
 parts/
 sdist/
 var/
 wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
-# Rust, Tauri, and frontend build output
+/dist-python/
+/tauri-frontend/dist-python/
+
+
+# ============================================================
+# 5. C++ / CMake build artifacts
+# ============================================================
+
+# Object files
+*.o
+*.obj
+*.lo
+
+# Static libraries
+*.a
+*.lib
+
+# Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Executables and debug symbols
+*.exe
+*.out
+*.dSYM/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+compile_commands.json
+
+cmake-build-*/
+cmake-build-*/
+/native-renderer/build/
+/native-renderer/build-*/
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# Generated Makefiles in build directories are already
+# covered by build/ and cmake-build-* rules.
+
+
+# ============================================================
+# 6. Rust / Tauri
+# ============================================================
+
 **/target/
 **/gen/schemas/
 gen/
+
+# Keep Cargo.lock tracked for reproducible application builds.
+
+
+# ============================================================
+# 7. Node.js / Vue / frontend
+# ============================================================
+
 **/node_modules/
+
 tauri-frontend/dist/
 tauri-frontend/dist-ssr/
+
 *.local
+
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Test and analysis artifacts
+.npm/
+.pnpm-store/
+.yarn/cache/
+
+# Keep package-lock.json / pnpm-lock.yaml tracked.
+
+
+# ============================================================
+# 8. Test caches and coverage
+# ============================================================
+
 .pytest_cache/
+
 .coverage
 .coverage.*
 htmlcov/
+
 .tox/
 .nox/
+
 .mypy_cache/
 .ruff_cache/
 .pyre/
 .pytype/
-**/test/
-**/tests/
-**/__tests__/
-**/test_*
-**/Test*.*
-**/*_test.*
-**/*_tests.*
-**/*Test.*
-**/*Tests.*
-**/*.test.*
-**/*.spec.*
-/artifacts/acr_blackbox_fixtures/
-# Local Camera Raw investigation evidence (for example, lcr3520-*.json)
+
+.hypothesis/
+
+coverage/
+coverage.xml
+junit.xml
+
+# IMPORTANT:
+# Do NOT ignore tests/, test_*.py, *_test.cpp, or *.spec.ts.
+# Test source code should be version controlled.
+
+
+# ============================================================
+# 9. Logs and temporary files
+# ============================================================
+
+*.log
+*.tmp
+*.temp
+
+*.prof
+*.profraw
+*.profdata
+
+*.trace
+
+*.pid
+*.pid.lock
+
+*.bak
+*.orig
+*.rej
+
+# Runtime leftovers
+.reasonix
+
+# ONNX Runtime telemetry store
+:memory:.ses
+
+
+# ============================================================
+# 10. ACR reverse-engineering research
+# ============================================================
+
+# Keep:
+# research/acr/reports/*.md
+# research/acr/reports/evidence/
+# research/acr/tools/*.py
+# native-renderer/src/acr_*.cpp
+# native-renderer/src/acr_*.hpp
+# native-renderer/tools/*.cpp
+#
+# These files contain source code, recovered formulas,
+# reverse-engineering evidence, and validation programs.
+
+
+# Temporary ACR research directories
+/research/acr/tmp/
+/research/acr/temp/
+/research/acr/cache/
+/research/acr/outputs/
+/research/acr/test-output/
+/research/acr/test-outputs/
+
+# Local Ghidra databases and caches
+/research/acr/ghidra-project/
+/research/acr/ghidra-cache/
+
+# Ghidra project database files
+*.gpr
+*.rep/
+
+# Temporary Camera Raw investigation files
 /research/acr/reports/evidence/lcr*
 
-# Large model weights (except the small custom aesthetic model)
+# Keep structured validation evidence unless specifically
+# excluded by a more targeted rule.
+
+
+# ============================================================
+# 11. Local analysis and generated artifacts
+# ============================================================
+
+/artifacts/
+/qa/
+/test_images/
+
+# Existing local black-box fixture outputs
+/artifacts/acr_blackbox_fixtures/
+
+# Root-level temporary evidence
+/evidence/
+
+
+# ============================================================
+# 12. Large model weights
+# ============================================================
+
 *.pt
 *.onnx
+
 models/clip-vit-base-patch32/
 models/clip-vit-large-patch14/
+
+# Keep custom aesthetic model
 !models/aesthetic_mlp.pth
 !aesthetic_mlp.pth
 
-# PyInstaller specs (keep the app specs used by this project)
+
+# ============================================================
+# 13. PyInstaller
+# ============================================================
+
+# Ignore generated spec files by default
 *.spec
+
+# Keep application packaging specs
 !imprint.spec
 !photo_sort.spec
 !app_api.spec
 
-# Runtime leftovers
-.reasonix
-# ONNX Runtime may create this file on macOS when its telemetry store cannot be
-# opened from a sandboxed process.
-:memory:.ses
 
-# Local photos, review folders, and generated exports
-去朦胧输出/
-审查_连拍淘汰/
-审查_明显废片/
+# ============================================================
+# 14. Local photos / RAW files
+# ============================================================
+
 *.dng
 *.nef
 *.nrw
@@ -142,6 +339,23 @@ models/clip-vit-large-patch14/
 *.erf
 *.mef
 *.mos
-test_images/
-qa/
-artifacts/
+
+
+# ============================================================
+# 15. Local review / export directories
+# ============================================================
+
+去朦胧输出/
+审查_连拍淘汰/
+审查_明显废片/
+
+# Fontconfig generated cache
+.cache/
+*.cache-12
+
+
+# ============================================================
+# End of .gitignore
+# ============================================================
+# ACR reverse-engineering research (local only)
+/research/acr/

@@ -45,7 +45,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from burst_filter import BurstFilter, RawEvaluator
 from model_manager import (
@@ -156,7 +156,7 @@ _MAX_PREVIEW_GROUPS = 40
 # 去朦胧使用完全独立的会话、预览缓存和后台任务；会话中保存真实路径，HTTP
 # 接口只暴露随机 ID，避免把任意本地路径做成可读取的 GET 参数。
 _ENHANCE_SESSIONS: dict[str, dict[str, Any]] = {}
-_ENHANCE_PREVIEW_CACHE: dict[tuple, tuple[bytes, int, int, str, str, float, str]] = {}
+_ENHANCE_PREVIEW_CACHE: dict[tuple, tuple] = {}
 _MAX_ENHANCE_PREVIEW_CACHE_BYTES = 16 * 1024 * 1024
 _ENHANCE_THUMBNAIL_CACHE: dict[tuple[str, str, int], bytes] = {}
 _ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
@@ -229,6 +229,7 @@ app.add_middleware(
         "X-Dehaze-Nonlocal-Reason", "X-Auto-Exposure-EV",
         "X-Auto-Exposure-Reason", "Server-Timing", "X-Preview-Base-Cache",
         "X-Preview-Decode-Cache", "X-Preview-Camera-Cache",
+        "X-ACR-Color-Status",
     ],
 )
 
@@ -337,6 +338,46 @@ class EnhanceSessionRequest(BaseModel):
     input_dir: str = ""
 
 
+class AcrColorPreviewRequest(BaseModel):
+    enabled: bool = False
+    profile_tone: bool = True
+    hsl: list[float] = Field(default_factory=lambda: [0.0] * 25)
+    grading: list[float] = Field(default_factory=lambda: [0.0] * 12 + [50.0, 0.0])
+
+    @field_validator("hsl")
+    @classmethod
+    def validate_hsl(cls, values: list[float]) -> list[float]:
+        if len(values) != 25:
+            raise ValueError("ACR HSL 必须包含 25 个数值")
+        if not all(np.isfinite(value) for value in values):
+            raise ValueError("ACR HSL 参数必须是有限数值")
+        if any(value < -100 or value > 100 for value in values):
+            raise ValueError("ACR HSL 参数范围必须为 -100 到 100")
+        return values
+
+    @field_validator("grading")
+    @classmethod
+    def validate_grading(cls, values: list[float]) -> list[float]:
+        if len(values) != 14:
+            raise ValueError("ACR 颜色分级必须包含 14 个数值")
+        if not all(np.isfinite(value) for value in values):
+            raise ValueError("ACR 颜色分级参数必须是有限数值")
+        for hue_index in (0, 3, 6, 9):
+            if not 0 <= values[hue_index] <= 360:
+                raise ValueError("ACR 颜色分级色相范围必须为 0 到 360")
+        for saturation_index in (1, 4, 7, 10):
+            if not 0 <= values[saturation_index] <= 100:
+                raise ValueError("ACR 颜色分级饱和度范围必须为 0 到 100")
+        for luminance_index in (2, 5, 8, 11):
+            if not -100 <= values[luminance_index] <= 100:
+                raise ValueError("ACR 颜色分级亮度范围必须为 -100 到 100")
+        if not 0 <= values[12] <= 100:
+            raise ValueError("ACR 颜色分级混合范围必须为 0 到 100")
+        if not -100 <= values[13] <= 100:
+            raise ValueError("ACR 颜色分级平衡范围必须为 -100 到 100")
+        return values
+
+
 class EnhancePreviewRequest(BaseModel):
     session_id: str
     photo_id: str
@@ -349,6 +390,7 @@ class EnhancePreviewRequest(BaseModel):
     nonlocal_mode: Literal["off", "conservative", "strong"] = "off"
     algorithm: Literal["physical"] = "physical"
     basic_params: BasicParamsRequest = Field(default_factory=BasicParamsRequest)
+    acr_color: AcrColorPreviewRequest = Field(default_factory=AcrColorPreviewRequest)
     max_edge: int = Field(default=1800, ge=320, le=3000)
     preview_level: Literal[0, 1, 2] = 0
     full_resolution: bool = False
@@ -359,6 +401,34 @@ class EnhancePreviewRequest(BaseModel):
     basic_backend: Literal["python", "native"] | None = None
     ricoh_backend: Literal["python", "native"] = "python"
     ricoh_preset_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+def _effective_acr_color(req: EnhancePreviewRequest) -> dict[str, Any] | None:
+    if req.mode != "dehazed" or not req.acr_color.enabled:
+        return None
+    return req.acr_color.model_dump()
+
+
+def _acr_color_cache_identity(acr_color: Mapping[str, Any] | None) -> tuple | None:
+    if acr_color is None:
+        return None
+    return (
+        bool(acr_color.get("profile_tone", True)),
+        tuple(float(value) for value in acr_color.get("hsl", ())),
+        tuple(float(value) for value in acr_color.get("grading", ())),
+    )
+
+
+def _acr_color_preview_status(
+    acr_color: Mapping[str, Any] | None,
+    camera_profile_status: str,
+    camera_profile_backend: str,
+) -> str:
+    if acr_color is None:
+        return "off"
+    if camera_profile_status == "applied" and camera_profile_backend == "cpp_cpu_acr":
+        return "applied"
+    return "fallback"
 
 
 class _PreviewSuperseded(Exception):
@@ -1260,6 +1330,7 @@ def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
                           camera_cache_out: dict[str, str] | None = None,
                           camera_source_future: concurrent.futures.Future | None = None,
                           processed_needs_correction: bool = False,
+                          acr_color: Mapping[str, Any] | None = None,
                           ) -> tuple[np.ndarray, str, str]:
     """Render the native camera anchor before display quantization and EV clipping.
 
@@ -1415,6 +1486,7 @@ def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
         display = render_profile(
             camera_processed, neutral, profile, exposure_ev,
             backend=_camera_profile_render_backend(backend),
+            **({"acr_color": acr_color} if acr_color is not None else {}),
         )
         if preview_request is not None:
             _assert_preview_current(preview_request)
@@ -1720,12 +1792,14 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
             and _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY != full_export_identity):
         _clear_previous_full_resolution_decoded_source(req.session_id, req.photo_id)
         _clear_full_resolution_preview_caches()
+    effective_acr_color = _effective_acr_color(req)
     key = (*source_identity,
            DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
            LENS_PREVIEW_VERSION, tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
            req.auto_exposure, req.nonlocal_mode, req.color_manage_srgb, backend,
            PROFILE_PREVIEW_VERSION, profile.fingerprint if profile is not None else None,
            exposure_ev if profile is not None else 0.0,
+           _acr_color_cache_identity(effective_acr_color),
            req.ricoh_preset_id if req.mode == "dehazed" else None,
            req.ricoh_backend, BASIC_PREVIEW_VERSION)
     cached = _FULL_RESOLUTION_BASE_CACHE.get(key)
@@ -1776,6 +1850,8 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
                 display = render_profile(
                     camera_processed, neutral, profile, exposure_ev,
                     backend=_camera_profile_render_backend(backend),
+                    **({"acr_color": effective_acr_color}
+                       if effective_acr_color is not None else {}),
                 )
                 _assert_preview_current(req)
             except Exception as exc:
@@ -1871,7 +1947,8 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
                 stage_cache_key=stage_key, stage_status=preview_status,
                 camera_cache_out=camera_cache,
                 camera_source_future=camera_future,
-                processed_needs_correction=batch_correction)
+                processed_needs_correction=batch_correction,
+                acr_color=effective_acr_color)
             _assert_preview_current(req)
             preview_status += (profile_status, profile_backend,
                                camera_cache.get("stage", "fallback"))
@@ -2180,6 +2257,7 @@ def _cached_dehazed_display_preview(
     manual_exposure_ev: float = 0.0,
     ricoh_preset_id: str | None = None,
     ricoh_backend: str = "python",
+    acr_color: Mapping[str, Any] | None = None,
 ) -> np.ndarray:
     """Cache the styled, profile-rendered display base before remaining basics."""
     effective_nonlocal_mode = resolve_nonlocal_mode(nonlocal_mode)
@@ -2196,6 +2274,7 @@ def _cached_dehazed_display_preview(
         bool(color_manage_srgb),
         PROFILE_PREVIEW_VERSION, profile.fingerprint if profile is not None else None,
         manual_exposure_ev if profile is not None else 0.0,
+        _acr_color_cache_identity(acr_color),
         ricoh_preset_id, ricoh_backend, BASIC_PREVIEW_VERSION,
     )
     with _DISPLAY_PREVIEW_LOCK:
@@ -2268,6 +2347,7 @@ def _cached_dehazed_display_preview(
                 preview=True, backend=backend,
                 camera_source_future=camera_future,
                 processed_needs_correction=batch_correction,
+                acr_color=acr_color,
             )
             status += (profile_status, profile_backend)
             _set_preview_status(status_out, status)
@@ -2875,6 +2955,13 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
     if req.preview_cancel_only:
         return Response(status_code=204)
+    if (req.mode == "dehazed" and req.acr_color.enabled
+            and req.ricoh_preset_id is not None):
+        return JSONResponse(
+            status_code=422,
+            content={"error": "ACR 颜色实验目前不支持同时使用理光预设"},
+        )
+    effective_acr_color = _effective_acr_color(req)
     params = req.params.to_params()
     dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
     basic = req.basic_params.values()
@@ -2915,6 +3002,11 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         else:
             profile = resolve_profile(Path(path), {})
             _assert_preview_current(req)
+        if effective_acr_color is not None and profile is None:
+            return JSONResponse(
+                status_code=422,
+                content={"error": "ACR 颜色实验需要可用的相机配置文件"},
+            )
         adjustment_basic = dict(basic)
         if profile is not None:
             adjustment_basic["exposure"] = 0.0
@@ -2927,6 +3019,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                      effective_preset_id, render_mode, basic_mode, req.ricoh_backend,
                      bool(req.color_manage_srgb), PROFILE_PREVIEW_VERSION,
                      profile.fingerprint if profile is not None else None,
+                     _acr_color_cache_identity(effective_acr_color),
                      tuple(basic[key] for key in sorted(basic)))
     except Exception as exc:
         if isinstance(exc, _PreviewSuperseded):
@@ -2939,7 +3032,14 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             cached = _ENHANCE_PREVIEW_CACHE.get(cache_key)
         if cached is not None:
             (payload, width, height, nonlocal_status, nonlocal_reason,
-             auto_exposure_ev, auto_exposure_reason, camera_profile_status, camera_profile_backend) = cached
+             auto_exposure_ev, auto_exposure_reason, camera_profile_status,
+             camera_profile_backend) = cached[:9]
+            acr_color_status = (
+                cached[9] if len(cached) > 9 else
+                _acr_color_preview_status(
+                    effective_acr_color, camera_profile_status, camera_profile_backend,
+                )
+            )
             return Response(
                 content=payload,
                 media_type="image/jpeg",
@@ -2953,6 +3053,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                     "X-Auto-Exposure-Reason": auto_exposure_reason,
                     "X-Camera-Profile-Status": camera_profile_status,
                     "X-Camera-Profile-Backend": camera_profile_backend,
+                    "X-ACR-Color-Status": acr_color_status,
                 },
             )
     try:
@@ -2963,6 +3064,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
         preview_headers: dict[str, str] = {}
         camera_profile_status = "legacy"
         camera_profile_backend = "legacy"
+        acr_color_status = "off"
         camera_cache_status = "not-needed"
         if req.full_resolution:
             started = time.perf_counter()
@@ -3080,6 +3182,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 nonlocal_mode=req.nonlocal_mode,
                 status_out=status_out,
                 **({"profile": profile, "manual_exposure_ev": basic["exposure"]} if profile is not None else {}),
+                acr_color=effective_acr_color,
                 ricoh_preset_id=effective_preset_id,
                 ricoh_backend=req.ricoh_backend,
             )
@@ -3098,12 +3201,16 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 image, _, _ = _correct_enhanced_raw(image, metadata, Path(path), preview=True)
             width, height = metadata.width, metadata.height
             payload = _encode_preview(image, linear=getattr(metadata, "color_space", "") == "Linear sRGB")
+        acr_color_status = _acr_color_preview_status(
+            effective_acr_color, camera_profile_status, camera_profile_backend,
+        )
         if not req.full_resolution:
             with _ENHANCE_LOCK:
                 _insert_bounded_jpeg_preview(
                     _ENHANCE_PREVIEW_CACHE, cache_key,
                     (payload, width, height, nonlocal_status, nonlocal_reason,
-                     auto_exposure_ev, auto_exposure_reason, camera_profile_status, camera_profile_backend),
+                     auto_exposure_ev, auto_exposure_reason, camera_profile_status,
+                     camera_profile_backend, acr_color_status),
                     max_entries=128, max_bytes=_MAX_ENHANCE_PREVIEW_CACHE_BYTES,
                     payload_index=0,
                 )
@@ -3121,6 +3228,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 "X-Auto-Exposure-Reason": auto_exposure_reason,
                 "X-Camera-Profile-Status": camera_profile_status,
                 "X-Camera-Profile-Backend": camera_profile_backend,
+                "X-ACR-Color-Status": acr_color_status,
             },
         )
     except _PreviewSuperseded:

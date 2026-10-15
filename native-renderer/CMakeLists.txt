@@ -14,6 +14,33 @@ set(IMPRINT_RENDERER_SOURCES
     src/dense_kernels.cpp
     src/warp_kernels.cpp
     src/camera_profile_kernels.cpp
+    src/acr_color_kernels.cpp
+    src/acr_color_api.cpp
+    src/acr_profile_tone.cpp
+    src/acr_profile_tone_api.cpp
+    src/acr_negative_curve.cpp
+    src/acr_exposure.cpp
+    src/acr_exposure_api.cpp
+    src/acr_exposure_limit.cpp
+    src/acr_exposure_limit_api.cpp
+    src/acr_exposure_rgb.cpp
+    src/acr_exposure_rgb_prepare.cpp
+    src/acr_whites.cpp
+    src/acr_source_log.cpp
+    src/acr_camera_prepare.cpp
+    src/acr_camera_prepare_api.cpp
+    src/acr_colorspec.cpp
+    src/acr_colorspec_api.cpp
+    src/acr_display.cpp
+    src/acr_display_api.cpp
+    src/acr_flare.cpp
+    src/acr_flare_api.cpp
+    src/acr_highlight_stat.cpp
+    src/acr_tone_kernels.cpp
+    src/acr_tone_mapping.cpp
+    src/acr_camera_kernels.cpp
+    src/acr_tone_pixels.cpp
+    src/acr_tone_api.cpp
     src/backend_factory.cpp
 )
 set(IMPRINT_BACKEND_DEFINITIONS "")
@@ -69,10 +96,12 @@ target_compile_definitions(imprint_renderer PRIVATE IMPRINT_RENDERER_BUILD ${IMP
 target_link_libraries(imprint_renderer PRIVATE Threads::Threads)
 # Keep the dense CPU operators' float32 evaluation order aligned with NumPy.
 if(MSVC)
-    set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp
+    set_source_files_properties(src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_source_log.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+    set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp src/acr_color_kernels.cpp src/acr_profile_tone.cpp src/acr_negative_curve.cpp src/acr_exposure.cpp src/acr_camera_prepare.cpp src/acr_colorspec.cpp src/acr_display.cpp src/acr_flare.cpp src/acr_highlight_stat.cpp src/acr_tone_kernels.cpp src/acr_tone_mapping.cpp src/acr_camera_kernels.cpp src/acr_tone_pixels.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:strict")
 else()
-    set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp PROPERTIES
+    set_source_files_properties(src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_source_log.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+    set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp src/acr_color_kernels.cpp src/acr_profile_tone.cpp src/acr_negative_curve.cpp src/acr_exposure.cpp src/acr_camera_prepare.cpp src/acr_colorspec.cpp src/acr_display.cpp src/acr_flare.cpp src/acr_highlight_stat.cpp src/acr_tone_kernels.cpp src/acr_tone_mapping.cpp src/acr_camera_kernels.cpp src/acr_tone_pixels.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
     )
 endif()
@@ -101,6 +130,21 @@ elseif(CMAKE_CUDA_COMPILER)
 endif()
 
 if(BUILD_TESTING)
+    add_library(imprint_acr_color_test SHARED
+        tools/acr_color_bridge.cpp
+        src/acr_color_kernels.cpp
+        src/acr_tone_kernels.cpp
+        src/acr_tone_mapping.cpp
+        src/acr_camera_kernels.cpp
+        src/acr_tone_pixels.cpp
+    )
+    target_compile_features(imprint_acr_color_test PRIVATE cxx_std_17)
+    target_compile_definitions(imprint_acr_color_test PRIVATE IMPRINT_RENDERER_BUILD)
+    target_include_directories(imprint_acr_color_test PRIVATE include src)
+    add_executable(imprint_acr_color_api_test tools/acr_color_api_validation.cpp)
+    target_link_libraries(imprint_acr_color_api_test PRIVATE imprint_renderer)
+    add_test(NAME native_acr_color_abi_validation COMMAND imprint_acr_color_api_test)
+
     add_library(imprint_dehaze_reference_test SHARED
         tests/dehaze_reference_bridge.cpp
         src/dehaze_reference.cpp
