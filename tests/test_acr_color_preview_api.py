@@ -21,7 +21,7 @@ def acr_scene(tmp_path, monkeypatch):
         source_kind="raw", color_space="Linear sRGB", width=12, height=8, exif={},
     )
     profile = SimpleNamespace(fingerprint=("acr-profile", 1), name="ACR Test Profile")
-    calls = {"camera": 0, "transfer": 0, "render": []}
+    calls = {"camera": 0, "transfer": 0, "render": [], "resolver": []}
     backend_result = ["cpp_cpu_acr"]
 
     def read_image(_path, *, preview, **_kwargs):
@@ -45,8 +45,17 @@ def acr_scene(tmp_path, monkeypatch):
         calls["transfer"] += 1
         return processed.copy()
 
+    def resolve_acr_profile(*_args):
+        calls["resolver"].append("acr")
+        return profile
+
+    def resolve_profile(*_args):
+        calls["resolver"].append("legacy")
+        return profile
+
     monkeypatch.setattr(api, "read_image", read_image)
-    monkeypatch.setattr(api, "resolve_profile", lambda *_args: profile)
+    monkeypatch.setattr(api, "resolve_acr_profile", resolve_acr_profile)
+    monkeypatch.setattr(api, "resolve_profile", resolve_profile)
     monkeypatch.setattr(api, "_prepare_dehaze_input", lambda image, *_args, **_kwargs: np.full(
         image.shape, 0.2, dtype=np.float32,
     ))
@@ -156,6 +165,7 @@ def test_low_resolution_acr_color_is_forwarded_and_cache_isolated(acr_scene):
     assert repeated.content == second.content
     assert len(calls["render"]) == 2
     assert [call["hsl"][0] for call in calls["render"]] == [10.0, 20.0]
+    assert calls["resolver"] == ["acr", "acr", "acr"]
 
 
 def test_full_resolution_acr_color_reuses_only_pre_exposure_stage(acr_scene):
@@ -178,6 +188,17 @@ def test_full_resolution_acr_color_reuses_only_pre_exposure_stage(acr_scene):
     assert calls["transfer"] == 1
     assert len(calls["render"]) == 2
     assert [call["hsl"][0] for call in calls["render"]] == [10.0, 20.0]
+    assert calls["resolver"] == ["acr", "acr", "acr"]
+
+
+def test_default_dehazed_preview_uses_legacy_resolver(acr_scene):
+    client, _path, calls = acr_scene
+    response = _request(client)
+
+    assert response.status_code == 200
+    assert response.headers["x-camera-profile-status"] == "applied"
+    assert calls["resolver"] == ["legacy"]
+    assert calls["render"] == [None]
 
 
 @pytest.mark.parametrize("full", [False, True])
@@ -188,6 +209,7 @@ def test_original_mode_ignores_acr_color(acr_scene, full):
     assert response.status_code == 200
     assert response.headers["x-acr-color-status"] == "off"
     assert calls["render"] == [None]
+    assert calls["resolver"] == ["legacy"]
 
 
 def test_acr_color_rejects_ricoh_and_missing_profile(acr_scene, monkeypatch):
@@ -196,10 +218,15 @@ def test_acr_color_rejects_ricoh_and_missing_profile(acr_scene, monkeypatch):
     assert conflict.status_code == 422
     assert "不支持同时使用理光预设" in conflict.json()["error"]
 
-    monkeypatch.setattr(api, "resolve_profile", lambda *_args: None)
+    def no_acr_profile(*_args):
+        _calls["resolver"].append("acr")
+        return None
+
+    monkeypatch.setattr(api, "resolve_acr_profile", no_acr_profile)
     no_profile = _request(client, color=_color(10))
     assert no_profile.status_code == 422
     assert "需要可用的相机配置文件" in no_profile.json()["error"]
+    assert _calls["resolver"] == ["acr"]
 
 
 def test_acr_color_fallback_status_and_cors_exposure(acr_scene, monkeypatch):

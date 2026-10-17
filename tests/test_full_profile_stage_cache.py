@@ -30,6 +30,11 @@ def profile_scene(tmp_path, monkeypatch):
         calls["correct"] += 1
         return value.copy(), None, False
 
+    def correct_many(images, *_args, **_kwargs):
+        assert len(images) == 3
+        calls["correct"] += len(images)
+        return [(value.copy(), None) for value in images]
+
     def load_camera(_path, shape, preview):
         assert preview is False
         calls["camera"] += 1
@@ -67,6 +72,7 @@ def profile_scene(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api, "read_image", read_image)
     monkeypatch.setattr(api, "_correct_enhanced_raw", correct)
+    monkeypatch.setattr(api, "apply_lens_correction_many", correct_many)
     monkeypatch.setattr(api, "load_camera_rgb", load_camera)
     monkeypatch.setattr(api, "_render_dehaze", render_dehaze)
     monkeypatch.setattr(api, "transfer_enhancement", transfer)

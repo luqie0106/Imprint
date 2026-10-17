@@ -5,12 +5,16 @@
 namespace imprint::acr {
 
 struct HighlightStat {
+    // Raw population ranks floor((N-1)*p), used only to prepare the gate.
     double p1 = 0.0;
     double p99 = 0.0;
     double threshold = 0.0;
     double low = 0.0;
     std::size_t filtered_count = 0;
     double h = 0.0;
+    // Post-filter ranks floor(M*p), matching record indices 16/17.
+    double filtered_p1 = 0.0;
+    double filtered_p99 = 0.0;
 };
 
 enum class HighlightStatStatus : int {

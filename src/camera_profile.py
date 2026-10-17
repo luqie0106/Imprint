@@ -30,14 +30,17 @@ from native_renderer import (
     native_acr_white_temperature,
     native_acr_hsl_sdr, native_acr_grading_sdr, native_acr_profile_tone,
     native_acr_prepare_profile_camera, native_acr_camera_float,
-    native_acr_scale_sdr, native_acr_project_srgb,
+    native_acr_scale_sdr, native_acr_project_srgb, native_acr_profile_stage_sdr,
+    native_acr_prepare_huesatmap, native_acr_illuminant_temperatures,
 )
+from acr_profile_metadata import read_acr_profile_tags, read_embedded_acr_profile_tags
 from dng_writer import _embedded_profile_tags
 from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profile_dng
 
 
 PROFILE_PREVIEW_VERSION = "camera-profile-preview-v3-gpu-stages"
-PROFILE_PREVIEW_VERSION += "-acr-camera-v1"
+PROFILE_PREVIEW_VERSION += "-acr-camera-v1-look-bulk-sdr-cpp-v1"
+PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v3-single-illuminant"
 _ACR_PROFILE_WHITE_ENABLED = os.environ.get("IMPRINT_ACR_PROFILE_WHITE") == "1"
 if _ACR_PROFILE_WHITE_ENABLED:
     PROFILE_PREVIEW_VERSION += "-acr-white-cpp-v1"
@@ -74,10 +77,19 @@ class Profile:
     forward_matrix1: np.ndarray
     forward_matrix2: np.ndarray
     tone_curve: np.ndarray
-    look_table: np.ndarray
+    look_table: np.ndarray | None
     look_dims: tuple[int, int, int]
     look_encoding: int
     baseline_exposure_offset: float
+    acr_only: bool = False
+    has_color_matrix2: bool = True
+    has_forward1: bool = True
+    has_forward2: bool = True
+    hue_sat_map1: np.ndarray | None = None
+    hue_sat_map2: np.ndarray | None = None
+    hue_sat_dims: tuple[int, int, int] = (0, 0, 0)
+    hue_sat_encoding: int = 0
+    calibration_illuminants: tuple[int, int] = (17, 21)
 
 
 def _file_signature(path: Path) -> tuple[int, int, int, int] | None:
@@ -188,8 +200,49 @@ def _readonly(array: np.ndarray) -> np.ndarray:
     return result
 
 
-def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[Any, ...]) -> Profile:
+def _parse_acr_huesat_maps(tags: dict[int, Any]):
+    # The currently connected stage has no resolved multi-V lookup gain.
+    # V=1 ignores that gain and encoding in the recovered bulk kernel.
+    if 52537 in tags:
+        raise ValueError("three-illuminant HueSatMap is not supported")
+    present = {50937, 50938, 50939}.intersection(tags)
+    if not present:
+        return None, None, (0, 0, 0), 0
+    if not {50937, 50938}.issubset(tags):
+        raise ValueError("incomplete HueSatMap")
+    raw_dims = _require_values(tags, 50937, 3)
+    if int(tags[50937].kind) != 4 or not np.equal(raw_dims, np.floor(raw_dims)).all():
+        raise ValueError("invalid HueSatMap dimensions")
+    hue, saturation, value = (int(part) for part in raw_dims)
+    if hue < 1 or saturation < 2 or value != 1 or hue * saturation > 1_000_000:
+        raise ValueError("ACR preview currently requires a single-value HueSatMap")
+    tables = []
+    for code in (50938, 50939):
+        if code not in tags:
+            tables.append(None)
+            continue
+        if int(tags[code].kind) != 11:
+            raise ValueError("HueSatMap data must contain float32 triples")
+        data = _require_values(tags, code, hue * saturation * value * 3)
+        data = data.reshape(value, hue, saturation, 3).astype(np.float32)
+        if (not np.isfinite(data).all() or np.any(np.abs(data[..., 0]) > 360)
+                or np.any(data[..., 1:] < 0) or np.any(data[..., 1:] > 16)):
+            raise ValueError("HueSatMap contains unsupported values")
+        tables.append(_readonly(data))
+    encoding = 0  # Profile constructor 0129775c initializes offset +0x728 to 0.
+    if 51107 in tags:
+        raw_encoding = _require_values(tags, 51107, 1)
+        if int(tags[51107].kind) != 4 or raw_encoding[0] not in (0, 1):
+            raise ValueError("unsupported HueSatMap encoding")
+        encoding = int(raw_encoding[0])
+    return tables[0], tables[1], (hue, saturation, value), encoding
+
+
+def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[Any, ...],
+                   *, _acr_extended: bool = False) -> Profile:
     tags = _tag_map(tags_list)
+    if _acr_extended and {52529, 52530, 52531, 52532, 52535, 52537}.intersection(tags):
+        raise ValueError("three-illuminant profiles are not supported")
     name_tag = tags.get(50936)
     if name_tag is None or int(name_tag.kind) != 2:
         raise ValueError("profile name is missing")
@@ -197,19 +250,31 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
     if name != expected_name:
         raise ValueError("profile name does not match the selected camera profile")
 
-    # Camera matrices, ForwardMatrices and their illuminants must form the
-    # supported two-illuminant profile pair (D50 warm / D65 daylight).
+    # The experimental native path resolves fixed illuminant codes in C++.
+    # Code 255 needs an IlluminantData descriptor, which is not prepared here.
     illuminants = []
     for code in (50778, 50779):
+        if _acr_extended and code not in tags:
+            illuminants.append(0)
+            continue
         value = _require_values(tags, code, 1)
-        if int(value[0]) != value[0]:
+        if (int(value[0]) != value[0] or not 0 <= value[0] <= 65535
+                or (_acr_extended and int(tags[code].kind) not in (3, 4))):
             raise ValueError("invalid calibration illuminant")
         illuminants.append(int(value[0]))
-    if illuminants != [17, 21]:
+    if _acr_extended and 255 in illuminants:
+        raise ValueError("custom calibration illuminants require a descriptor")
+    if not _acr_extended and illuminants != [17, 21]:
         raise ValueError("only calibration illuminants 17 and 21 are supported")
 
     matrices = []
     for code in (50721, 50722, 50964, 50965):
+        if _acr_extended and code == 50722 and code not in tags:
+            matrices.append(_readonly(np.zeros((3, 3), dtype=np.float64)))
+            continue
+        if _acr_extended and code in (50964, 50965) and code not in tags:
+            matrices.append(_readonly(np.zeros((3, 3), dtype=np.float64)))
+            continue
         matrix = _require_values(tags, code, 9).reshape(3, 3)
         if abs(float(np.linalg.det(matrix))) < 1e-8:
             raise ValueError("profile matrix is singular")
@@ -218,7 +283,11 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
     _validate_identity_calibration(tags)
     if 50727 in tags and not np.allclose(_require_values(tags, 50727, 3), 1.0, rtol=0.0, atol=1e-6):
         raise ValueError("non-identity analog balance is not supported")
-    _validate_identity_huesat_maps(tags)
+    if _acr_extended:
+        hsm1, hsm2, hsm_dims, hsm_encoding = _parse_acr_huesat_maps(tags)
+    else:
+        _validate_identity_huesat_maps(tags)
+        hsm1, hsm2, hsm_dims, hsm_encoding = None, None, (0, 0, 0), 0
 
     curve = _require_values(tags, 50940, int(tags.get(50940).count) if tags.get(50940) else 0)
     if curve.size < 4 or curve.size % 2:
@@ -233,6 +302,40 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
             or np.any(curve < 0.0) or np.any(curve > 1.0)):
         raise ValueError("profile tone curve is not a finite monotonic unit curve")
 
+    if _acr_extended and 50981 not in tags and 50982 not in tags:
+        look, look_dims, look_encoding = None, (0, 0, 0), 0
+    else:
+        look, look_dims, look_encoding = _parse_profile_look(tags)
+    offset_tag = tags.get(51109)
+    if offset_tag is not None and int(offset_tag.count) != 1:
+        raise ValueError("invalid profile baseline exposure offset")
+    offset = float(_decode_tag(offset_tag)[0]) if offset_tag is not None else 0.0
+    if not math.isfinite(offset) or abs(offset) > 8.0:
+        raise ValueError("invalid profile baseline exposure offset")
+
+    return Profile(
+        name=name,
+        fingerprint=fingerprint,
+        color_matrix1=matrices[0],
+        color_matrix2=matrices[1],
+        forward_matrix1=matrices[2],
+        forward_matrix2=matrices[3],
+        tone_curve=_readonly(curve.astype(np.float32)),
+        look_table=None if look is None else _readonly(look),
+        look_dims=look_dims,
+        look_encoding=look_encoding,
+        baseline_exposure_offset=offset,
+        acr_only=_acr_extended,
+        has_color_matrix2=50722 in tags,
+        has_forward1=50964 in tags,
+        has_forward2=50965 in tags,
+        hue_sat_map1=hsm1, hue_sat_map2=hsm2,
+        hue_sat_dims=hsm_dims, hue_sat_encoding=hsm_encoding,
+        calibration_illuminants=tuple(illuminants),
+    )
+
+
+def _parse_profile_look(tags: dict[int, Any]):
     dims = _require_values(tags, 50981, 3)
     if not np.equal(dims, np.floor(dims)).all():
         raise ValueError("invalid profile look-table dimensions")
@@ -252,24 +355,7 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
     encoding = _require_values(tags, 51108, 1)
     if int(encoding[0]) != encoding[0] or int(encoding[0]) not in (0, 1):
         raise ValueError("unsupported profile look-table encoding")
-    offset_tag = tags.get(51109)
-    offset = float(_decode_tag(offset_tag)[0]) if offset_tag is not None else 0.0
-    if not math.isfinite(offset) or abs(offset) > 8.0:
-        raise ValueError("invalid profile baseline exposure offset")
-
-    return Profile(
-        name=name,
-        fingerprint=fingerprint,
-        color_matrix1=matrices[0],
-        color_matrix2=matrices[1],
-        forward_matrix1=matrices[2],
-        forward_matrix2=matrices[3],
-        tone_curve=_readonly(curve.astype(np.float32)),
-        look_table=_readonly(look),
-        look_dims=(hue, saturation, value),
-        look_encoding=int(encoding[0]),
-        baseline_exposure_offset=offset,
-    )
+    return look, (hue, saturation, value), int(encoding[0])
 
 
 def _fingerprint(
@@ -389,6 +475,7 @@ def _resolve_cached(
     source_signature: tuple[int, int, int, int],
     neighbor_signature: tuple[tuple[str, tuple[int, int, int, int]], ...],
     source_info_key: tuple[tuple[str, str], ...],
+    acr_extended: bool = False,
 ) -> Profile | None:
     source = Path(source_name)
     info = dict(source_info_key)
@@ -401,7 +488,7 @@ def _resolve_cached(
     combined = dict(info)
     combined.update(names)
     expected_name = _profile_name(combined)
-    if not expected_name:
+    if not expected_name and not (acr_extended and source.suffix.lower() == ".dng"):
         return None
 
     if source.suffix.lower() == ".dng":
@@ -415,10 +502,21 @@ def _resolve_cached(
     if reference_signature is None:
         return None
     try:
-        tags = _embedded_profile_tags(reference, expected_name)
+        if acr_extended and expected_name is None:
+            tags = read_embedded_acr_profile_tags(reference)
+            name_tag = next(tag for tag in tags if int(tag.code) == 50936)
+            expected_name = bytes(name_tag.data).rstrip(b"\0").decode("ascii", "strict")
+        else:
+            tags = (read_acr_profile_tags(reference, expected_name) if acr_extended
+                    else _embedded_profile_tags(reference, expected_name))
+        fingerprint = _fingerprint(
+            reference, reference_signature, tags, source_name,
+            source_signature, neighbor_signature,
+        )
+        if acr_extended:
+            fingerprint = ("acr-huesatmap-v3-single-illuminant", *fingerprint)
         return _parse_profile(
-            tags, expected_name,
-            _fingerprint(reference, reference_signature, tags, source_name, source_signature, neighbor_signature),
+            tags, expected_name, fingerprint, _acr_extended=acr_extended,
         )
     except (OSError, UnicodeError, ValueError, TypeError, OverflowError, np.linalg.LinAlgError):
         return None
@@ -426,6 +524,16 @@ def _resolve_cached(
 
 def resolve_profile(source_path: str | Path, source_info: dict[str, Any]) -> Profile | None:
     """Return only a validated, strictly matching adjacent or embedded profile."""
+    return _resolve_profile(source_path, source_info, False)
+
+
+def resolve_acr_profile(source_path: str | Path, source_info: dict[str, Any]) -> Profile | None:
+    """Resolve a profile for the explicit native ACR preview experiment only."""
+    return _resolve_profile(source_path, source_info, True)
+
+
+def _resolve_profile(source_path: str | Path, source_info: dict[str, Any],
+                     acr_extended: bool) -> Profile | None:
     source = Path(source_path).expanduser().resolve()
     if source.suffix.lower() not in RAW_SUFFIXES:
         return None
@@ -440,6 +548,8 @@ def resolve_profile(source_path: str | Path, source_info: dict[str, Any]) -> Pro
     ))
     neighbors = _directory_dng_signature(source)
     try:
+        if acr_extended:
+            return _resolve_cached(str(source), source_signature, neighbors, compact, True)
         return _resolve_cached(str(source), source_signature, neighbors, compact)
     except (OSError, ValueError, TypeError):
         return None
@@ -648,9 +758,13 @@ def _project_srgb(rgb: np.ndarray) -> np.ndarray:
     return np.clip(np.rint(encoded * 255.0), 0.0, 255.0).astype(np.uint8)
 
 
-def _acr_profile_camera_controls(profile: Profile, neutral: np.ndarray) -> np.ndarray:
+def _acr_profile_camera_controls(
+    profile: Profile, neutral: np.ndarray, endpoint_kelvin: np.ndarray | None = None,
+) -> np.ndarray:
     """Build the explicit supported-scene inputs for native ACR preparation."""
     identity = np.eye(3, dtype=np.float64).reshape(-1)
+    if endpoint_kelvin is None:
+        endpoint_kelvin = native_acr_illuminant_temperatures(profile.calibration_illuminants)
     controls = np.concatenate((
         np.ones(3, dtype=np.float64),  # AnalogBalance, identity in this subset.
         np.asarray(profile.color_matrix1, dtype=np.float64).reshape(-1),
@@ -659,7 +773,8 @@ def _acr_profile_camera_controls(profile: Profile, neutral: np.ndarray) -> np.nd
         identity,
         np.asarray(profile.forward_matrix1, dtype=np.float64).reshape(-1),
         np.asarray(profile.forward_matrix2, dtype=np.float64).reshape(-1),
-        np.asarray([2850.0, 6500.0, 0.3457, 0.3585, 1.0, 1.0, 1.0], dtype=np.float64),
+        np.asarray([*endpoint_kelvin, 0.3457, 0.3585, float(profile.has_color_matrix2),
+                    float(profile.has_forward1), float(profile.has_forward2)], dtype=np.float64),
         np.asarray(neutral, dtype=np.float64),  # Native preparation owns normalization/quantization.
         np.zeros(8, dtype=np.float64),  # mode 0, six calibration values, shadow tint 0.
     ))
@@ -685,20 +800,23 @@ def render_profile(
         raise ValueError("neutral must contain three finite positive values")
     if not math.isfinite(float(exposure_ev)) or abs(float(exposure_ev)) > 32:
         raise ValueError("exposure_ev must be finite and within a supported range")
+    if profile.acr_only and not (acr_color is not None and acr_color.get("enabled", False)):
+        raise ValueError("this profile requires the native ACR preview experiment")
     if acr_color is not None and acr_color.get("enabled", False):
         _backend_context.profile = "python"
         # This manual scene-camera experiment supports only identity calibration
         # and mode 0. Metadata preparation, camera pixels and display projection
-        # stay in the explicit native path; the user-facing look table remains
-        # the existing profile operation.
+        # stay in the explicit native path, including the recovered SDR
+        # profile LookTable operation (not a claim of complete ACR equivalence).
         hsl = np.asarray(acr_color.get("hsl", np.zeros(25)), dtype=np.float64)
         grading = np.asarray(acr_color.get("grading", [0.0] * 12 + [50.0, 0.0]), dtype=np.float64)
         if hsl.shape != (25,) or grading.shape != (14,):
             raise ValueError("ACR experiment requires HSL25 and Grading14 controls")
         if min(camera_u16.shape[:2]) <= 0:
             raise ValueError("ACR experiment requires a nonempty camera image")
+        endpoint_kelvin = native_acr_illuminant_temperatures(profile.calibration_illuminants)
         prepared = native_acr_prepare_profile_camera(
-            _acr_profile_camera_controls(profile, neutral_array),
+            _acr_profile_camera_controls(profile, neutral_array, endpoint_kelvin),
         )
         if prepared.shape != (65,) or not np.isfinite(prepared).all():
             raise ValueError("native ACR profile-camera preparation returned invalid output")
@@ -713,6 +831,12 @@ def render_profile(
         camera_controls = np.concatenate((
             gains[order[:2]], np.asarray([1.0, 1.0]), sorted_matrix,
         ))
+        hue_sat_table = None
+        if profile.hue_sat_map1 is not None:
+            hue_sat_table, _hue_sat_metadata = native_acr_prepare_huesatmap(
+                profile.hue_sat_map1, profile.hue_sat_map2, profile.hue_sat_dims,
+                prepared[2:4], endpoint_kelvin=endpoint_kelvin,
+            )
         exposure_scale = np.float32(
             2.0 ** (float(exposure_ev) + profile.baseline_exposure_offset)
         )
@@ -722,8 +846,14 @@ def render_profile(
             camera = camera_u16[start:end].astype(np.float32) / np.float32(65535.0)
             sorted_camera = np.ascontiguousarray(camera[..., order], dtype=np.float32)
             based = native_acr_camera_float(sorted_camera, camera_controls)
+            if hue_sat_table is not None:
+                based = native_acr_profile_stage_sdr(
+                    based, hue_sat_table, profile.hue_sat_dims, profile.hue_sat_encoding,
+                )
             exposed = native_acr_scale_sdr(based, exposure_scale)
-            looked = np.ascontiguousarray(_apply_look(exposed, profile), dtype=np.float32)
+            looked = (native_acr_profile_stage_sdr(
+                exposed, profile.look_table, profile.look_dims, profile.look_encoding,
+            ) if profile.look_table is not None else exposed)
             colored = native_acr_hsl_sdr(looked, hsl)
             if acr_color.get("profile_tone", True):
                 toned = native_acr_profile_tone(colored, profile.tone_curve)

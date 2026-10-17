@@ -76,6 +76,15 @@ typedef struct im_basic_params {
 IMPRINT_API im_status im_native_acr_white_temperature(
     double x, double y, double *output, size_t output_values);
 
+/* Recovered ACR fixed illuminant-code to Kelvin lookup (FUN_01297c78).
+   Exactly two uint32 codes are read and two doubles are written. Codes in
+   0..65535 map known values to Kelvin and unknown values to zero; 255 is
+   rejected because its descriptor-dependent path is not prepared. Input and
+   output must be aligned, valid, and non-overlapping. Failure leaves output
+   unchanged. */
+IMPRINT_API im_status im_native_acr_illuminant_temperatures(
+    const uint32_t *codes, size_t count, double *output, size_t output_count);
+
 /* Recovered modern SDR color stages on float32 linear ProPhoto RGB.
    These are individual CPU operators, not a complete Adobe rendering pipeline.
    HSL controls are 24 doubles: Hue[8], Saturation[8], Luminance[8], in
@@ -314,6 +323,53 @@ IMPRINT_API im_status im_native_acr_tone_prepared_sdr_mode_rgbf32(
     uint32_t width, uint32_t height, const float *guide_rgb,
     const float *tone_rgb, size_t samples, const double *controls,
     size_t control_count, float *destination, size_t destination_samples);
+
+/* Prepared RGB-to-gray coefficient quantization, float CPU conversion and
+   source logarithm. The caller supplies the correct prepared RGB domain and
+   resolved RGB-to-gray matrix row (3 finite doubles in [-120,120]).
+   No transfer curve, extra output stages, stage selection, uint16 render/store
+   round trip or Pin is applied; this is not a complete RAW anchor renderer.
+   source_epsilon must be positive, <=2^-12 and nonzero after float conversion.
+   RGB is finite/nonnegative HxWx3; output is HxW log float32, <=2^26 pixels.
+   Six diagnostics: quantized uint16 R/G/B lanes, then their float R/G/B weights.
+   No output/input overlap is allowed. Both outputs are unchanged on failure. */
+IMPRINT_API im_status im_native_acr_gray_log_rgbf32(
+    uint32_t width, uint32_t height, const float *rgb, size_t rgb_samples,
+    const double *coefficients, size_t coefficient_count, double source_epsilon,
+    float *log_gray, size_t log_samples, double *diagnostics, size_t diagnostic_count);
+
+/* As above, with a prepared uint16 store/reload between gray conversion and
+   source log. The caller must have prepared/pinned pixels so the resulting
+   gray is in [0,1]; out-of-range gray is rejected rather than silently clipped.
+   dither is 0 or 1; origin_x/y give the absolute phase in the 128x128 tile.
+   The deterministic recovered tile is generated in C++. Reload uses one float
+   reciprocal of 65535 and a float multiply. Diagnostics remain the same six
+   coefficient lanes. Both outputs remain unchanged on failure.
+   Source/guide/EV preparation and upstream stage/Pin selection remain explicit
+   caller requirements, not inferred RAW or full normalized-render equivalence. */
+IMPRINT_API im_status im_native_acr_gray_u16_log_rgbf32(
+    uint32_t width, uint32_t height, const float *rgb, size_t rgb_samples,
+    const double *coefficients, size_t coefficient_count, double source_epsilon,
+    int32_t origin_x, int32_t origin_y, uint32_t dither,
+    float *log_gray, size_t log_samples, double *diagnostics, size_t diagnostic_count);
+
+/* Prepared SDR exposure/Whites from a separate normalized post-tone log
+   anchor. The caller supplies its correct pixel domain and stage selection.
+   No local masks/calibration/optional color tables are implemented here.
+   Seven controls: context98,contextA0,amount58,grayDiffB8,WhitesEV80,
+   source epsilon (0..2^-12), final pixel epsilon (0..2^-16); both >0.
+   The first four controls are in [-120,120], WhitesEV in [-2,2].
+   Ten diagnostics: filtered1%,filtered99%,high99.99%,population,
+   splitA,splitB,LUT_EV,remainderEV,positiveGain,whiteClipSquared.
+   RGB is nonnegative finite float32; anchor is finite float32 log pixels.
+   RGB pixel and anchor sample counts are nonzero and at most 2^26 each.
+   Exact RGB in-place is allowed. All other output/input overlap is rejected.
+   Both outputs remain unchanged on failure. */
+IMPRINT_API im_status im_native_acr_exposure_from_anchor_rgbf32(
+    uint32_t width, uint32_t height, const float *rgb, size_t samples,
+    const float *anchor_log, size_t anchor_samples,
+    const double *controls, size_t control_count,
+    float *output, size_t output_samples, double *diagnostics, size_t diagnostic_count);
 
 /* Apply the eight basic preview controls to interleaved RGB8 or RGB16 input.
    Sample counts must equal width*height*3. Parameters are validated before
@@ -584,6 +640,69 @@ IMPRINT_API im_status im_native_relief_transmission(uint32_t width, uint32_t hei
     const float *source, size_t source_values, const float *relief, size_t relief_count,
     const float *airlight_rgb, float base, float knee, float initial_t,
     float *destination, size_t destination_count);
+
+/* Existing Imprint profile LookTable operation only, not a complete recovered
+   ACR Profile implementation. RGB is finite float32 in [0,1]. Table layout is
+   [value,hue,saturation,channel], encoding 0=linear or 1=sRGB value. No aliases
+   with destination are allowed; destination remains unchanged on failure. */
+IMPRINT_API im_status im_native_profile_look_rgbf32(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *look_table, size_t look_values, uint32_t hue_count,
+    uint32_t saturation_count, uint32_t value_count, uint32_t look_encoding,
+    float *destination, size_t destination_values);
+
+/* Recovered ACR prepared single-map helper (012ebae4). Table layout
+   is [value,hue,saturation,channel], with hue>=1, saturation>=2, value>=1.
+   RGB is finite float32 in [0,1]; encoding is 0=linear or 1=sRGB value-axis
+   resources prepared in C++ (skipped for a single value layer). At most 2^26
+   pixels and 1,000,000 modifier triples; hue shifts are in [-360,360] degrees,
+   saturation/value multipliers in [0,16], all finite. This is one selected stage, not full RAW/Profile
+   preparation, HDR or Adobe runtime equivalence. No output/input aliases are
+   allowed; destination is unchanged on failure. Counts are float elements. */
+IMPRINT_API im_status im_native_acr_profile_look_rgbf32(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *look_table, size_t look_values, uint32_t hue_count,
+    uint32_t saturation_count, uint32_t value_count, uint32_t look_encoding,
+    float *destination, size_t destination_values);
+
+/* Baseline bulk CPU Profile/LookTable stage (00885b38 resource preparation;
+   0135f574/0135f8f8), explicitly SDR with overrange disabled. Uses sector-scaled
+   padded map entries and fast float encoding curves. Same map/RGB/count bounds
+   as the helper above. lookup_gain [0,65536], amount [0,2], both finite;
+   a single value layer ignores encoding and lookup_gain. No output aliases;
+   destination remains unchanged on failure. Does not infer metadata, HDR,
+   or the live Adobe SIMD dispatch. Counts are float elements. */
+IMPRINT_API im_status im_native_acr_profile_stage_sdr_rgbf32(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *look_table, size_t look_values, uint32_t hue_count,
+    uint32_t saturation_count, uint32_t value_count, uint32_t look_encoding,
+    double lookup_gain, double amount,
+    float *destination, size_t destination_values);
+
+/* Prepare the recovered single/two-illuminant HueSatMap resource. Controls4
+   contains white x,y and endpoint kelvin 1,2; metadata3 receives projected
+   temperature,tint,first-table weight. A missing second table is null/0.
+   Nonpositive/equal endpoints or a single map copy the first table and emit
+   metadata [0,0,1]. Counts are float values; layout is [V,H,S,3]. No outputs
+   may overlap inputs or each other; both outputs remain unchanged on failure.
+   This does not perform metadata loading, three-illuminant choice, or pixels. */
+IMPRINT_API im_status im_native_acr_prepare_huesatmap(
+    const float *first, size_t first_values,
+    const float *second, size_t second_values,
+    uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+    const double *controls, size_t control_count,
+    float *output, size_t output_values,
+    double *metadata, size_t metadata_count);
+
+/* Resolve 0088ca08 and its caller's reciprocal using explicit prepared state.
+   Controls3: source+680 scale, context+20 scale, context+28 EV. Output2:
+   source gain and HSM lookup gain. The exact uint32 process-version predicate
+   selects the legacy scale or modern exp2 branch; this API does not read or
+   infer metadata. Both gains must be finite and positive. Exact counts,
+   aligned non-overlapping buffers; failure leaves output unchanged. */
+IMPRINT_API im_status im_native_acr_prepare_huesatmap_gain(
+    uint32_t process_version, const double *controls, size_t control_count,
+    double *output, size_t output_count);
 
 /* Camera profile render. constants22 is camera-to-ProPhoto row-major 3x3,
    white RGB, exposure gain, then ProPhoto-to-sRGB row-major 3x3. look_table

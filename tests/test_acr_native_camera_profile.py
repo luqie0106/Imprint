@@ -10,6 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import camera_profile as cp
 
 
+@pytest.fixture(autouse=True)
+def _mock_native_illuminants(monkeypatch):
+    def resolve(codes):
+        assert tuple(codes) == (17, 21)
+        return np.asarray([2850.0, 6500.0], dtype=np.float64)
+    monkeypatch.setattr(cp, "native_acr_illuminant_temperatures", resolve)
+
+
 def _profile() -> cp.Profile:
     identity = np.eye(3, dtype=np.float64)
     curve = np.asarray([[0.0, 0.0], [1.0, 1.0]], dtype=np.float64)
@@ -58,7 +66,10 @@ def test_enabled_experiment_uses_native_camera_pipeline_and_explicit_controls(mo
         event_order.append("scale")
         return rgb * np.float32(2.0)
 
-    def look(rgb, _profile):
+    def look(rgb, table, dims, encoding):
+        assert table is profile.look_table
+        assert dims == profile.look_dims
+        assert encoding == profile.look_encoding
         observed["look"].append(rgb.copy())
         event_order.append("look")
         return rgb + np.float32(0.01)
@@ -84,10 +95,15 @@ def test_enabled_experiment_uses_native_camera_pipeline_and_explicit_controls(mo
         return np.full(rgb.shape, 91, dtype=np.uint8)
 
     monkeypatch.setattr(cp, "_camera_transform", lambda *_args: pytest.fail("legacy camera transform used"))
+    monkeypatch.setattr(cp, "_apply_look", lambda *_args: pytest.fail("Python profile LookTable used"))
+    monkeypatch.setattr(cp, "native_profile_look", lambda *_args: pytest.fail(
+        "compatibility profile LookTable used",
+    ), raising=False)
+    monkeypatch.setattr(cp, "native_acr_profile_look", lambda *_args: pytest.fail("single-map helper used"), raising=False)
     monkeypatch.setattr(cp, "native_acr_prepare_profile_camera", prepare)
     monkeypatch.setattr(cp, "native_acr_camera_float", camera_float)
     monkeypatch.setattr(cp, "native_acr_scale_sdr", scale)
-    monkeypatch.setattr(cp, "_apply_look", look)
+    monkeypatch.setattr(cp, "native_acr_profile_stage_sdr", look)
     monkeypatch.setattr(cp, "native_acr_hsl_sdr", hsl)
     monkeypatch.setattr(cp, "native_acr_profile_tone", tone)
     monkeypatch.setattr(cp, "native_acr_grading_sdr", grading)
@@ -168,7 +184,7 @@ def test_profile_tone_checkbox_false_keeps_legacy_tone_stage(monkeypatch):
     monkeypatch.setattr(cp, "native_acr_prepare_profile_camera", lambda _controls: _prepared_camera())
     monkeypatch.setattr(cp, "native_acr_camera_float", lambda rgb, _controls: rgb.copy())
     monkeypatch.setattr(cp, "native_acr_scale_sdr", lambda rgb, _gain: rgb.copy())
-    monkeypatch.setattr(cp, "_apply_look", lambda rgb, _profile: rgb.copy())
+    monkeypatch.setattr(cp, "native_acr_profile_stage_sdr", lambda rgb, *_args: rgb.copy())
     monkeypatch.setattr(cp, "native_acr_hsl_sdr", lambda rgb, _controls: rgb.copy())
     monkeypatch.setattr(cp, "_apply_tone", lambda rgb, _curve: calls.append("legacy-tone") or rgb.copy())
     monkeypatch.setattr(cp, "native_acr_profile_tone", lambda *_args, **_kwargs: pytest.fail(
@@ -225,6 +241,8 @@ def test_disabled_experiment_keeps_legacy_python_profile_path(monkeypatch):
     monkeypatch.setattr(cp, "native_acr_camera_float", native_unexpected)
     monkeypatch.setattr(cp, "native_acr_scale_sdr", native_unexpected)
     monkeypatch.setattr(cp, "native_acr_project_srgb", native_unexpected)
+    monkeypatch.setattr(cp, "native_profile_look", native_unexpected, raising=False)
+    monkeypatch.setattr(cp, "native_acr_profile_stage_sdr", native_unexpected)
 
     output = cp.render_profile(camera, (1.0, 1.0, 1.0), profile, exposure_ev=0.0)
 

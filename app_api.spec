@@ -112,6 +112,7 @@ a = Analysis(
         'dehaze_nonlocal',
         'dehaze_xmp',
         'camera_profile',
+        'acr_profile_metadata',
         'dehaze_gpu',
         'native_renderer',
         'native_dense',

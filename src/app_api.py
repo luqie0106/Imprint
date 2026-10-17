@@ -74,7 +74,7 @@ from native_renderer import (
 from native_sort import get_native_sort_status
 from dng_writer import write_enhanced_dng, write_linear_dng
 from camera_profile import (
-    PROFILE_PREVIEW_VERSION, resolve_profile, load_camera_rgb,
+    PROFILE_PREVIEW_VERSION, resolve_profile, resolve_acr_profile, load_camera_rgb,
     transfer_enhancement, render_profile, get_last_profile_backend,
     clear_camera_profile_gpu_cache,
 )
@@ -2975,6 +2975,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     try:
         _assert_preview_current(req)
+        profile_resolver = resolve_acr_profile if effective_acr_color is not None else resolve_profile
         should_prepare_concurrently = False
         if not req.full_resolution and req.mode == "dehazed":
             processing_key = _processing_preview_cache_key(
@@ -2984,7 +2985,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 should_prepare_concurrently = processing_key not in _PROCESSING_PREVIEW_CACHE
         if should_prepare_concurrently:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                profile_future = executor.submit(resolve_profile, Path(path), {})
+                profile_future = executor.submit(profile_resolver, Path(path), {})
                 try:
                     _cached_processing_preview(
                         req.session_id, req.photo_id, Path(path), req.max_edge,
@@ -3000,7 +3001,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 profile = profile_future.result()
                 _assert_preview_current(req)
         else:
-            profile = resolve_profile(Path(path), {})
+            profile = profile_resolver(Path(path), {})
             _assert_preview_current(req)
         if effective_acr_color is not None and profile is None:
             return JSONResponse(

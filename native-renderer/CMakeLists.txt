@@ -16,7 +16,17 @@ set(IMPRINT_RENDERER_SOURCES
     src/camera_profile_kernels.cpp
     src/acr_color_kernels.cpp
     src/acr_color_api.cpp
+    src/acr_illuminant.cpp
+    src/acr_illuminant_api.cpp
     src/acr_profile_tone.cpp
+    src/acr_profile_table.cpp
+    src/acr_profile_stage.cpp
+    src/acr_profile_table_blend.cpp
+    src/acr_huesatmap_prepare.cpp
+    src/acr_huesatmap_prepare_api.cpp
+    src/acr_huesatmap_gain_api.cpp
+    src/acr_profile_encoding.cpp
+    src/acr_profile_look_api.cpp
     src/acr_profile_tone_api.cpp
     src/acr_negative_curve.cpp
     src/acr_exposure.cpp
@@ -26,7 +36,16 @@ set(IMPRINT_RENDERER_SOURCES
     src/acr_exposure_rgb.cpp
     src/acr_exposure_rgb_prepare.cpp
     src/acr_whites.cpp
+    src/acr_exposure_anchor_api.cpp
     src/acr_source_log.cpp
+    src/acr_gray.cpp
+    src/acr_anchor_geometry.cpp
+    src/acr_resample_coefficients.cpp
+    src/acr_resample_row.cpp
+    src/acr_resample_vertical.cpp
+    src/acr_resample_separable.cpp
+    src/acr_gray_log_api.cpp
+    src/acr_u16_store.cpp
     src/acr_camera_prepare.cpp
     src/acr_camera_prepare_api.cpp
     src/acr_colorspec.cpp
@@ -96,11 +115,11 @@ target_compile_definitions(imprint_renderer PRIVATE IMPRINT_RENDERER_BUILD ${IMP
 target_link_libraries(imprint_renderer PRIVATE Threads::Threads)
 # Keep the dense CPU operators' float32 evaluation order aligned with NumPy.
 if(MSVC)
-    set_source_files_properties(src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_source_log.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+    set_source_files_properties(src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_exposure_anchor_api.cpp src/acr_source_log.cpp src/acr_gray.cpp src/acr_anchor_geometry.cpp src/acr_resample_coefficients.cpp src/acr_resample_row.cpp src/acr_resample_vertical.cpp src/acr_resample_separable.cpp src/acr_gray_log_api.cpp src/acr_u16_store.cpp src/acr_illuminant.cpp src/acr_illuminant_api.cpp src/acr_profile_table.cpp src/acr_profile_stage.cpp src/acr_profile_table_blend.cpp src/acr_huesatmap_prepare.cpp src/acr_huesatmap_prepare_api.cpp src/acr_huesatmap_gain_api.cpp src/acr_profile_encoding.cpp src/acr_profile_look_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp src/acr_color_kernels.cpp src/acr_profile_tone.cpp src/acr_negative_curve.cpp src/acr_exposure.cpp src/acr_camera_prepare.cpp src/acr_colorspec.cpp src/acr_display.cpp src/acr_flare.cpp src/acr_highlight_stat.cpp src/acr_tone_kernels.cpp src/acr_tone_mapping.cpp src/acr_camera_kernels.cpp src/acr_tone_pixels.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:strict")
 else()
-    set_source_files_properties(src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_source_log.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+    set_source_files_properties(src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_exposure_anchor_api.cpp src/acr_source_log.cpp src/acr_gray.cpp src/acr_anchor_geometry.cpp src/acr_resample_coefficients.cpp src/acr_resample_row.cpp src/acr_resample_vertical.cpp src/acr_resample_separable.cpp src/acr_gray_log_api.cpp src/acr_u16_store.cpp src/acr_illuminant.cpp src/acr_illuminant_api.cpp src/acr_profile_table.cpp src/acr_profile_stage.cpp src/acr_profile_table_blend.cpp src/acr_huesatmap_prepare.cpp src/acr_huesatmap_prepare_api.cpp src/acr_huesatmap_gain_api.cpp src/acr_profile_encoding.cpp src/acr_profile_look_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp src/acr_color_kernels.cpp src/acr_profile_tone.cpp src/acr_negative_curve.cpp src/acr_exposure.cpp src/acr_camera_prepare.cpp src/acr_colorspec.cpp src/acr_display.cpp src/acr_flare.cpp src/acr_highlight_stat.cpp src/acr_tone_kernels.cpp src/acr_tone_mapping.cpp src/acr_camera_kernels.cpp src/acr_tone_pixels.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
     )

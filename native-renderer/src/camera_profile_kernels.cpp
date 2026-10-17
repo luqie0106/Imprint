@@ -164,15 +164,15 @@ Hsv rgb_to_hsv_cv(float r, float g, float b) {
     const float difference = value - minimum;
     const float saturation = difference / (std::abs(value) + kFloatEpsilon);
     float hue = 0.0f;
-    if (difference > kFloatEpsilon) {
+    if (difference > 0.0f) {
+        const float hue_scale = 60.0f / (difference + kFloatEpsilon);
         if (value == r) {
-            hue = g - b;
+            hue = (g - b) * hue_scale;
         } else if (value == g) {
-            hue = (b - r) + 2.0f * difference;
+            hue = (b - r) * hue_scale + 120.0f;
         } else {
-            hue = (r - g) + 4.0f * difference;
+            hue = (r - g) * hue_scale + 240.0f;
         }
-        hue = hue * (60.0f / difference);
         if (hue < 0.0f) hue += 360.0f;
     }
     return {hue, saturation, value};
@@ -217,7 +217,8 @@ void apply_look(float *r, float *g, float *b, const float *table,
     const float value_coord = clamp_float(encoded_value, 0.0f, 1.0f) *
         static_cast<float>(value_count - 1);
 
-    const uint32_t h0 = static_cast<uint32_t>(std::floor(hue_coord));
+    const uint32_t hue_floor = static_cast<uint32_t>(std::floor(hue_coord));
+    const uint32_t h0 = hue_floor % hue_count;
     const uint32_t h1 = (h0 + 1u) % hue_count;
     const uint32_t s_floor = static_cast<uint32_t>(std::floor(saturation_coord));
     const uint32_t v_floor = static_cast<uint32_t>(std::floor(value_coord));
@@ -226,7 +227,7 @@ void apply_look(float *r, float *g, float *b, const float *table,
     // NumPy's mixed float32/int32 subtraction promotes the coordinates to
     // float64 at this point; each weighted table term is rounded back to f32
     // before it is added to the float32 accumulator.
-    const double hf = static_cast<double>(hue_coord) - static_cast<double>(h0);
+    const double hf = static_cast<double>(hue_coord) - static_cast<double>(hue_floor);
     const double sf = static_cast<double>(saturation_coord) - static_cast<double>(s0);
     const double vf = static_cast<double>(value_coord) - static_cast<double>(v0);
     float mods[3] = {0.0f, 0.0f, 0.0f};
@@ -329,6 +330,55 @@ bool disjoint_from_destination(const void *destination, size_t destination_bytes
 }
 
 } // namespace
+
+extern "C" IMPRINT_API im_status im_native_profile_look_rgbf32(
+    uint32_t width, uint32_t height, const float *source, size_t source_values,
+    const float *look_table, size_t look_values, uint32_t hue_count,
+    uint32_t saturation_count, uint32_t value_count, uint32_t look_encoding,
+    float *destination, size_t destination_values) {
+    try {
+        size_t pixels = 0, values = 0, rgb_bytes = 0, look_bytes = 0;
+        if (!source || !look_table || !destination ||
+            !image_extent(width, height, &pixels, &values) ||
+            source_values != values || destination_values != values ||
+            hue_count < 1 || hue_count > 1000000 ||
+            saturation_count < 2 || saturation_count > 1000000 ||
+            value_count < 2 || value_count > 1000000 || look_encoding > 1)
+            return IM_STATUS_INVALID_ARGUMENT;
+        const uint64_t entries = static_cast<uint64_t>(hue_count) * saturation_count * value_count;
+        if (entries > 1000000 || entries * 3 != look_values ||
+            !byte_length<float>(values, &rgb_bytes) ||
+            !byte_length<float>(look_values, &look_bytes) ||
+            !disjoint_from_destination(destination, rgb_bytes, source, rgb_bytes) ||
+            !disjoint_from_destination(destination, rgb_bytes, look_table, look_bytes))
+            return IM_STATUS_INVALID_ARGUMENT;
+        const auto aligned = [](const void *p) {
+            return reinterpret_cast<uintptr_t>(p) % alignof(float) == 0;
+        };
+        if (!aligned(source) || !aligned(look_table) || !aligned(destination))
+            return IM_STATUS_INVALID_ARGUMENT;
+        for (size_t i = 0; i < values; ++i)
+            if (!std::isfinite(source[i]) || source[i] < 0 || source[i] > 1)
+                return IM_STATUS_INVALID_ARGUMENT;
+        for (size_t i = 0; i < look_values; i += 3)
+            if (!std::isfinite(look_table[i]) || std::abs(look_table[i]) > 360 ||
+                !std::isfinite(look_table[i + 1]) || look_table[i + 1] < 0 || look_table[i + 1] > 16 ||
+                !std::isfinite(look_table[i + 2]) || look_table[i + 2] < 0 || look_table[i + 2] > 16)
+                return IM_STATUS_INVALID_ARGUMENT;
+        std::vector<float> result(values);
+        const bool completed = parallel_for(pixels, [&](size_t pixel) {
+            const size_t at = pixel * 3;
+            float r = source[at], g = source[at + 1], b = source[at + 2];
+            apply_look(&r, &g, &b, look_table, hue_count, saturation_count, value_count, look_encoding);
+            result[at] = r; result[at + 1] = g; result[at + 2] = b;
+        });
+        if (!completed) return IM_STATUS_RUNTIME_ERROR;
+        std::copy(result.begin(), result.end(), destination);
+        return IM_STATUS_OK;
+    } catch (...) {
+        return IM_STATUS_RUNTIME_ERROR;
+    }
+}
 
 extern "C" IMPRINT_API im_status im_native_camera_profile_render_rgb16_to_rgb8(
     uint32_t width, uint32_t height, const uint16_t *camera_rgb,

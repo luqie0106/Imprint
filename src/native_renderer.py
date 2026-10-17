@@ -118,6 +118,168 @@ def clear_camera_profile_gpu_cache() -> None:
     clear_shared_allocator_cache()
 
 
+def _native_profile_look(
+    rgb: np.ndarray, look: np.ndarray, dims, encoding: int, *, recovered: bool,
+    bulk: bool = False, lookup_gain: float = 1.0, amount: float = 1.0,
+) -> np.ndarray:
+    import operator
+
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or max(rgb.shape[:2]) > 65535 or rgb.size > (1 << 29)):
+        raise ValueError("Profile look requires nonempty float32 HxWx3 RGB")
+    try:
+        if len(dims) != 3 or any(isinstance(v, (bool, np.bool_)) for v in dims):
+            raise ValueError("Profile look requires three integer dimensions")
+        hue, saturation, value = (operator.index(v) for v in dims)
+        if isinstance(encoding, (bool, np.bool_)):
+            raise ValueError("Profile look encoding must be 0 or 1")
+        mode = operator.index(encoding)
+    except (TypeError, OverflowError) as exc:
+        raise ValueError("Profile look dimensions and encoding must be integers") from exc
+    if (hue < 1 or saturation < 2 or value < (1 if recovered else 2)
+            or hue * saturation * value > 1000000
+            or mode not in (0, 1)):
+        raise ValueError("Profile look dimensions or encoding are outside the native domain")
+    if recovered and rgb.shape[0] * rgb.shape[1] > (1 << 26):
+        raise ValueError("ACR profile look input exceeds the prepared pixel limit")
+    if bulk:
+        try:
+            gain_value, amount_value = float(lookup_gain), float(amount)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("ACR bulk profile controls must be finite numbers") from exc
+        if (not math.isfinite(gain_value) or not 0 <= gain_value <= 65536
+                or not math.isfinite(amount_value) or not 0 <= amount_value <= 2):
+            raise ValueError("ACR bulk profile controls are outside the prepared domain")
+    table = np.ascontiguousarray(look, dtype=np.float32)
+    if table.shape != (value, hue, saturation, 3):
+        raise ValueError("Profile look table does not match its dimensions")
+    source = np.ascontiguousarray(rgb)
+    output = np.empty_like(source)
+    library, _ = _get_library()
+    symbol = "im_native_acr_profile_look_rgbf32" if recovered else "im_native_profile_look_rgbf32"
+    if bulk:
+        symbol = "im_native_acr_profile_stage_sdr_rgbf32"
+    function = getattr(library, symbol, None)
+    if function is None:
+        raise NativeRendererError("Native profile LookTable ABI is unavailable")
+    fp = ctypes.POINTER(ctypes.c_float)
+    argument_types = [ctypes.c_uint32, ctypes.c_uint32, fp, ctypes.c_size_t,
+                      fp, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32,
+                      ctypes.c_uint32, ctypes.c_uint32]
+    if bulk:
+        argument_types += [ctypes.c_double, ctypes.c_double]
+    function.argtypes = argument_types + [fp, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    arguments = [source.shape[1], source.shape[0], source.ctypes.data_as(fp), source.size,
+                 table.ctypes.data_as(fp), table.size, hue, saturation, value, mode]
+    if bulk:
+        arguments += [gain_value, amount_value]
+    status = function(*arguments, output.ctypes.data_as(fp), output.size)
+    if status == 1:
+        raise ValueError("Native profile LookTable rejected input or table")
+    if status:
+        raise NativeRendererError(f"Native profile LookTable failed (status {status})")
+    return output
+
+
+def native_profile_look(rgb: np.ndarray, look: np.ndarray, dims, encoding: int) -> np.ndarray:
+    """Apply the existing Imprint profile LookTable compatibility operation."""
+    return _native_profile_look(rgb, look, dims, encoding, recovered=False)
+
+
+def native_acr_profile_look(rgb: np.ndarray, look: np.ndarray, dims, encoding: int) -> np.ndarray:
+    """Apply the recovered single-map helper (012ebae4), with C++ resources."""
+    return _native_profile_look(rgb, look, dims, encoding, recovered=True)
+
+
+def native_acr_profile_stage_sdr(
+    rgb: np.ndarray, look: np.ndarray, dims, encoding: int, *,
+    lookup_gain: float = 1.0, amount: float = 1.0,
+) -> np.ndarray:
+    """Recovered baseline bulk SDR stage; all resource/pixel work is in C++."""
+    return _native_profile_look(rgb, look, dims, encoding, recovered=True,
+                               bulk=True, lookup_gain=lookup_gain, amount=amount)
+
+
+def native_acr_prepare_huesatmap(first, second, dims, white_xy, *,
+                                endpoint_kelvin=(2850.0, 6500.0)):
+    """Select/blend a prepared HueSatMap in C++; no Python-generated resource."""
+    import operator
+
+    try:
+        if len(dims) != 3 or any(isinstance(v, (bool, np.bool_)) for v in dims):
+            raise ValueError("HueSatMap requires three integer dimensions")
+        hue, saturation, value = (operator.index(v) for v in dims)
+    except (TypeError, OverflowError) as exc:
+        raise ValueError("HueSatMap dimensions must be integers") from exc
+    if hue < 1 or saturation < 2 or value < 1 or hue*saturation*value > 1_000_000:
+        raise ValueError("HueSatMap dimensions exceed the native domain")
+    shape = (value, hue, saturation, 3)
+    table1 = np.ascontiguousarray(first, dtype=np.float32)
+    table2 = None if second is None else np.ascontiguousarray(second, dtype=np.float32)
+    if table1.shape != shape or (table2 is not None and table2.shape != shape):
+        raise ValueError("HueSatMap data does not match its dimensions")
+    xy = np.asarray(white_xy, dtype=np.float64)
+    endpoints = np.asarray(endpoint_kelvin, dtype=np.float64)
+    if xy.shape != (2,) or endpoints.shape != (2,):
+        raise ValueError("HueSatMap requires white xy and two endpoint temperatures")
+    controls = np.ascontiguousarray(np.concatenate((xy, endpoints)), dtype=np.float64)
+    output = np.empty(shape, dtype=np.float32)
+    metadata = np.empty(3, dtype=np.float64)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_huesatmap", None)
+    if function is None:
+        raise NativeRendererError("Native HueSatMap preparation ABI is unavailable")
+    fp, dp = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_double)
+    function.argtypes = [fp, ctypes.c_size_t, fp, ctypes.c_size_t,
+                          ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+                          dp, ctypes.c_size_t, fp, ctypes.c_size_t, dp, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    status = function(table1.ctypes.data_as(fp), table1.size,
+        None if table2 is None else table2.ctypes.data_as(fp),
+        0 if table2 is None else table2.size, hue, saturation, value,
+        controls.ctypes.data_as(dp), controls.size,
+        output.ctypes.data_as(fp), output.size, metadata.ctypes.data_as(dp), metadata.size)
+    if status == 1:
+        raise ValueError("Native HueSatMap preparation rejected the inputs")
+    if status:
+        raise NativeRendererError(f"Native HueSatMap preparation failed (status {status})")
+    return output, metadata
+
+
+def native_acr_prepare_huesatmap_gain(process_version, controls):
+    """Resolve HSM gains from explicit prepared state; no metadata inference."""
+    import operator
+
+    try:
+        if isinstance(process_version, (bool, np.bool_)):
+            raise TypeError("boolean is not a process version")
+        version = operator.index(process_version)
+    except (TypeError, OverflowError) as exc:
+        raise ValueError("process_version must be uint32") from exc
+    if version < 0 or version > 0xffffffff:
+        raise ValueError("process_version must be uint32")
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (3,) or not np.isfinite(values).all():
+        raise ValueError("HSM gain requires three finite prepared controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_huesatmap_gain", None)
+    if function is None:
+        raise NativeRendererError("Native HSM gain preparation ABI is unavailable")
+    dp = ctypes.POINTER(ctypes.c_double)
+    function.argtypes = [ctypes.c_uint32, dp, ctypes.c_size_t, dp, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    output = np.empty(2, dtype=np.float64)
+    status = function(version, values.ctypes.data_as(dp), values.size,
+                      output.ctypes.data_as(dp), output.size)
+    if status == 1:
+        raise ValueError("Native HSM gain preparation rejected the inputs")
+    if status:
+        raise NativeRendererError(f"Native HSM gain preparation failed (status {status})")
+    return output
+
+
 def native_camera_profile(source, matrix, white, gain, look, dims, encoding, tone, projection):
     """Exact camera profile on Metal/D3D12, reusing an immutable source upload.
 
@@ -535,6 +697,47 @@ def _configure_library(library: ctypes.CDLL) -> None:
             ctypes.c_size_t, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
             ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
         exposure_limit_log.restype = ctypes.c_int
+    exposure_from_anchor = getattr(
+        library, "im_native_acr_exposure_from_anchor_rgbf32", None)
+    if exposure_from_anchor is not None:
+        float_pointer = ctypes.POINTER(ctypes.c_float)
+        double_pointer = ctypes.POINTER(ctypes.c_double)
+        exposure_from_anchor.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32,
+            float_pointer, ctypes.c_size_t,
+            float_pointer, ctypes.c_size_t,
+            double_pointer, ctypes.c_size_t,
+            float_pointer, ctypes.c_size_t,
+            double_pointer, ctypes.c_size_t,
+        ]
+        exposure_from_anchor.restype = ctypes.c_int
+    gray_log = getattr(library, "im_native_acr_gray_log_rgbf32", None)
+    if gray_log is not None:
+        float_pointer = ctypes.POINTER(ctypes.c_float)
+        double_pointer = ctypes.POINTER(ctypes.c_double)
+        gray_log.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32,
+            float_pointer, ctypes.c_size_t,
+            double_pointer, ctypes.c_size_t,
+            ctypes.c_double,
+            float_pointer, ctypes.c_size_t,
+            double_pointer, ctypes.c_size_t,
+        ]
+        gray_log.restype = ctypes.c_int
+    gray_u16_log = getattr(library, "im_native_acr_gray_u16_log_rgbf32", None)
+    if gray_u16_log is not None:
+        float_pointer = ctypes.POINTER(ctypes.c_float)
+        double_pointer = ctypes.POINTER(ctypes.c_double)
+        gray_u16_log.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32,
+            float_pointer, ctypes.c_size_t,
+            double_pointer, ctypes.c_size_t,
+            ctypes.c_double,
+            ctypes.c_int32, ctypes.c_int32, ctypes.c_uint32,
+            float_pointer, ctypes.c_size_t,
+            double_pointer, ctypes.c_size_t,
+        ]
+        gray_u16_log.restype = ctypes.c_int
     source_limit_u16 = getattr(library, "im_native_acr_source_limit_scene_u16_rgb", None)
     if source_limit_u16 is not None:
         source_limit_u16.argtypes = [
@@ -1664,6 +1867,42 @@ def native_acr_white_temperature(xy: object) -> tuple[float, float]:
     return float(result[0]), float(result[1])
 
 
+def native_acr_illuminant_temperatures(codes: object) -> tuple[float, float]:
+    """Resolve two ACR illuminant codes through the recovered native lookup."""
+    try:
+        values = tuple(codes)
+    except TypeError as exc:
+        raise ValueError("illuminant codes must contain exactly two integers") from exc
+    if len(values) != 2:
+        raise ValueError("illuminant codes must contain exactly two integers")
+    checked: list[int] = []
+    for value in values:
+        if (isinstance(value, (bool, np.bool_)) or
+                not isinstance(value, (int, np.integer))):
+            raise ValueError("illuminant codes must be non-boolean integers")
+        code = int(value)
+        if not 0 <= code <= 65535 or code == 255:
+            raise ValueError("illuminant code is outside the supported range")
+        checked.append(code)
+
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_illuminant_temperatures", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR illuminant lookup")
+    function.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_size_t,
+                         ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    code_array = (ctypes.c_uint32 * 2)(*checked)
+    output = np.empty(2, dtype=np.float64)
+    status = function(code_array, 2,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), 2)
+    if status == 1:
+        raise ValueError("Native ACR illuminant lookup rejected input")
+    if status:
+        raise NativeRendererError(f"Native ACR illuminant lookup failed (status {status})")
+    return float(output[0]), float(output[1])
+
+
 def native_acr_hsl_sdr(rgb: np.ndarray, controls: object) -> np.ndarray:
     """Apply H/S/L jointly, with optional 25th Vibrance, using C++ CPU."""
     return _native_acr_color_sdr(rgb, controls, "im_native_acr_hsl_sdr_rgbf32", (24, 25))
@@ -2134,6 +2373,185 @@ def native_acr_tone_prepared_sdr_mode(guide_rgb: np.ndarray, tone_rgb: np.ndarra
     if status:
         raise NativeRendererError(f"Native tone output mode operator failed (status {status})")
     return output
+
+
+def native_acr_exposure_from_anchor(
+    rgb: np.ndarray, anchor_log: np.ndarray, controls: object,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply the prepared SDR exposure operator using caller-supplied anchor samples.
+
+    ``anchor_log`` must already contain the correct normalized single-plane log
+    samples. This adapter does not assemble RAW metadata or a guide image, and
+    it does not choose the stage at which the operator should run.
+    Controls are ordered as context98, contextA0, amount58, grayDiffB8,
+    WhitesEV80, sourceEpsilon, and finalPixelEpsilon.
+    """
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3
+            or min(rgb.shape[:2]) <= 0
+            or int(rgb.shape[0]) * int(rgb.shape[1]) > (1 << 26)):
+        raise ValueError("ACR anchor exposure requires nonempty float32 HxWx3 RGB")
+    if not np.isfinite(rgb).all() or np.any(rgb < 0.0):
+        raise ValueError("ACR anchor exposure RGB must be finite and nonnegative")
+    if (not isinstance(anchor_log, np.ndarray) or anchor_log.dtype != np.float32
+            or anchor_log.ndim not in (1, 2) or anchor_log.size == 0
+            or anchor_log.size > (1 << 26)):
+        raise ValueError("ACR exposure anchor must be a nonempty 1D or 2D float32 array")
+    if not np.isfinite(anchor_log).all():
+        raise ValueError("ACR exposure anchor must contain only finite log samples")
+
+    values = np.ascontiguousarray(controls, dtype=np.float64)
+    if values.shape != (7,) or not np.isfinite(values).all():
+        raise ValueError("ACR anchor exposure requires 7 finite controls")
+    if (np.any(values[:4] < -120.0) or np.any(values[:4] > 120.0)
+            or not -2.0 <= values[4] <= 2.0
+            or not 0.0 < values[5] <= 2.0 ** -12
+            or not 0.0 < values[6] <= 2.0 ** -16
+            or np.float32(values[6]) == 0.0):
+        raise ValueError("ACR anchor exposure controls are outside the native operator domain")
+
+    source = np.ascontiguousarray(rgb)
+    anchor = np.ascontiguousarray(anchor_log).reshape(-1)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_exposure_from_anchor_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR anchor exposure")
+    output = np.empty_like(source)
+    diagnostics = np.empty(10, dtype=np.float64)
+    height, width = source.shape[:2]
+    status = function(
+        width, height,
+        source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size,
+        anchor.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), anchor.size,
+        values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+        diagnostics.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), diagnostics.size,
+    )
+    if status == 1:
+        raise ValueError("Native ACR anchor exposure rejected input or controls")
+    if status:
+        raise NativeRendererError(f"Native ACR anchor exposure failed (status {status})")
+    return output, diagnostics
+
+
+def _prepare_native_acr_gray_log_arguments(
+    rgb: np.ndarray, coefficients: object, source_epsilon: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3
+            or min(rgb.shape[:2]) <= 0
+            or int(rgb.shape[0]) * int(rgb.shape[1]) > (1 << 26)):
+        raise ValueError("ACR gray log requires nonempty float32 HxWx3 RGB")
+    if not np.isfinite(rgb).all() or np.any(rgb < 0.0):
+        raise ValueError("ACR gray log RGB must be finite and nonnegative")
+
+    values = np.asarray(coefficients, dtype=np.float64)
+    if values.shape != (3,) or not np.isfinite(values).all():
+        raise ValueError("ACR gray log requires 3 finite coefficients")
+    if np.any(values < -120.0) or np.any(values > 120.0):
+        raise ValueError("ACR gray log coefficients are outside [-120, 120]")
+    try:
+        epsilon = float(source_epsilon)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("ACR gray log source epsilon must be a finite scalar") from exc
+    if (not math.isfinite(epsilon) or epsilon <= 0.0 or epsilon > 2.0 ** -12
+            or np.float32(epsilon) == 0.0):
+        raise ValueError("ACR gray log source epsilon is outside the native domain")
+
+    source = np.ascontiguousarray(rgb)
+    parameters = np.ascontiguousarray(values)
+    return source, parameters, epsilon
+
+
+def native_acr_gray_log(
+    rgb: np.ndarray, coefficients: object, source_epsilon: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply caller-prepared RGB-to-gray and source-log operations.
+
+    ``rgb`` must already be in the RGB domain expected by the caller, and
+    ``coefficients`` must be the resolved row for that domain. This float
+    variant returns an HxW float32 source-log plane plus six float64 coefficient
+    diagnostics. It does not construct a true RAW anchor, select a stage,
+    assemble source/EV inputs, apply a transfer curve, perform the normalized
+    render's uint16 store/reload, or Pin overrange values; those remain caller
+    responsibilities.
+    """
+    source, parameters, epsilon = _prepare_native_acr_gray_log_arguments(
+        rgb, coefficients, source_epsilon
+    )
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_gray_log_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide the ACR gray-log operator")
+    height, width = source.shape[:2]
+    pixel_count = int(height) * int(width)
+    output = np.empty((height, width), dtype=np.float32)
+    diagnostics = np.empty(6, dtype=np.float64)
+    status = function(
+        width, height,
+        source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size,
+        parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), parameters.size,
+        epsilon,
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), pixel_count,
+        diagnostics.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), diagnostics.size,
+    )
+    if status == 1:
+        raise ValueError("Native ACR gray-log operator rejected input or coefficients")
+    if status:
+        raise NativeRendererError(f"Native ACR gray-log operator failed (status {status})")
+    return output, diagnostics
+
+
+def native_acr_gray_u16_log(
+    rgb: np.ndarray, coefficients: object, source_epsilon: float, *,
+    origin_x: int = 0, origin_y: int = 0, dither: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply prepared gray conversion, uint16 store/reload, and source log.
+
+    The caller must provide already-prepared RGB, upstream Pin/stage/source/
+    guide/EV decisions, and absolute image origin. The native operation rejects
+    derived gray outside [0,1]; this adapter does not clamp or quantize pixels
+    in Python. It does not generate a true RAW anchor or claim a complete ACR
+    render. Origins are signed int32 coordinates used for the 128x128 dither
+    phase; ``dither`` accepts only bool or numpy.bool_.
+    """
+    source, parameters, epsilon = _prepare_native_acr_gray_log_arguments(
+        rgb, coefficients, source_epsilon
+    )
+    origins: list[int] = []
+    for name, value in (("origin_x", origin_x), ("origin_y", origin_y)):
+        if (isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))):
+            raise ValueError(f"ACR gray uint16 log {name} must be a non-bool integer")
+        coordinate = int(value)
+        if not -(1 << 31) <= coordinate < (1 << 31):
+            raise ValueError(f"ACR gray uint16 log {name} must fit signed int32")
+        origins.append(coordinate)
+    if not isinstance(dither, (bool, np.bool_)):
+        raise ValueError("ACR gray uint16 log dither must be bool or numpy.bool_")
+
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_gray_u16_log_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide the gray uint16-log operator")
+    height, width = source.shape[:2]
+    pixel_count = int(height) * int(width)
+    output = np.empty((height, width), dtype=np.float32)
+    diagnostics = np.empty(6, dtype=np.float64)
+    status = function(
+        width, height,
+        source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size,
+        parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), parameters.size,
+        epsilon,
+        origins[0], origins[1], int(bool(dither)),
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), pixel_count,
+        diagnostics.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), diagnostics.size,
+    )
+    if status == 1:
+        raise ValueError("Native ACR gray uint16-log operator rejected prepared input")
+    if status:
+        raise NativeRendererError(f"Native ACR gray uint16-log operator failed (status {status})")
+    return output, diagnostics
 
 
 def get_native_status() -> dict[str, object]:
