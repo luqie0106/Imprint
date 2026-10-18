@@ -670,6 +670,16 @@ def _configure_library(library: ctypes.CDLL) -> None:
         neutral_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
                                    ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
         neutral_prepare.restype = ctypes.c_int
+    analog_prepare = getattr(library, "im_native_acr_prepare_analog_balance", None)
+    if analog_prepare is not None:
+        analog_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                  ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        analog_prepare.restype = ctypes.c_int
+    calibration_prepare = getattr(library, "im_native_acr_prepare_camera_calibration", None)
+    if calibration_prepare is not None:
+        calibration_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                       ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        calibration_prepare.restype = ctypes.c_int
     white_resolve = getattr(library, "im_native_acr_resolve_white", None)
     if white_resolve is not None:
         white_resolve.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
@@ -2004,6 +2014,44 @@ def native_acr_prepare_profile_camera(controls: object) -> np.ndarray:
         raise ValueError("Native ACR profile-camera preparation rejected controls")
     if status:
         raise NativeRendererError(f"Native ACR profile-camera preparation failed (status {status})")
+    return output
+
+
+def native_acr_prepare_analog_balance(balance: object | None) -> np.ndarray:
+    """Prepare raw source AnalogBalance in C++, preserving its absence default."""
+    values = np.ascontiguousarray([] if balance is None else balance, dtype=np.float64)
+    if values.shape not in ((0,), (3,)) or not np.isfinite(values).all():
+        raise ValueError("ACR analog balance requires absent or three finite values")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_analog_balance", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR analog balance preparation")
+    output = np.empty(3, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR analog balance preparation rejected values")
+    if status:
+        raise NativeRendererError(f"Native ACR analog balance preparation failed (status {status})")
+    return output
+
+
+def native_acr_prepare_camera_calibration(matrix: object) -> np.ndarray:
+    """Quantize one source RGB calibration matrix using the native source reader."""
+    values = np.ascontiguousarray(matrix, dtype=np.float64)
+    if values.shape != (3, 3) or not np.isfinite(values).all():
+        raise ValueError("ACR camera calibration requires a finite 3x3 matrix")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_camera_calibration", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR camera calibration preparation")
+    output = np.empty((3, 3), dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status == 1:
+        raise ValueError("Native ACR camera calibration preparation rejected matrix")
+    if status:
+        raise NativeRendererError(f"Native ACR camera calibration preparation failed (status {status})")
     return output
 
 

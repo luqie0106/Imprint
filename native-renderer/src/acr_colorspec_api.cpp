@@ -113,6 +113,59 @@ im_status im_native_acr_prepare_camera_neutral(const double *neutral, size_t cou
     return IM_STATUS_OK;
 }
 
+im_status im_native_acr_prepare_analog_balance(const double *balance, size_t count,
+                                              double *output, size_t output_count) {
+    if (!output || output_count != 3 || (count != 0 && count != 3) ||
+        reinterpret_cast<uintptr_t>(output) % alignof(double) != 0 ||
+        reinterpret_cast<uintptr_t>(output) >
+            std::numeric_limits<uintptr_t>::max() - 3 * sizeof(double))
+        return IM_STATUS_INVALID_ARGUMENT;
+    if (count == 3 &&
+        (reinterpret_cast<uintptr_t>(balance) % alignof(double) != 0 ||
+         !valid_buffers(balance, count, 3, output, output_count, 3)))
+        return IM_STATUS_INVALID_ARGUMENT;
+
+    std::array<double, 3> prepared{1.0, 1.0, 1.0};
+    if (count == 3) {
+        double minimum = balance[0];
+        if (balance[1] <= minimum) minimum = balance[1];
+        if (balance[2] <= minimum) minimum = balance[2];
+        if (minimum > 0.0) {
+            const double reciprocal = 1.0 / minimum;
+            if (!std::isfinite(reciprocal)) return IM_STATUS_INVALID_ARGUMENT;
+            for (size_t i = 0; i < 3; ++i) {
+                const double normalized = balance[i] * reciprocal;
+                const double scaled = normalized * 1.0e6;
+                const double rounded = scaled + (scaled > 0.0 ? 0.5 : -0.5);
+                if (!std::isfinite(normalized) || !std::isfinite(rounded) ||
+                    rounded <= -2147483649.0 || rounded >= 2147483648.0)
+                    return IM_STATUS_INVALID_ARGUMENT;
+                prepared[i] = 1.0e-6 * static_cast<int32_t>(rounded);
+            }
+        }
+    }
+    std::memcpy(output, prepared.data(), prepared.size() * sizeof(double));
+    return IM_STATUS_OK;
+}
+
+im_status im_native_acr_prepare_camera_calibration(const double *matrix, size_t count,
+                                                  double *output, size_t output_count) {
+    if (reinterpret_cast<uintptr_t>(matrix) % alignof(double) != 0 ||
+        reinterpret_cast<uintptr_t>(output) % alignof(double) != 0 ||
+        !valid_buffers(matrix, count, 9, output, output_count, 9))
+        return IM_STATUS_INVALID_ARGUMENT;
+    std::array<double, 9> prepared;
+    for (size_t i = 0; i < 9; ++i) {
+        const double scaled = matrix[i] * 10000.0;
+        const double rounded = scaled + (scaled > 0.0 ? 0.5 : -0.5);
+        if (!std::isfinite(rounded) || rounded <= -2147483649.0 ||
+            rounded >= 2147483648.0) return IM_STATUS_INVALID_ARGUMENT;
+        prepared[i] = 1.0e-4 * static_cast<int32_t>(rounded);
+    }
+    std::memcpy(output, prepared.data(), prepared.size() * sizeof(double));
+    return IM_STATUS_OK;
+}
+
 im_status im_native_acr_prepare_profile_camera(const double *controls, size_t count,
                                                double *output, size_t output_count) {
     if (!valid_buffers(controls, count, 75, output, output_count, 65) ||

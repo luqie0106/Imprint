@@ -32,6 +32,7 @@ from native_renderer import (
     native_acr_prepare_profile_camera, native_acr_camera_float,
     native_acr_scale_sdr, native_acr_project_srgb, native_acr_profile_stage_sdr,
     native_acr_prepare_huesatmap, native_acr_illuminant_temperatures,
+    native_acr_prepare_analog_balance, native_acr_prepare_camera_calibration,
 )
 from acr_profile_metadata import read_acr_profile_tags, read_embedded_acr_profile_tags
 from dng_writer import _embedded_profile_tags
@@ -40,7 +41,7 @@ from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profi
 
 PROFILE_PREVIEW_VERSION = "camera-profile-preview-v3-gpu-stages"
 PROFILE_PREVIEW_VERSION += "-acr-camera-v1-look-bulk-sdr-cpp-v1"
-PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v3-single-illuminant"
+PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v4-source-calibration"
 _ACR_PROFILE_WHITE_ENABLED = os.environ.get("IMPRINT_ACR_PROFILE_WHITE") == "1"
 if _ACR_PROFILE_WHITE_ENABLED:
     PROFILE_PREVIEW_VERSION += "-acr-white-cpp-v1"
@@ -90,6 +91,13 @@ class Profile:
     hue_sat_dims: tuple[int, int, int] = (0, 0, 0)
     hue_sat_encoding: int = 0
     calibration_illuminants: tuple[int, int] = (17, 21)
+    # Source calibration is available only when this profile was read from
+    # the source DNG itself, rather than an adjacent reference DNG for a RAW.
+    source_calibration_enabled: bool = False
+    source_calibration_matches: bool = True
+    source_analog_balance: np.ndarray | None = None
+    source_calibration1: np.ndarray | None = None
+    source_calibration2: np.ndarray | None = None
 
 
 def _file_signature(path: Path) -> tuple[int, int, int, int] | None:
@@ -238,8 +246,22 @@ def _parse_acr_huesat_maps(tags: dict[int, Any]):
     return tables[0], tables[1], (hue, saturation, value), encoding
 
 
+def _calibration_signature(tags: dict[int, Any], code: int) -> bytes | None:
+    tag = tags.get(code)
+    if tag is None:
+        return None
+    if int(tag.kind) != 2 or len(tag.data) != int(tag.count):
+        raise ValueError("invalid camera calibration signature")
+    # The Adobe ASCII setter stops at the first NUL and clears empty strings.
+    # Non-ASCII conversion is outside this reader's recovered subset.
+    value = bytes(tag.data).split(b"\0", 1)[0]
+    if any(byte >= 128 for byte in value):
+        raise ValueError("non-ASCII camera calibration signature is not supported")
+    return value or None
+
+
 def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[Any, ...],
-                   *, _acr_extended: bool = False) -> Profile:
+                   *, _acr_extended: bool = False, _source_dng: bool = False) -> Profile:
     tags = _tag_map(tags_list)
     if _acr_extended and {52529, 52530, 52531, 52532, 52535, 52537}.intersection(tags):
         raise ValueError("three-illuminant profiles are not supported")
@@ -280,9 +302,32 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
             raise ValueError("profile matrix is singular")
         matrices.append(_readonly(matrix))
 
-    _validate_identity_calibration(tags)
-    if 50727 in tags and not np.allclose(_require_values(tags, 50727, 3), 1.0, rtol=0.0, atol=1e-6):
-        raise ValueError("non-identity analog balance is not supported")
+    source_calibration_enabled = _acr_extended and _source_dng
+    analog_balance = None
+    calibration1 = calibration2 = None
+    calibration_matches = True
+    if source_calibration_enabled:
+        if 50727 in tags:
+            if int(tags[50727].kind) != 5:
+                raise ValueError("source AnalogBalance must contain RATIONAL values")
+            analog_balance = _readonly(_require_values(tags, 50727, 3))
+        source_signature = _calibration_signature(tags, 50931)
+        profile_signature = _calibration_signature(tags, 50932)
+        calibration_matches = source_signature == profile_signature
+        calibrations = []
+        for code in (50723, 50724):
+            matrix = None
+            if code in tags:
+                if int(tags[code].kind) != 10:
+                    raise ValueError("source CameraCalibration must contain SRATIONAL values")
+                raw_matrix = _require_values(tags, code, 9).reshape(3, 3)
+                matrix = _readonly(raw_matrix)
+            calibrations.append(matrix)
+        calibration1, calibration2 = calibrations
+    else:
+        _validate_identity_calibration(tags)
+        if 50727 in tags and not np.allclose(_require_values(tags, 50727, 3), 1.0, rtol=0.0, atol=1e-6):
+            raise ValueError("non-identity analog balance is not supported")
     if _acr_extended:
         hsm1, hsm2, hsm_dims, hsm_encoding = _parse_acr_huesat_maps(tags)
     else:
@@ -332,6 +377,11 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
         hue_sat_map1=hsm1, hue_sat_map2=hsm2,
         hue_sat_dims=hsm_dims, hue_sat_encoding=hsm_encoding,
         calibration_illuminants=tuple(illuminants),
+        source_calibration_enabled=source_calibration_enabled,
+        source_calibration_matches=calibration_matches,
+        source_analog_balance=analog_balance,
+        source_calibration1=calibration1,
+        source_calibration2=calibration2,
     )
 
 
@@ -514,10 +564,12 @@ def _resolve_cached(
             source_signature, neighbor_signature,
         )
         if acr_extended:
-            fingerprint = ("acr-huesatmap-v3-single-illuminant", *fingerprint)
-        return _parse_profile(
-            tags, expected_name, fingerprint, _acr_extended=acr_extended,
-        )
+            fingerprint = ("acr-huesatmap-v4-source-calibration", *fingerprint)
+            return _parse_profile(
+                tags, expected_name, fingerprint, _acr_extended=True,
+                _source_dng=source.suffix.lower() == ".dng" and source == reference,
+            )
+        return _parse_profile(tags, expected_name, fingerprint)
     except (OSError, UnicodeError, ValueError, TypeError, OverflowError, np.linalg.LinAlgError):
         return None
 
@@ -763,14 +815,26 @@ def _acr_profile_camera_controls(
 ) -> np.ndarray:
     """Build the explicit supported-scene inputs for native ACR preparation."""
     identity = np.eye(3, dtype=np.float64).reshape(-1)
+    analog_balance = np.ones(3, dtype=np.float64)
+    calibration1 = calibration2 = identity
+    if profile.source_calibration_enabled:
+        analog_balance = native_acr_prepare_analog_balance(profile.source_analog_balance)
+        if profile.source_calibration1 is not None:
+            calibration1 = native_acr_prepare_camera_calibration(profile.source_calibration1).reshape(-1)
+        if profile.source_calibration2 is not None:
+            calibration2 = native_acr_prepare_camera_calibration(profile.source_calibration2).reshape(-1)
+        # Source ingestion quantizes every present matrix before ColorSpec
+        # applies its signature gate, including matrices it will not select.
+        if not profile.source_calibration_matches:
+            calibration1 = calibration2 = identity
     if endpoint_kelvin is None:
         endpoint_kelvin = native_acr_illuminant_temperatures(profile.calibration_illuminants)
     controls = np.concatenate((
-        np.ones(3, dtype=np.float64),  # AnalogBalance, identity in this subset.
+        analog_balance,
         np.asarray(profile.color_matrix1, dtype=np.float64).reshape(-1),
         np.asarray(profile.color_matrix2, dtype=np.float64).reshape(-1),
-        identity,  # CameraCalibration1 and 2 are validated as identity.
-        identity,
+        calibration1,
+        calibration2,
         np.asarray(profile.forward_matrix1, dtype=np.float64).reshape(-1),
         np.asarray(profile.forward_matrix2, dtype=np.float64).reshape(-1),
         np.asarray([*endpoint_kelvin, 0.3457, 0.3585, float(profile.has_color_matrix2),
@@ -804,8 +868,8 @@ def render_profile(
         raise ValueError("this profile requires the native ACR preview experiment")
     if acr_color is not None and acr_color.get("enabled", False):
         _backend_context.profile = "python"
-        # This manual scene-camera experiment supports only identity calibration
-        # and mode 0. Metadata preparation, camera pixels and display projection
+        # This manual scene-camera experiment uses source-DNG calibration when
+        # available and mode 0. Metadata preparation, camera pixels and display projection
         # stay in the explicit native path, including the recovered SDR
         # profile LookTable operation (not a claim of complete ACR equivalence).
         hsl = np.asarray(acr_color.get("hsl", np.zeros(25)), dtype=np.float64)

@@ -209,6 +209,22 @@ IMPRINT_API im_status im_native_acr_prepare_colorspec(
 IMPRINT_API im_status im_native_acr_prepare_camera_neutral(
     const double *neutral, size_t count, double *output, size_t output_count);
 
+/* Prepare the source AnalogBalance used by ColorSpec and camera preparation.
+   count is 0 (absent) or 3 (raw RGB metadata). Absent or a nonpositive minimum
+   models the cleared source vector's per-channel getter default of 1. Otherwise
+   multiply by reciprocal minimum, then round to 1e-6 using the source int32
+   quantizer. This is distinct from CameraNeutral's maximum normalization.
+   NaN/Inf, overflow, misalignment or overlap leaves output unchanged. */
+IMPRINT_API im_status im_native_acr_prepare_analog_balance(
+    const double *balance, size_t count, double *output, size_t output_count);
+
+/* Quantize one present source RGB CameraCalibration matrix at 1e-4, using
+   the source reader's separate multiply/add and int32 rounding. Signature
+   compatibility and absent-matrix identity selection belong to the caller.
+   Invalid/nonfinite/overflow/overlap leaves output unchanged. */
+IMPRINT_API im_status im_native_acr_prepare_camera_calibration(
+    const double *matrix, size_t count, double *output, size_t output_count);
+
 /* Two-illuminant RGB neutral -> adjusted white -> ColorSpec CPU resolution.
    Controls[68]: the same first 64 fields as im_native_acr_prepare_colorspec
    (white xy fields are finite placeholders ignored here), prepared source

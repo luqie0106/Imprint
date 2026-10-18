@@ -74,7 +74,8 @@ def _read_acr_profile_tags(
             type_size = dng_writer.TYPE_SIZES.get(kind)
             if type_size is None:
                 raise ValueError("profile reference contains an unsupported TIFF type")
-            if item_count == 0:
+            # The recovered signature setter clears zero-length ASCII values.
+            if item_count == 0 and (code not in (50931, 50932) or kind != dng_writer.ASCII):
                 raise ValueError("profile reference contains an empty profile tag")
             byte_count = type_size * item_count
             if byte_count > _MAX_TAG_BYTES:

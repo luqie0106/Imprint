@@ -441,7 +441,7 @@ def test_resolver_routes_acr_profiles_through_preview_reader_with_isolated_finge
     legacy_profile = cp.resolve_profile(source, info)
 
     assert acr_profile is not None and acr_profile.acr_only
-    assert acr_profile.fingerprint[0] == "acr-huesatmap-v3-single-illuminant"
+    assert acr_profile.fingerprint[0] == "acr-huesatmap-v4-source-calibration"
     assert legacy_profile is None
     assert reader_calls == ["acr", "legacy"]
 
@@ -474,7 +474,7 @@ def test_acr_resolver_uses_root_profile_name_for_dng_without_selected_name(
     assert profile is not None
     assert profile.name == PROFILE_NAME
     assert profile.acr_only
-    assert profile.fingerprint[0] == "acr-huesatmap-v3-single-illuminant"
+    assert profile.fingerprint[0] == "acr-huesatmap-v4-source-calibration"
     assert embedded_calls == [source.resolve()]
     assert named_calls == []
 
