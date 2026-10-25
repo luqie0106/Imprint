@@ -184,6 +184,214 @@ IMPRINT_API im_status im_native_acr_source_limit_scene_u16_rgb(
     uint32_t width, uint32_t height, const uint16_t *source, size_t source_samples,
     const double *controls, size_t control_count, double *output, size_t output_count);
 
+/* Explicit SDR bulk profile/HSM mode1 generic wrapper (00bd60e0, header
+   range word 0). Compact active HWC rows; counts/strides are in samples.
+   pixel_type 3 stores unsigned words; type 8 stores the same normalized
+   values biased by XOR 0x8000. The caller resolves this format separately
+   from profile encoding 0/1 and the pipeline's selected mode/encoding byte.
+   The float bulk stage is bracketed by original integer/float conversion;
+   writeback is fmaf(value,65535,.5), ARM signed FCVTZS, low16 then optional
+   XOR, with no extra clamp. No HDR/range2/4 post-processing or automatic
+   host selection. Profile encoding 0/1 controls optional transfer curves;
+   it is separate from the HSM object's HDR byte, fixed to zero here.
+   Table is [value,hue,saturation,3] float32; table_values counts floats.
+   Exact same-address/count/stride source/destination is allowed; other
+   overlap and output overlap with the map are rejected. Row padding and
+   all destination bytes on failure are preserved. */
+IMPRINT_API im_status im_native_acr_profile_stage_sdr_u16(
+    const uint16_t *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t width, const float *table_data, size_t table_values,
+    uint32_t hue_count, uint32_t saturation_count, uint32_t value_count,
+    uint32_t encoding, double lookup_gain, double amount, uint32_t pixel_type,
+    uint16_t *destination, size_t destination_count, size_t destination_row_stride);
+
+/* Explicit finite-value FUN_01372fb8 CPU path. Packed HWC RGB, including
+   negative and overrange samples, is clamped to [-1000,1000]. Controls[4] are
+   gain, compression, expansion, epsilon; these are resolved internal floats,
+   not UI amounts. Gain>=0, the other three values>0, all finite.
+   Tables[4] contain R/G/B and gray descriptors. A channel group runs only when
+   all three pointers are nonnull; gray is enabled independently. An enabled
+   table needs count>=max_index+2 (one interpolation guard), finite scale>=0.
+   Mask is absent (null,count0) or contains at least pixel_count finite values.
+   No host/HDR mode selection or table preparation is inferred here. All pixel
+   work is C++. Exact source/destination alias is allowed; partial overlap and
+   overlap of destination with active tables/mask/controls/descriptors are
+   rejected. Errors leave the entire destination unchanged. */
+typedef struct im_acr_exposure_lut_f32 {
+    const float *values;
+    size_t count;
+    uint32_t max_index;
+    float scale;
+} im_acr_exposure_lut_f32;
+IMPRINT_API im_status im_native_acr_signed_exposure_prepared_f32(
+    const float *source, size_t source_samples, size_t pixel_count,
+    const float *controls, size_t control_count,
+    const im_acr_exposure_lut_f32 *tables, size_t table_count,
+    const float *mask, size_t mask_count,
+    float *destination, size_t destination_samples);
+
+/* Prepared baseline 013729ac SDR mask subset, with all five optional
+   luminance/channel LUT contexts disabled. HWC float RGB is finite and
+   nonnegative; a finite HxW mask is mandatory. Counts/strides are samples.
+   Controls[6]: gain G, main-curve scale S, rational scale A, sqrt amount B,
+   rational denominator Q, epsilon E. G/S>=0; A/Q/E>0; B finite.
+   Main LUT is read only if A>1 and each actual index needs a guard sample.
+   Mask is clamped to +/-16 and approximates 2^(4*mask) using original FMA
+   and floor instructions. Arithmetic must remain finite; nonfinite
+   intermediates are rejected, so this is narrower than the original ABI.
+   Exact source/destination address/count/stride alias is allowed. Other
+   overlap, including destination with mask, controls or active LUT, fails
+   without writing; successful calls preserve row padding. No automatic
+   stage selection, upstream mask/LUT preparation, or UI mapping. */
+IMPRINT_API im_status im_native_acr_sdr_mask_exposure_prepared_f32(
+    const float *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t width, const float *mask, size_t mask_count,
+    size_t mask_row_stride, const float *controls, size_t control_count,
+    const float *main_lut, size_t main_lut_count,
+    float *destination, size_t destination_count, size_t destination_row_stride);
+
+/* Same prepared SDR mask operation, with five optional LUT contexts in
+   order [pre weighted-luminance, R, G, B, post weighted-luminance]. Exactly
+   five descriptor objects are required; null values disable a descriptor.
+   The R/G/B group runs only when all three value pointers are nonnull;
+   otherwise its entire descriptor group is ignored. Pre and post run
+   independently. Weighted luminance uses ((R+G)+G+B)*0.25 in that order;
+   its mapped value scales RGB by mapped/max(luminance,E). Post processing
+   alone adds a final channel upper clamp. LUT indices use ARM signed
+   FCVTZS, including truncation of coordinates between -1 and 0 to zero;
+   max_index is inclusive, and every actual access needs index+1<count.
+   Active scales are finite/nonnegative; max_index<=INT32_MAX. Only accessed
+   entries must be finite. Intermediate finiteness and atomic buffer/alias
+   rules above apply, including output overlap with descriptor objects and
+   active table data. Does not construct masks, curves, or host controls. */
+IMPRINT_API im_status im_native_acr_sdr_mask_exposure_context_prepared_f32(
+    const float *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t width, const float *mask, size_t mask_count,
+    size_t mask_row_stride, const float *controls, size_t control_count,
+    const float *main_lut, size_t main_lut_count,
+    const im_acr_exposure_lut_f32 *tables, size_t table_count,
+    float *destination, size_t destination_count, size_t destination_row_stride);
+
+/* Explicit no-mask baseline 01372428, with the same six controls and five
+   context descriptors above. RGB is multiplied directly by G. After the
+   rational transform, upper clipping and median reconstruction run only if
+   the high endpoint exceeds 1. A supplied zero mask in baseline 013729ac
+   does not implement this branch. Finite-intermediate, guard, stride, alias
+   and transactional rules remain the same. This does not choose between
+   the original no-mask fast/full slots or infer host flags. */
+IMPRINT_API im_status im_native_acr_sdr_nomask_exposure_context_prepared_f32(
+    const float *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t width, const float *controls, size_t control_count,
+    const float *main_lut, size_t main_lut_count,
+    const im_acr_exposure_lut_f32 *tables, size_t table_count,
+    float *destination, size_t destination_count, size_t destination_row_stride);
+
+/* Prepare pixel epsilon E from the original 009e02b0 source fields:
+   uint32 ColorimetricReference, source+1540 flare, and original child EV90.
+   Flare is the source1540 value, not the separately named log epsilon.
+   Finite double inputs are required. The two double clamps and optional
+   exp2(-EV90) precede one float conversion. Intermediate exp2 overflow or
+   underflow is clamped to the original finite bounds. Writes only output[0]
+   on success; a short output or invalid inputs leave all output unchanged.
+   Does not infer the selected source image, its flare or EV90 from a RAW. */
+IMPRINT_API im_status im_native_acr_prepare_exposure_pixel_epsilon(
+    uint32_t colorimetric_reference, double source_flare, double original_ev90,
+    float *output, size_t output_count);
+
+/* Sample an explicit prepared Exposure context curve into 4098 float slots.
+   kind=1: channel curve 00926ba4, controls[3]=a,b,h. Finite a/b in [0,1),
+   h in [0,0.5]; the constructor's a/b==1 cases are outside this subset.
+   kind=2: post wrapper 00926758 from 009222f8(p), controls[1]=p in [0,1].
+   Keeps binary64 scalar operations, including post encode/decode and pow.
+   Samples x=(1/4096)*i for i=0..4096, converts each result once to float,
+   and copies endpoint4096 to guard4097. Descriptor max_index=4096,
+   scale=4096. Only the first 4098 output slots are written; output padding
+   is preserved. Invalid/short/overlapping buffers fail without writing.
+   This builds selected curves, not their upstream controls or enable flags.
+   Does not prove a particular Adobe request enabled either optional curve. */
+IMPRINT_API im_status im_native_acr_prepare_exposure_context_lut(
+    uint32_t kind, const double *controls, size_t control_count,
+    float *output, size_t output_count);
+
+/* Prepare the observed Blacks2012 response from six explicit controls:
+   [Blacks2012 int32, ProfileGainTableMap int32, gain-adjust-active 0/1,
+    resolved mode 0/1, finite k, prepared q in [0.0625,0.9]].
+   Output[3]=normalized z, post strength B, channel strength D. Keeps the
+   original UI clamp, conditional gain correction and full 00922c4c curve
+   mathematics, including its constructor rejection cases. Does not infer
+   mode, gain-adjust predicate, k/q, profile metadata or params+895 gate.
+   All controls must be finite. Success writes only three doubles; padding
+   is preserved. Invalid/short/overlapping buffers fail without writing.
+   This prepares controls, not RGB pixels or a complete Adobe request. */
+IMPRINT_API im_status im_native_acr_prepare_black_response(
+    const double *controls, size_t control_count,
+    double *output, size_t output_count);
+
+/* Statistics of an explicitly prepared normalized post-tone log plane.
+   Finite float input is contiguous; count is in [1,2^26]. Epsilon is the
+   source-log epsilon in (0,2^-12], not the Exposure pixel epsilon E.
+   Output[5]=filtered p0.01%, filtered p1%, filtered p99%, high h, population M.
+   These correspond to context+658/+670/+678/+690 and population diagnostic.
+   Post-filter indices use min(floor(M*p),M-1), with p=.0001/.01/.99/.9999.
+   An empty filtered population becomes [log(epsilon)/ln2] and M=1.
+   Keeps the original low gate and repeated-high removal. This does not
+   generate the normalized request or infer its stage/image from display RGB.
+   Success writes only five doubles and preserves padding. Short/invalid/
+   misaligned/overlapping buffers fail without writing. */
+IMPRINT_API im_status im_native_acr_post_tone_stats_prepared_f32(
+    const float *log_plane, size_t sample_count, double epsilon,
+    double *output, size_t output_count);
+
+/* Prepared basic-slot loop from normalized post-tone request 009dca10.
+   Both int32 input arrays contain exactly 132 slots (indices 0..0x83).
+   Input is the loop-entry state AFTER basic activation normalization;
+   source_defaults is the separately prepared source/default params vector.
+   This does not clone opaque params, prepare source defaults, normalize
+   activation groups, serialize keys, infer request flags or render pixels.
+   PV uses uint32(PV+1) wrap before its recovered threshold comparison.
+   Every int32 value, including sentinels, is accepted. Only the first 132
+   output values are written; output padding is preserved. Exact in-place
+   operation with either input is allowed only with output_count==132;
+   other full declared-output-span overlaps are rejected. Failure is atomic. */
+IMPRINT_API im_status im_native_acr_normalize_post_tone_basic_i32(
+    uint32_t process_version, const int32_t *input, size_t input_count,
+    const int32_t *source_defaults, size_t source_count,
+    int32_t *output, size_t output_count);
+
+/* Prepared 009227d0 q response. Controls[8]: context+98,+a0,+b0,+80,
+   filtered p1(+670), p99(+678), p0.01%(+658), high(+690).
+   Output[3]: anchor v, raw response R(exp2(v)), q clamped [.0625,.9].
+   This is not the separate per-channel cap R(exp2(A)/sqrt(2)).
+   Supported domain: finite values; +98/+a0 in [-120,120], +b0/+80 in
+   [-2,2], computed v in [-120,120]. Negative +b0 additionally needs a
+   constructible positive white clip. These are adapter limits, not original
+   request validation. Zero is canonicalized to +0 for curve evaluation.
+   Preserves double white-clip squaring and each separate exp2 operation.
+   Success writes three doubles, preserving padding; invalid/short/aliased
+   buffers fail atomically. Does not resolve profile/mode/k or request state. */
+IMPRINT_API im_status im_native_acr_prepare_exposure_qcap(
+    const double *controls, size_t control_count,
+    double *output, size_t output_count);
+
+/* Prepared 00922f20 optional curves; no profile/runtime state inference.
+   Controls[18]: Blacks(int32), ProfileGain(int32), producer gain-adjust flag,
+   mode flag, k, context+98/+a0/+b0/+80/+670/+678/+658/+690,
+   context+a8, context+30/+38/+40, caller gain-adjust flag.
+   The two gain-adjust flags are independent resolved predicate invocations.
+   Output[18]: q_v,q_raw,q,z,B,D,channel_cap,channel_active,post_active,
+   aR,bR,aG,bG,aB,bB,h,post_p,caller_z. Inactive channel fields are zero;
+   inactive post_p is zero. Flags are exact 0/1. If any channel is active,
+   all three channel objects exist, including channels with zero controls.
+   Adapter limits: q-context domain above, +a8 in [-120,120], nonnegative
+   finite +30/+38/+40 and finite scaled products. Active a/b must be [0,1),
+   h [0,.5], p [0,1]. These are supported domains, not original validation.
+   Caller cap is sampled independently at R(exp2(A)/sqrt(2)), not q.
+   No LUT identity shortcut. Success writes 18 doubles and preserves padding;
+   short/invalid/misaligned/aliased buffers fail atomically. */
+IMPRINT_API im_status im_native_acr_prepare_exposure_optional(
+    const double *controls, size_t control_count,
+    double *output, size_t output_count);
+
 /* Finite RGB single/two-illuminant ColorSpec constructor + SetWhiteXY CPU.
    Controls[64]: AnalogBalance[3], raw ColorMatrix1/2[9 each], caller-selected
    CameraCalibration1/2[9 each], ForwardMatrix1/2[9 each], endpoint Kelvin1/2,
@@ -315,6 +523,129 @@ IMPRINT_API im_status im_native_acr_camera_float_rgbf32(
     const double *controls, size_t control_count, float *destination,
     size_t destination_samples);
 
+/* Ordinary modern three-plane Camera kernel 013466b4, with explicit prepared
+   controls [A,B,U,b, sorted row-major matrix9]. After float conversion:
+   A>=B>=1, 32768/65535<=U<=1, 0<=b<1; all values must be finite.
+   Input/output are float32 HWC RGB; order3 is a permutation selecting source
+   channels in descending gain order. Matrix columns are already in that order.
+   Counts and row strides are samples. flags bit0=0 clamps output to [0,1];
+   bit0=1 preserves finite negative/overrange output. Other bits are ignored.
+   Exact in-place use requires the same pointer, stride and declared count;
+   other overlaps (including metadata) are rejected. Failure preserves output.
+   This prepared CPU component retains the pedestal and does not select host
+   state or perform post-camera black, exposure, Profile or display processing. */
+IMPRINT_API im_status im_native_acr_camera_combined_prepared_f32(
+    const float *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t width, const double *controls, size_t control_count,
+    const uint32_t order3[3], uint32_t flags, float *destination,
+    size_t destination_count, size_t destination_row_stride);
+
+/* Explicit mode2 float post-camera black stage: b>0 builds the recovered
+   4096-segment LUT with double sampling, then applies float interpolation;
+   b==0 copies active samples bit-for-bit without an identity LUT. black is
+   the prepared retained floor in double (0<=black<1), not a DNG BlackLevel.
+   Active input must be finite in [0,1]. Counts/strides are float samples.
+   Exact same pointer/count/stride permits in-place use; other overlaps are
+   rejected. Padding and all output bytes on failure are preserved.
+   This entry explicitly requests float processing. It does not infer the
+   actual RAW pipe format or consume host context state. */
+IMPRINT_API im_status im_native_acr_postcamera_black_prepared_f32(
+    const float *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t row_samples, double black, float *destination,
+    size_t destination_count, size_t destination_row_stride);
+
+/* Explicit mode1 unsigned post-camera black: build the same float LUT, expand
+   to 65536 uint16 entries via 01300600, then use 0132d484 lookup. black==0
+   bypasses the LUT. Counts/strides, alias and failure rules match the float
+   entry. All uint16 inputs are valid. This does not implement signed type8,
+   select the actual request's format, or perform adjacent buffer conversion. */
+IMPRINT_API im_status im_native_acr_postcamera_black_prepared_u16(
+    const uint16_t *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t row_samples, double black, uint16_t *destination,
+    size_t destination_count, size_t destination_row_stride);
+
+/* Explicit prepared Stage3 CPU composition from linearized canonical RGGB
+   uint16 CFA to interleaved camera RGB16, before OpcodeList3 and profile.
+   This experimental API does not infer metadata/host state or enable the
+   original full-resolution dispatcher. rect4 is {top,left,bottom,right},
+   gains3 contains exactly three doubles, and strides/capacities are samples.
+   The source is at rect4's top-left; dimensions must be >=2. source_floor,
+   cubic (0/1), amount, suppression (0/1), and hot/cold thresholds are explicit
+   prepared inputs. Tile dimensions are 1..1024; output has H*W*3 samples.
+   Destination must not overlap source, rect4, or gains3. All errors leave it
+   unchanged. No lens correction, white balance selection, or GPU is applied. */
+IMPRINT_API im_status im_native_acr_stage3_prepared_image_u16(
+    const uint16_t *source, size_t source_samples, size_t source_row_stride,
+    const int32_t source_rect4[4], const double gains3[3], uint16_t source_floor,
+    int cubic, double amount, int suppress_refine, uint16_t hot_threshold,
+    uint16_t cold_threshold, size_t tile_width, size_t tile_height,
+    uint16_t *destination, size_t destination_samples);
+
+/* Prepared Opcode id9 CPU GainMap with explicit image bounds and tile grid.
+   rects8=[image T,L,B,R, area T,L,B,R]; controls9=[imagePlanes,
+   firstPlane, areaPlanes, rowPitch, colPitch, mapV, mapH, mapPlanes, listStage];
+   geometry4=[spacingV,spacingH,originV,originH]. Source starts at image bounds'
+   top-left, interleaved HWC; row_stride and capacities are samples. Map layout
+   is V,H,mapPlanes float32. The tile grid starts at image bounds' top-left.
+   Different tile grids may differ in rounding because interpolation restarts.
+   Black compensation uses the explicit source floor when listStage>=2.
+   Inputs are finite prepared data; destination must not alias input/metadata.
+   Errors preserve destination. This does not select host state or run Warp.
+   The uint16 adapter uses recovered normalized-row format conversions and
+   rejects results outside their [0,1] prepared domain before committing. */
+IMPRINT_API im_status im_native_acr_gainmap_prepared_f32(
+    const float *source, size_t source_samples, size_t source_row_stride,
+    const int32_t rects8[8], const uint32_t controls9[9],
+    const double geometry4[4], const float *map, size_t map_samples,
+    uint16_t black_floor, size_t tile_width, size_t tile_height,
+    float *destination, size_t destination_samples);
+IMPRINT_API im_status im_native_acr_gainmap_prepared_u16(
+    const uint16_t *source, size_t source_samples, size_t source_row_stride,
+    const int32_t rects8[8], const uint32_t controls9[9],
+    const double geometry4[4], const float *map, size_t map_samples,
+    uint16_t black_floor, size_t tile_width, size_t tile_height,
+    uint16_t *destination, size_t destination_samples);
+
+/* Prepared id1 WarpRectilinear CPU consumer, pure radial subdomain.
+   rect4=[image T,L,B,R]; controls2=[imagePlanes,parameterPlanes], each 1..4,
+   parameterPlanes=1 or imagePlanes. geometry3=[centerX,centerY,aspect].
+   Coefficients are ORIGINAL double [k0,k1,k2,k3,t0,t1] per parameter plane;
+   t0/t1 must be zero. Finite HWC source, sample strides/capacities, tightly
+   packed float32 destination. Explicit tiles begin at image bounds' origin.
+   Metadata and declared buffers must not overlap. Failure preserves output.
+   NOP copies samples. Other calls follow recovered SrcArea/anchor semantics,
+   including rejecting source tile spans below five samples in either axis.
+   u16_f32 uses the recovered normalized input conversion, with no final u16
+   writeback claim. No GainMap black-floor wrapper is applied by Warp. */
+IMPRINT_API im_status im_native_acr_warp_prepared_f32(
+    const float *source, size_t source_samples, size_t source_row_stride,
+    const int32_t rect4[4], const uint32_t controls2[2],
+    const double geometry3[3], const double *coefficients, size_t coefficient_count,
+    size_t tile_width, size_t tile_height, float *destination, size_t destination_samples);
+IMPRINT_API im_status im_native_acr_warp_prepared_u16_f32(
+    const uint16_t *source, size_t source_samples, size_t source_row_stride,
+    const int32_t rect4[4], const uint32_t controls2[2],
+    const double geometry3[3], const double *coefficients, size_t coefficient_count,
+    size_t tile_width, size_t tile_height, float *destination, size_t destination_samples);
+
+/* Static scalar dng_pixel_buffer::CopyArea format routes, with explicit row
+   samples/strides/capacities. float->u16 follows 012eaeb8: comparisons clamp
+   to [0,1] (NaN->0, +Inf->1, -Inf->0), binary32 FMA(v,65535,.5), then truncate.
+   This differs from the core3 ties-to-even format converter. u16->float uses
+   one binary32 reciprocal of 65535 followed by multiplication (012eac64).
+   Height/row_samples are positive; capacities cover the last active sample.
+   Natural alignment and nonoverlapping declared spans are required. Failure
+   preserves destination; destination padding is never changed. These are
+   scalar prepared routes, without a claim about runtime SIMD replacement. */
+IMPRINT_API im_status im_native_acr_buffer_f32_to_u16(
+    const float *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t row_samples, uint16_t *destination,
+    size_t destination_count, size_t destination_row_stride);
+IMPRINT_API im_status im_native_acr_buffer_u16_to_f32(
+    const uint16_t *source, size_t source_count, size_t source_row_stride,
+    size_t height, size_t row_samples, float *destination,
+    size_t destination_count, size_t destination_row_stride);
+
 /* Recovered CPU tone subset on two prepared float32 RGB images of identical
    geometry. guide_rgb is the domain entering MakeGrayLog after camera and
    earlier preparation; tone_rgb is the domain at the enabled tone stage.
@@ -346,7 +677,8 @@ IMPRINT_API im_status im_native_acr_tone_prepared_sdr_mode_rgbf32(
    No transfer curve, extra output stages, stage selection, uint16 render/store
    round trip or Pin is applied; this is not a complete RAW anchor renderer.
    source_epsilon must be positive, <=2^-12 and nonzero after float conversion.
-   RGB is finite/nonnegative HxWx3; output is HxW log float32, <=2^26 pixels.
+   RGB is finite HxWx3, including signed/overrange samples; non-finite gray
+   intermediates are rejected. Output is HxW log float32, <=2^26 pixels.
    Six diagnostics: quantized uint16 R/G/B lanes, then their float R/G/B weights.
    No output/input overlap is allowed. Both outputs are unchanged on failure. */
 IMPRINT_API im_status im_native_acr_gray_log_rgbf32(
@@ -355,8 +687,11 @@ IMPRINT_API im_status im_native_acr_gray_log_rgbf32(
     float *log_gray, size_t log_samples, double *diagnostics, size_t diagnostic_count);
 
 /* As above, with a prepared uint16 store/reload between gray conversion and
-   source log. The caller must have prepared/pinned pixels so the resulting
-   gray is in [0,1]; out-of-range gray is rejected rather than silently clipped.
+   source log. Finite signed/overrange gray is accepted. Both writers use
+   fused float scaling and ARM signed-int32 FCVTZS (including saturation of
+   a scaled overflow); dither=0 stores its low 16 bits, while dither=1 applies
+   the recovered post-conversion saturation to [0,65535]. These differ outside
+   [0,1]; no upstream Pin or pre-quantization clamp is inserted here.
    dither is 0 or 1; origin_x/y give the absolute phase in the 128x128 tile.
    The deterministic recovered tile is generated in C++. Reload uses one float
    reciprocal of 65535 and a float multiply. Diagnostics remain the same six

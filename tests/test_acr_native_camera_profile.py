@@ -16,6 +16,11 @@ def _mock_native_illuminants(monkeypatch):
         assert tuple(codes) == (17, 21)
         return np.asarray([2850.0, 6500.0], dtype=np.float64)
     monkeypatch.setattr(cp, "native_acr_illuminant_temperatures", resolve)
+    # Keep fully mocked pipeline tests independent of the workstation native library.
+    monkeypatch.setattr(
+        cp, "native_acr_buffer_to_float",
+        lambda image: image.astype(np.float32) / np.float32(65535.0),
+    )
 
 
 def _profile() -> cp.Profile:
@@ -48,7 +53,7 @@ def test_enabled_experiment_uses_native_camera_pipeline_and_explicit_controls(mo
     before = camera.copy()
     prepared = _prepared_camera()
     observed: dict[str, list] = {name: [] for name in (
-        "prepare", "camera", "scale", "look", "hsl", "tone", "grading", "project",
+        "prepare", "buffer", "camera", "scale", "look", "hsl", "tone", "grading", "project",
     )}
     event_order: list[str] = []
 
@@ -60,6 +65,14 @@ def test_enabled_experiment_uses_native_camera_pipeline_and_explicit_controls(mo
         observed["camera"].append((rgb.copy(), np.array(controls, copy=True)))
         event_order.append("camera")
         return rgb + np.float32(0.1)
+
+    def buffer_to_float(slab):
+        observed["buffer"].append(slab.copy())
+        event_order.append("buffer")
+        slab_index = len(observed["buffer"])
+        base = np.float32(slab_index / 4.0)
+        channels = np.asarray([base, base + np.float32(0.0625), base + np.float32(0.125)], dtype=np.float32)
+        return np.broadcast_to(channels, slab.shape).copy()
 
     def scale(rgb, gain):
         observed["scale"].append((rgb.copy(), gain))
@@ -101,6 +114,7 @@ def test_enabled_experiment_uses_native_camera_pipeline_and_explicit_controls(mo
     ), raising=False)
     monkeypatch.setattr(cp, "native_acr_profile_look", lambda *_args: pytest.fail("single-map helper used"), raising=False)
     monkeypatch.setattr(cp, "native_acr_prepare_profile_camera", prepare)
+    monkeypatch.setattr(cp, "native_acr_buffer_to_float", buffer_to_float)
     monkeypatch.setattr(cp, "native_acr_camera_float", camera_float)
     monkeypatch.setattr(cp, "native_acr_scale_sdr", scale)
     monkeypatch.setattr(cp, "native_acr_profile_stage_sdr", look)
@@ -138,11 +152,17 @@ def test_enabled_experiment_uses_native_camera_pipeline_and_explicit_controls(mo
     order = [2, 0, 1]
     camera_float_controls = np.concatenate(([3.3, 1.1, 1.0, 1.0], prepared[35:44]))
     assert len(observed["camera"]) == 2  # The renderer sends bounded 128-row blocks.
+    assert len(observed["buffer"]) == 2
     for index, (actual_camera, actual_controls) in enumerate(observed["camera"]):
         start = index * 128
         end = min(start + 128, camera.shape[0])
-        expected = camera[start:end].astype(np.float32) / np.float32(65535.0)
-        assert np.allclose(actual_camera, expected[..., order])
+        assert np.array_equal(observed["buffer"][index], camera[start:end])
+        base = np.float32((index + 1) / 4.0)
+        expected_channels = np.asarray(
+            [base, base + np.float32(0.0625), base + np.float32(0.125)], dtype=np.float32,
+        )
+        expected = np.broadcast_to(expected_channels[order], actual_camera.shape)
+        assert np.array_equal(actual_camera, expected)
         assert np.array_equal(actual_controls, camera_float_controls)
     expected_gain = np.float32(2.0 ** (1.0 + profile.baseline_exposure_offset))
     assert all(isinstance(gain, np.float32) and gain == expected_gain
@@ -152,8 +172,8 @@ def test_enabled_experiment_uses_native_camera_pipeline_and_explicit_controls(mo
     assert all(np.array_equal(values, grading_controls) for _rgb, values in observed["grading"])
     assert all(np.array_equal(matrix, prepared[56:65]) for _rgb, matrix in observed["project"])
     assert event_order == [
-        "camera", "scale", "look", "hsl", "tone", "grading", "project",
-        "camera", "scale", "look", "hsl", "tone", "grading", "project",
+        "buffer", "camera", "scale", "look", "hsl", "tone", "grading", "project",
+        "buffer", "camera", "scale", "look", "hsl", "tone", "grading", "project",
     ]
 
 
@@ -170,6 +190,34 @@ def test_native_failure_propagates_without_legacy_python_fallback(monkeypatch):
     monkeypatch.setattr(cp, "_camera_transform", lambda *_args: pytest.fail("legacy camera transform used"))
     monkeypatch.setattr(cp.native_dense, "camera_profile_pixels", lambda *_args: pytest.fail("legacy native fallback used"))
     with pytest.raises(cp.NativeRendererError, match="camera operator unavailable"):
+        cp.render_profile(
+            camera, (1.0, 1.0, 1.0), profile, exposure_ev=0.0,
+            acr_color={"enabled": True},
+        )
+
+    assert cp.get_last_profile_backend() == "python"
+    assert np.array_equal(camera, before)
+
+
+def test_buffer_converter_failure_propagates_without_fallback_or_input_mutation(monkeypatch):
+    profile = _profile()
+    camera = np.full((3, 4, 3), 12345, dtype=np.uint16)
+    before = camera.copy()
+    monkeypatch.setattr(cp, "native_acr_prepare_profile_camera", lambda _controls: _prepared_camera())
+
+    def fail_buffer_conversion(slab):
+        assert slab.shape == camera.shape
+        raise cp.NativeRendererError("buffer converter unavailable")
+
+    monkeypatch.setattr(cp, "native_acr_buffer_to_float", fail_buffer_conversion)
+    monkeypatch.setattr(cp, "native_acr_camera_float", lambda *_args: pytest.fail(
+        "camera kernel used after buffer conversion failed",
+    ))
+    monkeypatch.setattr(cp, "_camera_transform", lambda *_args: pytest.fail("legacy camera transform used"))
+    monkeypatch.setattr(cp.native_dense, "camera_profile_pixels", lambda *_args: pytest.fail(
+        "legacy native fallback used",
+    ))
+    with pytest.raises(cp.NativeRendererError, match="buffer converter unavailable"):
         cp.render_profile(
             camera, (1.0, 1.0, 1.0), profile, exposure_ev=0.0,
             acr_color={"enabled": True},
@@ -238,6 +286,7 @@ def test_disabled_experiment_keeps_legacy_python_profile_path(monkeypatch):
     monkeypatch.setattr(cp, "_project_srgb", old_project)
     monkeypatch.setattr(cp.native_dense, "camera_profile_pixels", old_native_dense)
     monkeypatch.setattr(cp, "native_acr_prepare_profile_camera", native_unexpected)
+    monkeypatch.setattr(cp, "native_acr_buffer_to_float", native_unexpected)
     monkeypatch.setattr(cp, "native_acr_camera_float", native_unexpected)
     monkeypatch.setattr(cp, "native_acr_scale_sdr", native_unexpected)
     monkeypatch.setattr(cp, "native_acr_project_srgb", native_unexpected)

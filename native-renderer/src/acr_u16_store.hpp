@@ -19,9 +19,19 @@ using U16DitherTile = std::array<std::uint16_t, 128 * 128>;
 // initializer. The storage is static and read-only after initialization.
 const U16DitherTile &get_u16_dither_tile() noexcept;
 
-// Quantizes a prepared float32 grayscale plane to uint16. The input must be
-// finite and lie in [0, 1]. On any error, output is left untouched. Input and
-// output must not overlap.
+// Quantizes a prepared float32 grayscale plane to uint16. Every input sample
+// must be finite; signed and overrange finite values are accepted, while NaN
+// and infinity inputs are rejected before any output is written. The fused
+// scale-and-offset may overflow to infinity; its ARM FCVTZS-compatible
+// conversion saturates that result to int32 before storage.
+//
+// With dither=false, the int32 code's low 16 bits are stored without clamping.
+// With dither=true, after conversion, uint32(code) >= 65536 selects 0 for a
+// negative code or 65535 otherwise; the resulting low 16 bits are stored.
+// Dither tile generation and origin-based phase are unchanged. On any error,
+// output is left untouched. Input and output must not overlap.
+// This is an operator-local contract; it does not establish that every
+// source-to-gray-to-writer path or Pin dispatch reaches this store.
 U16StoreStatus apply_gray_u16_store(const float *gray,
                                     std::uint16_t *output,
                                     std::size_t pixel_count,

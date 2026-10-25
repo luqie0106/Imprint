@@ -28,9 +28,10 @@ GrayStatus prepare_rgb_to_gray(const double *coefficients_rgb,
                                PreparedRgbToGray *prepared) noexcept;
 
 // Applies the prepared RGB weights to interleaved float32 RGB. The output is
-// one float32 gray value per pixel. Inputs must be finite and nonnegative;
-// output is not clamped. Input/output overlap is rejected and output is
-// committed only after the complete image succeeds.
+// one float32 gray value per pixel. Finite signed and overrange inputs are
+// accepted; non-finite inputs and non-finite intermediate results are
+// rejected. Output is not clamped. Input/output overlap is rejected and
+// output is committed only after the complete image succeeds.
 GrayStatus apply_rgb_to_gray(const float *input_rgb, float *output_gray,
                              std::size_t pixel_count,
                              const PreparedRgbToGray *prepared) noexcept;

@@ -13,6 +13,7 @@ namespace {
 
 constexpr double kLn2 = 0.693147180559945309417232121458176568;
 constexpr double kMaxEpsilon = 1.0 / 4096.0;
+constexpr double kFilteredP0001 = 0x1.a36e2eb1c432dp-14;
 
 bool overlaps(const void *left, std::size_t left_size,
               const void *right, std::size_t right_size) noexcept {
@@ -91,6 +92,7 @@ HighlightStatStatus compute_highlight_stat(const float *log_pixels,
         double h = log_epsilon;
         double filtered_p1 = log_epsilon;
         double filtered_p99 = log_epsilon;
+        double filtered_p0001 = log_epsilon;
         if (filtered_count == 0) {
             // The source creates one fallback element when filtering leaves
             // no samples, so the resulting order-statistic population is 1.
@@ -108,10 +110,15 @@ HighlightStatStatus compute_highlight_stat(const float *log_pixels,
                 static_cast<std::size_t>(std::floor(
                     static_cast<double>(filtered_count) * 0.9999)),
                 filtered_count - 1);
+            const auto filtered_p0001_target = std::min(
+                static_cast<std::size_t>(std::floor(
+                    static_cast<double>(filtered_count) * kFilteredP0001)),
+                filtered_count - 1);
             std::size_t accepted_index = 0;
             visit_filtered(sorted, low, threshold,
-                           [&filtered_p1, &filtered_p99, &h,
+                           [&filtered_p1, &filtered_p99, &h, &filtered_p0001,
                             filtered_p1_target, filtered_p99_target, h_target,
+                            filtered_p0001_target,
                             &accepted_index](double value) noexcept {
                                if (accepted_index == filtered_p1_target) {
                                    filtered_p1 = value;
@@ -120,12 +127,15 @@ HighlightStatStatus compute_highlight_stat(const float *log_pixels,
                                    filtered_p99 = value;
                                }
                                if (accepted_index == h_target) h = value;
+                               if (accepted_index == filtered_p0001_target) {
+                                   filtered_p0001 = value;
+                               }
                                ++accepted_index;
                            });
         }
 
         const HighlightStat computed{p1, p99, threshold, low, filtered_count, h,
-                                     filtered_p1, filtered_p99};
+                                     filtered_p1, filtered_p99, filtered_p0001};
         result = computed;
         return HighlightStatStatus::ok;
     } catch (const std::bad_alloc &) {

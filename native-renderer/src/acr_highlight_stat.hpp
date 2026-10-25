@@ -15,6 +15,8 @@ struct HighlightStat {
     // Post-filter ranks floor(M*p), matching record indices 16/17.
     double filtered_p1 = 0.0;
     double filtered_p99 = 0.0;
+    // Record index13 -> prepared post-tone context+658; floor(M*.0001).
+    double filtered_p0001 = 0.0;
 };
 
 enum class HighlightStatStatus : int {
@@ -32,8 +34,9 @@ enum class HighlightStatStatus : int {
 // copy and holds no second per-sample buffer.
 constexpr std::size_t kMaxHighlightStatSamples = std::size_t{1} << 26;
 
-// Recover only the high-end statistic used by limitEV88 from one channel of
-// float32 log pixels. `result` is assigned only on success.
+// Recover the gate, selected filtered quantiles and high-end statistic from
+// one prepared float32 log plane. This does not construct its source domain.
+// `result` is assigned only on success.
 HighlightStatStatus compute_highlight_stat(const float *log_pixels,
                                            std::size_t count,
                                            double epsilon,

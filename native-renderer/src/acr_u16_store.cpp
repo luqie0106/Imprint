@@ -41,6 +41,15 @@ bool overlaps(const AddressRange &left, const AddressRange &right) noexcept {
     return left.begin < right.end && right.begin < left.end;
 }
 
+std::int32_t fcvtzs_s32(float value) noexcept {
+    if (std::isnan(value)) return 0;
+
+    constexpr float kInt32Limit = 0x1p31f;
+    if (value >= kInt32Limit) return std::numeric_limits<std::int32_t>::max();
+    if (value <= -kInt32Limit) return std::numeric_limits<std::int32_t>::min();
+    return static_cast<std::int32_t>(value);
+}
+
 std::int32_t next_park_miller(std::int32_t seed) noexcept {
     const std::int64_t state = seed;
     const std::int64_t quotient = state / kSchrageQuotient;
@@ -104,11 +113,11 @@ std::uint16_t quantize_sample(float gray, std::uint32_t x, std::uint32_t y,
     }
 
     const float scaled = std::fma(gray, 65535.0f, addend);
-    // The validated input and nonnegative offset keep this value in the
-    // representable int32 range. Conversion therefore matches FCVTZS.
-    std::int32_t code = static_cast<std::int32_t>(scaled);
-    if (code < 0) code = 0;
-    if (code > 65535) code = 65535;
+    std::int32_t code = fcvtzs_s32(scaled);
+    if (dither) {
+        const auto unsigned_code = static_cast<std::uint32_t>(code);
+        if (unsigned_code >= 65536u) code = code < 0 ? 0 : 65535;
+    }
     return static_cast<std::uint16_t>(code);
 }
 
@@ -135,7 +144,7 @@ U16StoreStatus apply_gray_u16_store(const float *gray,
 
     for (std::size_t index = 0; index < pixel_count; ++index) {
         const float sample = gray[index];
-        if (!std::isfinite(sample) || sample < 0.0f || sample > 1.0f)
+        if (!std::isfinite(sample))
             return U16StoreStatus::invalid_gray;
     }
 

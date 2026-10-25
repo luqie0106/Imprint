@@ -41,13 +41,13 @@ bool overlaps(AddressRange left, AddressRange right) noexcept {
     return left.begin < right.end && right.begin < left.end;
 }
 
-float signed_sqrt_forward(float value) noexcept {
+float signed_sqrt_forward(float value, bool nonnegative) noexcept {
     constexpr float kQuarter = 0.00390625f;
     constexpr float kSixteenth = 0.0625f;
-    constexpr float kScale = 1.0644512f;
+    constexpr float kScale = 0x1.107fe0p+0f;
     float root_input = kQuarter - value;
     float scale = -kScale;
-    if (0.0f <= value) {
+    if (nonnegative) {
         root_input = value + kQuarter;
         scale = kScale;
     }
@@ -56,19 +56,13 @@ float signed_sqrt_forward(float value) noexcept {
     return centered * scale;
 }
 
-float signed_sqrt_inverse(float value) noexcept {
-    constexpr float kQuarter = 0.00390625f;
+float signed_sqrt_inverse(float value, bool negative) noexcept {
     constexpr float kSixteenth = 0.0625f;
-    constexpr float kScale = 0.9394512f;
-    float scaled = value * -kScale;
-    bool negative = value < 0.0f;
-    if (!negative) {
-        scaled = value * kScale;
-    }
-    scaled = scaled + kSixteenth;
-    const float square = scaled * scaled;
-    const float centered = square + -kQuarter;
-    return negative ? -centered : centered;
+    constexpr float kScale = 0x1.e0ffc0p-1f;
+    const float signed_scale = negative ? -kScale : kScale;
+    const float z = std::fma(value, signed_scale, kSixteenth);
+    const float v = std::fma(z, z, -0.00390625f);
+    return negative ? -v : v;
 }
 
 enum class TableFunction {
@@ -93,27 +87,34 @@ float sample_table_function(double input,
                             double q,
                             bool zero_black_special) noexcept {
     if (function == TableFunction::black_normalization) {
-        const double reciprocal = -1.0 / (black - 1.0);
-        const double normalized = (input - black) * reciprocal;
+        const double d = black - 1.0;
+        const double scale = -1.0 / d;
+        const double u = input - black;
+        const double normalized = std::fma(scale, u, +0.0);
         return static_cast<float>(clamp_unit(normalized));
     }
 
     if (zero_black_special) {
         const float input_float = static_cast<float>(input);
         return function == TableFunction::forward_bracket
-                   ? signed_sqrt_forward(input_float)
-                   : signed_sqrt_inverse(input_float);
+                   ? signed_sqrt_forward(input_float, true)
+                   : signed_sqrt_inverse(input_float, false);
     }
 
+    const double base = function == TableFunction::forward_bracket ? black : q;
+    const double d = base - 1.0;
+    const double scale = -1.0 / d;
+    const double u = input - base;
+    const double normalized = std::fma(scale, u, +0.0);
+    const float normalized_float = static_cast<float>(normalized);
+    const bool negative = normalized < 0.0;
     const float nonlinear = function == TableFunction::forward_bracket
-                                ? signed_sqrt_forward(static_cast<float>(
-                                      (input - black) * (-1.0 / (black - 1.0))))
-                                : signed_sqrt_inverse(static_cast<float>(
-                                      (input - q) * (-1.0 / (q - 1.0))));
+                                ? signed_sqrt_forward(normalized_float, !negative)
+                                : signed_sqrt_inverse(normalized_float, negative);
     const double nonlinear_double = static_cast<double>(nonlinear);
     const double mapped = function == TableFunction::forward_bracket
-                              ? q + nonlinear_double * (1.0 - q)
-                              : black + nonlinear_double * (1.0 - black);
+                              ? std::fma(-(q - 1.0), nonlinear_double, q)
+                              : std::fma(-(black - 1.0), nonlinear_double, black);
     return static_cast<float>(clamp_unit(mapped));
 }
 
@@ -135,12 +136,14 @@ void build_u16_lut(double black,
     double fraction = 0.0;
     std::size_t right_index = 1;
     double right = static_cast<double>(sampled[1]);
-    double intercept = static_cast<double>(sampled[0]) * kU16Maximum + 0.5;
+    double intercept = std::fma(static_cast<double>(sampled[0]),
+                                kU16Maximum,
+                                0.5);
     double slope = (right - static_cast<double>(sampled[0])) * kU16Maximum;
     const double fraction_step = static_cast<double>(kTableIntervals) / kU16Maximum;
 
     for (std::size_t index = 0; index < output->size(); ++index) {
-        const double expanded = intercept + fraction * slope;
+        const double expanded = std::fma(slope, fraction, intercept);
         const auto integer = static_cast<std::uint32_t>(expanded);
         (*output)[index] = static_cast<std::uint16_t>(integer);
 
@@ -150,7 +153,7 @@ void build_u16_lut(double black,
             ++right_index;
             fraction = fraction + -1.0;
             next_right = static_cast<double>(sampled[right_index]);
-            intercept = right * kU16Maximum + 0.5;
+            intercept = std::fma(right, kU16Maximum, 0.5);
             slope = (next_right - right) * kU16Maximum;
         }
         right = next_right;
@@ -211,6 +214,47 @@ void downsample_level(const std::uint16_t* source,
 }
 
 }  // namespace
+
+Status prepare_integer_lut(std::uint16_t black_offset,
+                           IntegerTableKind kind,
+                           std::uint16_t* output,
+                           std::size_t count) noexcept {
+    constexpr std::size_t kEntryCount = 65536;
+    constexpr std::size_t kOutputBytes = kEntryCount * sizeof(std::uint16_t);
+    if (output == nullptr || count != kEntryCount || black_offset > 65534 ||
+        (kind != IntegerTableKind::black && kind != IntegerTableKind::forward &&
+         kind != IntegerTableKind::inverse)) {
+        return Status::invalid_argument;
+    }
+
+    const auto begin = reinterpret_cast<std::uintptr_t>(output);
+    if (begin % alignof(std::uint16_t) != 0) {
+        return Status::invalid_argument;
+    }
+    if (kOutputBytes > std::numeric_limits<std::uintptr_t>::max() - begin) {
+        return Status::size_overflow;
+    }
+
+    TableFunction function = TableFunction::black_normalization;
+    if (kind == IntegerTableKind::forward) {
+        function = TableFunction::forward_bracket;
+    } else if (kind == IntegerTableKind::inverse) {
+        function = TableFunction::inverse_bracket;
+    }
+
+    try {
+        const double black = static_cast<double>(black_offset) * (1.0 / kU16Maximum);
+        const double q = black > 0.0 ? 0.25 : 0.0;
+        std::vector<std::uint16_t> candidate;
+        build_u16_lut(black, q, function, &candidate);
+        std::memcpy(output, candidate.data(), kOutputBytes);
+        return Status::ok;
+    } catch (const std::bad_alloc&) {
+        return Status::allocation_failure;
+    } catch (...) {
+        return Status::allocation_failure;
+    }
+}
 
 Status calculate(const std::uint16_t* packed_rgb,
                  std::size_t image_width,
@@ -317,13 +361,15 @@ Status calculate(const std::uint16_t* packed_rgb,
         std::vector<std::uint16_t> inverse_lut;
         std::vector<std::uint16_t> black_lut;
         if (nonlinear_enabled) {
-            const double black = static_cast<double>(black_offset) / kU16Maximum;
+            const double black =
+                static_cast<double>(black_offset) * (1.0 / kU16Maximum);
             const double q = black > 0.0 ? 0.25 : 0.0;
             build_u16_lut(black, q, TableFunction::forward_bracket, &forward_lut);
             build_u16_lut(black, q, TableFunction::inverse_bracket, &inverse_lut);
         }
         if (black_offset > 0) {
-            const double black = static_cast<double>(black_offset) / kU16Maximum;
+            const double black =
+                static_cast<double>(black_offset) * (1.0 / kU16Maximum);
             build_u16_lut(black, 0.0, TableFunction::black_normalization, &black_lut);
         }
 
@@ -419,7 +465,7 @@ Status calculate(const std::uint16_t* packed_rgb,
         const double green_mean = channel_sums[1] / count;
         const double blue_mean = channel_sums[2] / count;
         const double normalized_mean =
-            ((red_mean + green_mean) + blue_mean) / 3.0 / kU16Maximum;
+            (((red_mean + green_mean) + blue_mean) / 3.0) * (1.0 / kU16Maximum);
         double flare = normalized_mean * kFlareScale;
         if (flare < 0.0) {
             flare = 0.0;

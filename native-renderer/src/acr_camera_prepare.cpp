@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <limits>
 
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#endif
+
 namespace imprint::acr {
 namespace {
 
@@ -44,11 +48,6 @@ bool finite_inputs(const CameraStageInput &input) noexcept {
     return input.shadow_tint >= -100 && input.shadow_tint <= 100;
 }
 
-bool checked_multiply(double left, double right, double &result) noexcept {
-    result = left * right;
-    return std::isfinite(result);
-}
-
 bool checked_add(double left, double right, double &result) noexcept {
     result = left + right;
     return std::isfinite(result);
@@ -61,14 +60,10 @@ bool multiply_3x3(const std::array<double, 9> &left,
         for (std::size_t column = 0; column < 3; ++column) {
             double accumulator = 0.0;
             for (std::size_t inner = 0; inner < 3; ++inner) {
-                double product = 0.0;
-                double sum = 0.0;
-                if (!checked_multiply(left[row * 3 + inner],
-                                      right[inner * 3 + column], product) ||
-                    !checked_add(accumulator, product, sum)) {
-                    return false;
-                }
-                accumulator = sum;
+                // 0131f884 starts with +0 and executes one FMADD per term.
+                accumulator = std::fma(left[row * 3 + inner],
+                                       right[inner * 3 + column], accumulator);
+                if (!std::isfinite(accumulator)) return false;
             }
             result[row * 3 + column] = accumulator;
         }
@@ -82,13 +77,10 @@ bool multiply_3x3_vector(const std::array<double, 9> &matrix,
     for (std::size_t row = 0; row < 3; ++row) {
         double accumulator = 0.0;
         for (std::size_t column = 0; column < 3; ++column) {
-            double product = 0.0;
-            double sum = 0.0;
-            if (!checked_multiply(matrix[row * 3 + column], vector[column], product) ||
-                !checked_add(accumulator, product, sum)) {
-                return false;
-            }
-            accumulator = sum;
+            // The count-three path of 0131fa10 includes the initial +0 FMA.
+            accumulator = std::fma(matrix[row * 3 + column], vector[column],
+                                   accumulator);
+            if (!std::isfinite(accumulator)) return false;
         }
         result[row] = accumulator;
     }
@@ -237,10 +229,16 @@ CameraStageStatus prepare_camera_stage(const CameraStageInput &input,
         if (!std::isfinite(normalized_source[channel])) {
             return CameraStageStatus::non_finite_intermediate;
         }
-        tint_vector[channel] = normalized_source[channel] * tint;
-        if (!std::isfinite(tint_vector[channel])) {
-            return CameraStageStatus::non_finite_intermediate;
-        }
+    }
+    // Preserve diag(n) * [t,t,t], including its off-diagonal +0 FMA terms.
+    const std::array<double, 9> source_diagonal{
+        normalized_source[0], 0.0, 0.0,
+        0.0, normalized_source[1], 0.0,
+        0.0, 0.0, normalized_source[2],
+    };
+    const std::array<double, 3> tint_values{tint, tint, tint};
+    if (!multiply_3x3_vector(source_diagonal, tint_values, tint_vector)) {
+        return CameraStageStatus::non_finite_intermediate;
     }
     std::array<double, 3> black_vector{};
     if (!multiply_3x3_vector(camera_matrix, tint_vector, black_vector)) {
@@ -280,13 +278,18 @@ CameraStageStatus prepare_camera_stage(const CameraStageInput &input,
         }
     }
 
+    const std::array<double, 9> white_diagonal{
+        input.camera_white[0], 0.0, 0.0,
+        0.0, input.camera_white[1], 0.0,
+        0.0, 0.0, input.camera_white[2],
+    };
+    std::array<double, 9> white_camera_matrix{};
+    if (!multiply_3x3(camera_matrix, white_diagonal, white_camera_matrix)) {
+        return CameraStageStatus::non_finite_intermediate;
+    }
     for (std::size_t row = 0; row < 3; ++row) {
         for (std::size_t column = 0; column < 3; ++column) {
-            double value = 0.0;
-            if (!checked_multiply(camera_matrix[row * 3 + column],
-                                  input.camera_white[column], value)) {
-                return CameraStageStatus::non_finite_intermediate;
-            }
+            const double value = white_camera_matrix[row * 3 + column];
             if (std::fabs(value) > std::numeric_limits<float>::max()) {
                 return CameraStageStatus::float_overflow;
             }

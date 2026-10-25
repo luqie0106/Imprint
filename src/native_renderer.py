@@ -63,6 +63,15 @@ class _BasicParams(ctypes.Structure):
     _fields_ = [(field, ctypes.c_float) for field in _BASIC_FIELDS]
 
 
+class _AcrExposureLutF32(ctypes.Structure):
+    _fields_ = [
+        ("values", ctypes.POINTER(ctypes.c_float)),
+        ("count", ctypes.c_size_t),
+        ("max_index", ctypes.c_uint32),
+        ("scale", ctypes.c_float),
+    ]
+
+
 @dataclass
 class _PreviewCacheEntry:
     library: object
@@ -200,6 +209,60 @@ def native_acr_profile_stage_sdr(
     """Recovered baseline bulk SDR stage; all resource/pixel work is in C++."""
     return _native_profile_look(rgb, look, dims, encoding, recovered=True,
                                bulk=True, lookup_gain=lookup_gain, amount=amount)
+
+
+def native_acr_profile_stage_sdr_u16(
+    rgb: np.ndarray, look: np.ndarray, dims, encoding: int, *,
+    lookup_gain: float = 1.0, amount: float = 1.0, pixel_type: int = 3,
+) -> np.ndarray:
+    """Run the recovered HSM integer wrapper with explicit word encoding.
+
+    pixel_type 3 is unsigned16; type 8 is biased by XOR 0x8000. This is the
+    SDR/header-range0 wrapper, not automatic host or pipeline selection.
+    Python copies buffers and controls; all conversion and pixels run in C++.
+    """
+    import operator
+
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.uint16
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.shape[0] * rgb.shape[1] > (1 << 26)):
+        raise ValueError("ACR integer profile stage requires nonempty uint16 HxWx3 input")
+    try:
+        if len(dims) != 3 or any(isinstance(v, (bool, np.bool_)) for v in dims):
+            raise ValueError("ACR profile dimensions must be three integers")
+        hue, saturation, value = (operator.index(v) for v in dims)
+        if isinstance(encoding, (bool, np.bool_)) or isinstance(pixel_type, (bool, np.bool_)):
+            raise ValueError("ACR profile encoding and pixel type must be integers")
+        mode, storage = operator.index(encoding), operator.index(pixel_type)
+        gain_value, amount_value = float(lookup_gain), float(amount)
+    except (TypeError, OverflowError) as exc:
+        raise ValueError("ACR integer profile controls have invalid types") from exc
+    if (hue < 1 or saturation < 2 or value < 1 or hue * saturation * value > 1000000
+            or mode not in (0, 1) or storage not in (3, 8)
+            or not math.isfinite(gain_value) or not 0 <= gain_value <= 65536
+            or not math.isfinite(amount_value) or not 0 <= amount_value <= 2):
+        raise ValueError("ACR integer profile controls are outside the prepared domain")
+    table = np.require(look, dtype=np.float32, requirements=["C", "A"])
+    if table.shape != (value, hue, saturation, 3):
+        raise ValueError("ACR integer profile table does not match its dimensions")
+    source = np.require(rgb, requirements=["C", "A"])
+    output = np.empty_like(source)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_profile_stage_sdr_u16", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide integer ACR profile stage")
+    up, fp = ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_float)
+    row_samples = source.shape[1] * 3
+    status = function(
+        source.ctypes.data_as(up), source.size, row_samples,
+        source.shape[0], source.shape[1], table.ctypes.data_as(fp), table.size,
+        hue, saturation, value, mode, gain_value, amount_value, storage,
+        output.ctypes.data_as(up), output.size, row_samples)
+    if status in (1, 4):
+        raise ValueError("Native ACR integer profile stage rejected buffers, controls or table")
+    if status:
+        raise NativeRendererError(f"Native ACR integer profile stage failed (status {status})")
+    return output
 
 
 def native_acr_prepare_huesatmap(first, second, dims, white_xy, *,
@@ -640,6 +703,79 @@ def _library_candidates() -> list[Path]:
 
 
 def _configure_library(library: ctypes.CDLL) -> None:
+    for name, scalar in (("im_native_acr_postcamera_black_prepared_f32", ctypes.c_float),
+                         ("im_native_acr_postcamera_black_prepared_u16", ctypes.c_uint16)):
+        postblack = getattr(library, name, None)
+        if postblack is not None:
+            postblack.argtypes = [
+                ctypes.POINTER(scalar), ctypes.c_size_t, ctypes.c_size_t,
+                ctypes.c_size_t, ctypes.c_size_t, ctypes.c_double,
+                ctypes.POINTER(scalar), ctypes.c_size_t, ctypes.c_size_t,
+            ]
+            postblack.restype = ctypes.c_int
+    profile_u16 = getattr(library, "im_native_acr_profile_stage_sdr_u16", None)
+    if profile_u16 is not None:
+        up, fp = ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_float)
+        profile_u16.argtypes = [
+            up, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            fp, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_double, ctypes.c_double, ctypes.c_uint32,
+            up, ctypes.c_size_t, ctypes.c_size_t,
+        ]
+        profile_u16.restype = ctypes.c_int
+    combined = getattr(library, "im_native_acr_camera_combined_prepared_f32", None)
+    if combined is not None:
+        combined.argtypes = [
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_double),
+            ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_size_t,
+        ]
+        combined.restype = ctypes.c_int
+    for name, scalar in (("im_native_acr_gainmap_prepared_f32", ctypes.c_float),
+                         ("im_native_acr_gainmap_prepared_u16", ctypes.c_uint16)):
+        gainmap = getattr(library, name, None)
+        if gainmap is not None:
+            gainmap.argtypes = [
+                ctypes.POINTER(scalar), ctypes.c_size_t, ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t, ctypes.c_uint16, ctypes.c_size_t, ctypes.c_size_t,
+                ctypes.POINTER(scalar), ctypes.c_size_t,
+            ]
+            gainmap.restype = ctypes.c_int
+    for name, scalar in (("im_native_acr_warp_prepared_f32", ctypes.c_float),
+                         ("im_native_acr_warp_prepared_u16_f32", ctypes.c_uint16)):
+        warp = getattr(library, name, None)
+        if warp is not None:
+            warp.argtypes = [
+                ctypes.POINTER(scalar), ctypes.c_size_t, ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
+                ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ]
+            warp.restype = ctypes.c_int
+    for name, input_scalar, output_scalar in (
+        ("im_native_acr_buffer_f32_to_u16", ctypes.c_float, ctypes.c_uint16),
+        ("im_native_acr_buffer_u16_to_f32", ctypes.c_uint16, ctypes.c_float),
+    ):
+        converter = getattr(library, name, None)
+        if converter is not None:
+            converter.argtypes = [ctypes.POINTER(input_scalar), ctypes.c_size_t,
+                ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+                ctypes.POINTER(output_scalar), ctypes.c_size_t, ctypes.c_size_t]
+            converter.restype = ctypes.c_int
+    stage3_prepared = getattr(library, "im_native_acr_stage3_prepared_image_u16", None)
+    if stage3_prepared is not None:
+        stage3_prepared.argtypes = [
+            ctypes.POINTER(ctypes.c_uint16), ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_double),
+            ctypes.c_uint16, ctypes.c_int, ctypes.c_double, ctypes.c_int,
+            ctypes.c_uint16, ctypes.c_uint16, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint16), ctypes.c_size_t,
+        ]
+        stage3_prepared.restype = ctypes.c_int
     acr_flare = getattr(library, "im_native_acr_flare_u16_rgb", None)
     if acr_flare is not None:
         acr_flare.argtypes = [ctypes.c_uint32, ctypes.c_uint32,
@@ -695,6 +831,86 @@ def _configure_library(library: ctypes.CDLL) -> None:
         camera_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
                                   ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
         camera_prepare.restype = ctypes.c_int
+    sdr_mask_exposure = getattr(library, "im_native_acr_sdr_mask_exposure_prepared_f32", None)
+    if sdr_mask_exposure is not None:
+        fp = ctypes.POINTER(ctypes.c_float)
+        sdr_mask_exposure.argtypes = [
+            fp, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            fp, ctypes.c_size_t, ctypes.c_size_t, fp, ctypes.c_size_t,
+            fp, ctypes.c_size_t, fp, ctypes.c_size_t, ctypes.c_size_t,
+        ]
+        sdr_mask_exposure.restype = ctypes.c_int
+    sdr_mask_context = getattr(library, "im_native_acr_sdr_mask_exposure_context_prepared_f32", None)
+    if sdr_mask_context is not None:
+        fp = ctypes.POINTER(ctypes.c_float)
+        sdr_mask_context.argtypes = [
+            fp, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            fp, ctypes.c_size_t, ctypes.c_size_t, fp, ctypes.c_size_t,
+            fp, ctypes.c_size_t, ctypes.POINTER(_AcrExposureLutF32), ctypes.c_size_t,
+            fp, ctypes.c_size_t, ctypes.c_size_t,
+        ]
+        sdr_mask_context.restype = ctypes.c_int
+    sdr_nomask_context = getattr(library, "im_native_acr_sdr_nomask_exposure_context_prepared_f32", None)
+    if sdr_nomask_context is not None:
+        fp = ctypes.POINTER(ctypes.c_float)
+        sdr_nomask_context.argtypes = [
+            fp, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            fp, ctypes.c_size_t, fp, ctypes.c_size_t,
+            ctypes.POINTER(_AcrExposureLutF32), ctypes.c_size_t,
+            fp, ctypes.c_size_t, ctypes.c_size_t,
+        ]
+        sdr_nomask_context.restype = ctypes.c_int
+    pixel_epsilon = getattr(library, "im_native_acr_prepare_exposure_pixel_epsilon", None)
+    if pixel_epsilon is not None:
+        pixel_epsilon.argtypes = [
+            ctypes.c_uint32, ctypes.c_double, ctypes.c_double,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+        ]
+        pixel_epsilon.restype = ctypes.c_int
+    exposure_context_lut = getattr(library, "im_native_acr_prepare_exposure_context_lut", None)
+    if exposure_context_lut is not None:
+        exposure_context_lut.argtypes = [
+            ctypes.c_uint32, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+        ]
+        exposure_context_lut.restype = ctypes.c_int
+    black_response = getattr(library, "im_native_acr_prepare_black_response", None)
+    if black_response is not None:
+        black_response.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                   ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        black_response.restype = ctypes.c_int
+    post_tone_stats = getattr(library, "im_native_acr_post_tone_stats_prepared_f32", None)
+    if post_tone_stats is not None:
+        post_tone_stats.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                                   ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        post_tone_stats.restype = ctypes.c_int
+    post_tone_basic = getattr(library, "im_native_acr_normalize_post_tone_basic_i32", None)
+    if post_tone_basic is not None:
+        post_tone_basic.argtypes = [ctypes.c_uint32,
+                                   ctypes.POINTER(ctypes.c_int32), ctypes.c_size_t,
+                                   ctypes.POINTER(ctypes.c_int32), ctypes.c_size_t,
+                                   ctypes.POINTER(ctypes.c_int32), ctypes.c_size_t]
+        post_tone_basic.restype = ctypes.c_int
+    exposure_qcap = getattr(library, "im_native_acr_prepare_exposure_qcap", None)
+    if exposure_qcap is not None:
+        exposure_qcap.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                 ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        exposure_qcap.restype = ctypes.c_int
+    exposure_optional = getattr(library, "im_native_acr_prepare_exposure_optional", None)
+    if exposure_optional is not None:
+        exposure_optional.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+                                     ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+        exposure_optional.restype = ctypes.c_int
+    signed_exposure = getattr(library, "im_native_acr_signed_exposure_prepared_f32", None)
+    if signed_exposure is not None:
+        signed_exposure.argtypes = [
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ctypes.POINTER(_AcrExposureLutF32), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+        ]
+        signed_exposure.restype = ctypes.c_int
     exposure_prepare = getattr(library, "im_native_acr_prepare_exposure", None)
     if exposure_prepare is not None:
         exposure_prepare.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
@@ -2144,6 +2360,478 @@ def native_acr_prepare_camera_stage(controls: object) -> np.ndarray:
     return output
 
 
+def native_acr_sdr_mask_exposure_prepared(
+    rgb: np.ndarray, mask: object, controls: object, *, main_lut: object | None = None,
+) -> np.ndarray:
+    """Run the finite-intermediate SDR mask subset with six prepared controls.
+
+    Optional luminance/channel contexts are disabled. The caller supplies the
+    mask, internal scalars and main curve; this does not derive UI settings.
+    A<=1 disables the main curve and ignores main_lut. All pixels run in C++.
+    """
+    source = np.require(rgb, dtype=np.float32, requirements=["C", "A"])
+    if (source.ndim != 3 or source.shape[2] != 3 or not source.size
+            or source.shape[0] * source.shape[1] > (1 << 26)):
+        raise ValueError("ACR SDR mask exposure requires a nonempty HxWx3 source")
+    mask_values = np.require(mask, dtype=np.float32, requirements=["C", "A"])
+    values = np.require(controls, dtype=np.float32, requirements=["C", "A"])
+    if mask_values.shape != source.shape[:2] or values.shape != (6,):
+        raise ValueError("ACR SDR mask exposure requires an HxW mask and six controls")
+    fp = ctypes.POINTER(ctypes.c_float)
+    table = None
+    table_pointer = None
+    table_count = 0
+    if values[2] > 1 and main_lut is not None:
+        table = np.require(main_lut, dtype=np.float32, requirements=["C", "A"])
+        if table.ndim != 1:
+            raise ValueError("ACR SDR exposure main curve must be one dimensional")
+        table_pointer = table.ctypes.data_as(fp)
+        table_count = table.size
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_sdr_mask_exposure_prepared_f32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide SDR mask ACR exposure")
+    output = np.empty_like(source)
+    status = function(
+        source.ctypes.data_as(fp), source.size, source.shape[1] * 3,
+        source.shape[0], source.shape[1], mask_values.ctypes.data_as(fp),
+        mask_values.size, source.shape[1], values.ctypes.data_as(fp), values.size,
+        table_pointer, table_count, output.ctypes.data_as(fp), output.size,
+        source.shape[1] * 3)
+    if status in (1, 4):
+        raise ValueError("Native ACR SDR mask exposure rejected its prepared buffers or state")
+    if status:
+        raise NativeRendererError(f"Native ACR SDR mask exposure failed (status {status})")
+    return output
+
+
+def native_acr_sdr_mask_exposure_context_prepared(
+    rgb: np.ndarray, mask: object, controls: object, *, main_lut: object | None = None,
+    pre_lut: object | None = None, channel_luts: object = (None, None, None),
+    post_lut: object | None = None,
+) -> np.ndarray:
+    """Run the prepared masked baseline with pre/RGB/post LUTs in C++."""
+    return _native_acr_sdr_exposure_context(
+        rgb, controls, has_mask=True, mask=mask, main_lut=main_lut,
+        pre_lut=pre_lut, channel_luts=channel_luts, post_lut=post_lut)
+
+
+def native_acr_sdr_nomask_exposure_context_prepared(
+    rgb: np.ndarray, controls: object, *, main_lut: object | None = None,
+    pre_lut: object | None = None, channel_luts: object = (None, None, None),
+    post_lut: object | None = None,
+) -> np.ndarray:
+    """Run baseline 01372428 with no mask, retaining its conditional clip.
+
+    This does not choose the original fast/full dispatch slot or generate
+    internal controls and LUTs. It never allocates a replacement zero mask.
+    """
+    return _native_acr_sdr_exposure_context(
+        rgb, controls, has_mask=False, main_lut=main_lut,
+        pre_lut=pre_lut, channel_luts=channel_luts, post_lut=post_lut)
+
+
+def _native_acr_sdr_exposure_context(
+    rgb: np.ndarray, controls: object, *, has_mask: bool, mask: object | None = None,
+    main_lut: object | None = None, pre_lut: object | None = None,
+    channel_luts: object = (None, None, None), post_lut: object | None = None,
+) -> np.ndarray:
+    """Supply buffers for the caller-selected masked or unmasked baseline.
+
+    LUT descriptors are None or (float values, inclusive max_index, scale).
+    A partial RGB group is ignored, including its unused descriptor fields.
+    This adapter supplies buffers; all output pixels are evaluated in C++.
+    """
+    import operator
+
+    source = np.require(rgb, dtype=np.float32, requirements=["C", "A"])
+    if (source.ndim != 3 or source.shape[2] != 3 or not source.size
+            or source.shape[0] * source.shape[1] > (1 << 26)):
+        raise ValueError("ACR SDR context exposure requires a nonempty HxWx3 source")
+    values = np.require(controls, dtype=np.float32, requirements=["C", "A"])
+    mask_values = None
+    if has_mask:
+        mask_values = np.require(mask, dtype=np.float32, requirements=["C", "A"])
+        if mask_values.shape != source.shape[:2]:
+            raise ValueError("ACR SDR context exposure requires an HxW mask")
+    if values.shape != (6,):
+        raise ValueError("ACR SDR context exposure requires six controls")
+    if not isinstance(channel_luts, (tuple, list)) or len(channel_luts) != 3:
+        raise ValueError("ACR SDR context exposure requires three channel descriptors")
+    channels = channel_luts if all(item is not None for item in channel_luts) else (None,) * 3
+    descriptors = (_AcrExposureLutF32 * 5)()
+    retained = []
+    fp = ctypes.POINTER(ctypes.c_float)
+    for index, descriptor in enumerate([pre_lut, *channels, post_lut]):
+        if descriptor is None:
+            descriptors[index] = _AcrExposureLutF32(None, 0, 0, 1.0)
+            continue
+        if not isinstance(descriptor, (tuple, list)) or len(descriptor) != 3:
+            raise ValueError("ACR SDR LUT must be (values, inclusive max_index, scale)")
+        table_values, max_index, scale = descriptor
+        try:
+            if isinstance(max_index, (bool, np.bool_)):
+                raise TypeError
+            inclusive_index = operator.index(max_index)
+        except TypeError as exc:
+            raise ValueError("ACR SDR LUT index must be an integer") from exc
+        if not 0 <= inclusive_index <= 0x7fffffff:
+            raise ValueError("ACR SDR LUT index exceeds ARM signed index range")
+        table = np.require(table_values, dtype=np.float32, requirements=["C", "A"])
+        if table.ndim != 1:
+            raise ValueError("ACR SDR LUT values must be one dimensional")
+        retained.append(table)
+        descriptors[index] = _AcrExposureLutF32(table.ctypes.data_as(fp), table.size,
+                                                 inclusive_index, float(scale))
+    main_table = None
+    main_pointer, main_count = None, 0
+    if values[2] > 1 and main_lut is not None:
+        main_table = np.require(main_lut, dtype=np.float32, requirements=["C", "A"])
+        if main_table.ndim != 1:
+            raise ValueError("ACR SDR main curve must be one dimensional")
+        main_pointer, main_count = main_table.ctypes.data_as(fp), main_table.size
+    library, _ = _get_library()
+    symbol = ("im_native_acr_sdr_mask_exposure_context_prepared_f32" if has_mask
+              else "im_native_acr_sdr_nomask_exposure_context_prepared_f32")
+    function = getattr(library, symbol, None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide SDR context ACR exposure")
+    output = np.empty_like(source)
+    arguments = (
+        source.ctypes.data_as(fp), source.size, source.shape[1] * 3,
+        source.shape[0], source.shape[1])
+    if has_mask:
+        arguments += (mask_values.ctypes.data_as(fp), mask_values.size, source.shape[1])
+    arguments += (
+        values.ctypes.data_as(fp), values.size,
+        main_pointer, main_count, descriptors, 5, output.ctypes.data_as(fp),
+        output.size, source.shape[1] * 3)
+    status = function(*arguments)
+    if status in (1, 4):
+        raise ValueError("Native ACR SDR context exposure rejected prepared buffers or state")
+    if status:
+        raise NativeRendererError(f"Native ACR SDR context exposure failed (status {status})")
+    return output
+
+
+def native_acr_prepare_exposure_pixel_epsilon(
+    colorimetric_reference: int, source_flare: float, original_ev90: float,
+) -> float:
+    """Prepare original pixel E in C++ from explicit source fields.
+
+    source_flare is the source+1540 scalar, not the separate log epsilon.
+    The caller resolves the source image and original EV90 before this call.
+    """
+    import operator
+
+    try:
+        if isinstance(colorimetric_reference, (bool, np.bool_)):
+            raise TypeError
+        reference = operator.index(colorimetric_reference)
+        flare, ev90 = float(source_flare), float(original_ev90)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("ACR pixel epsilon requires a uint32 reference and two doubles") from exc
+    if not 0 <= reference <= 0xffffffff or not math.isfinite(flare) or not math.isfinite(ev90):
+        raise ValueError("ACR pixel epsilon requires a uint32 reference and finite source fields")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_exposure_pixel_epsilon", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR pixel epsilon preparation")
+    output = np.empty(1, dtype=np.float32)
+    status = function(reference, flare, ev90,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), 1)
+    if status in (1, 4):
+        raise ValueError("Native ACR pixel epsilon rejected its source fields or output")
+    if status:
+        raise NativeRendererError(f"Native ACR pixel epsilon failed (status {status})")
+    return float(output[0])
+
+
+def _native_acr_prepare_exposure_context_lut(kind: int, controls: tuple) -> np.ndarray:
+    values = np.require(controls, dtype=np.float64, requirements=["C", "A"])
+    if values.shape != ((3,) if kind == 1 else (1,)) or not np.isfinite(values).all():
+        raise ValueError("ACR Exposure context curve requires finite prepared doubles")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_exposure_context_lut", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide Exposure context LUT preparation")
+    output = np.empty(4098, dtype=np.float32)
+    status = function(kind, values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      values.size, output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size)
+    if status in (1, 4):
+        raise ValueError("Native Exposure context curve rejected its prepared controls")
+    if status:
+        raise NativeRendererError(f"Native Exposure context LUT preparation failed (status {status})")
+    return output
+
+
+def native_acr_prepare_exposure_channel_lut(a: float, b: float, h: float) -> np.ndarray:
+    """Build 4098 float samples of the prepared channel curve in C++.
+
+    a/b must be in [0,1), h in [0,.5]. Use (table,4096,4096) as an Exposure
+    context descriptor. This does not infer UI values or optional enable flags.
+    """
+    return _native_acr_prepare_exposure_context_lut(1, (a, b, h))
+
+
+def native_acr_prepare_exposure_post_lut(p: float) -> np.ndarray:
+    """Build the recovered post wrapper for explicit p in [0,1] in C++."""
+    return _native_acr_prepare_exposure_context_lut(2, (p,))
+
+
+def native_acr_prepare_black_response(
+    blacks: int, profile_gain_param: int, *, gain_adjust_active: bool,
+    mode: bool, k: float, q: float,
+) -> np.ndarray:
+    """Prepare [z, post strength, channel strength] in C++ from Blacks2012.
+
+    Predicate/mode and k/q remain explicit resolved inputs. This does not
+    infer profile state or enable optional curves in a rendering request.
+    """
+    import operator
+
+    integers = []
+    try:
+        for value in (blacks, profile_gain_param):
+            if isinstance(value, (bool, np.bool_)):
+                raise ValueError("Blacks/profile gain parameters must be int32 integers")
+            integer = operator.index(value)
+            if not -2147483648 <= integer <= 2147483647:
+                raise ValueError("Blacks/profile gain parameters must fit int32")
+            integers.append(integer)
+        flags = [operator.index(value) for value in (gain_adjust_active, mode)]
+        if any(value not in (0, 1) for value in flags):
+            raise ValueError("Blacks response predicates must be 0 or 1")
+        values = np.require([*integers, *flags, float(k), float(q)],
+                            dtype=np.float64, requirements=["C", "A"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Blacks response requires two int32 parameters, two flags and k/q") from exc
+    if not np.isfinite(values).all():
+        raise ValueError("Blacks response requires finite k/q")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_black_response", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide Blacks response preparation")
+    output = np.empty(3, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status in (1, 4):
+        raise ValueError("Native Blacks response rejected its prepared controls or curve")
+    if status:
+        raise NativeRendererError(f"Native Blacks response preparation failed (status {status})")
+    return output
+
+
+def native_acr_post_tone_stats_prepared(log_plane: np.ndarray, epsilon: float) -> np.ndarray:
+    """Compute [p0.01%, p1%, p99%, high, population] in C++.
+
+    The caller supplies the correctly normalized post-tone float32 log plane
+    and source-log epsilon. This does not build that image from display RGB.
+    """
+    if (not isinstance(log_plane, np.ndarray) or log_plane.dtype != np.float32
+            or log_plane.ndim not in (1, 2) or not log_plane.size
+            or log_plane.size > (1 << 26)):
+        raise ValueError("Post-tone statistics require a nonempty float32 log plane")
+    try:
+        source_epsilon = float(epsilon)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Post-tone statistics require a source-log epsilon") from exc
+    if not math.isfinite(source_epsilon) or not 0 < source_epsilon <= 2.0 ** -12:
+        raise ValueError("Post-tone statistics require epsilon in (0,2^-12]")
+    source = np.require(log_plane, requirements=["C", "A"])
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_post_tone_stats_prepared_f32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide prepared post-tone statistics")
+    output = np.empty(5, dtype=np.float64)
+    status = function(source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size,
+                      source_epsilon, output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status in (1, 4):
+        raise ValueError("Native post-tone statistics rejected its prepared source or epsilon")
+    if status:
+        raise NativeRendererError(f"Native post-tone statistics failed (status {status})")
+    return output
+
+
+def native_acr_normalize_post_tone_basic(
+    values: np.ndarray, source_defaults: np.ndarray, process_version: int,
+) -> np.ndarray:
+    """Normalize 132 loop-entry basic slots in C++ using explicit source defaults.
+
+    Both arrays must be int32 and already have their prior activation/source
+    preparation applied. This does not build a complete normalized request.
+    """
+    import operator
+
+    for array in (values, source_defaults):
+        if (not isinstance(array, np.ndarray) or array.dtype != np.int32
+                or array.shape != (132,)):
+            raise ValueError("Post-tone basic normalization requires two int32[132] arrays")
+    try:
+        if isinstance(process_version, (bool, np.bool_)):
+            raise TypeError
+        version = operator.index(process_version)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Post-tone process version must be uint32") from exc
+    if not 0 <= version <= 0xffffffff:
+        raise ValueError("Post-tone process version must be uint32")
+    source = np.require(values, requirements=["C", "A"])
+    defaults = np.require(source_defaults, requirements=["C", "A"])
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_normalize_post_tone_basic_i32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide post-tone basic normalization")
+    output = np.empty(132, dtype=np.int32)
+    status = function(version,
+                      source.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)), source.size,
+                      defaults.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)), defaults.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)), output.size)
+    if status in (1, 4):
+        raise ValueError("Native post-tone basic normalization rejected its prepared buffers")
+    if status:
+        raise NativeRendererError(f"Native post-tone basic normalization failed (status {status})")
+    return output
+
+
+def native_acr_prepare_exposure_qcap(controls: object) -> np.ndarray:
+    """Return native [v, raw response, q] from eight explicit context scalars.
+
+    Order: +98/+a0/+b0/+80, filtered p1/p99/p0.01%, high(+690).
+    This does not derive actual request state or the separate channel cap.
+    """
+    try:
+        values = np.require(controls, dtype=np.float64, requirements=["C", "A"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Exposure q requires eight prepared scalar controls") from exc
+    if values.shape != (8,) or not np.isfinite(values).all():
+        raise ValueError("Exposure q requires eight finite prepared scalar controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_exposure_qcap", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide prepared exposure q")
+    output = np.empty(3, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status in (1, 4):
+        raise ValueError("Native exposure q rejected its prepared controls or curve")
+    if status:
+        raise NativeRendererError(f"Native exposure q preparation failed (status {status})")
+    return output
+
+
+def native_acr_prepare_exposure_optional(controls: object) -> np.ndarray:
+    """Prepare the optional-curve scalar plan in C++ from 18 explicit values.
+
+    Output: q_v,q_raw,q,z,B,D,cap,channel_active,post_active,
+    aR,bR,aG,bG,aB,bB,h,p,caller_z. The two gain-adjust flags in the
+    controls are resolved separately. No profile/request inference occurs.
+    """
+    try:
+        values = np.require(controls, dtype=np.float64, requirements=["C", "A"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Optional exposure curves require 18 prepared controls") from exc
+    if values.shape != (18,) or not np.isfinite(values).all():
+        raise ValueError("Optional exposure curves require 18 finite prepared controls")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_prepare_exposure_optional", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide optional exposure preparation")
+    output = np.empty(18, dtype=np.float64)
+    status = function(values.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), values.size,
+                      output.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), output.size)
+    if status in (1, 4):
+        raise ValueError("Native optional exposure preparation rejected its prepared state")
+    if status:
+        raise NativeRendererError(f"Native optional exposure preparation failed (status {status})")
+    return output
+
+
+def native_acr_prepare_exposure_optional_luts(
+    controls: object,
+) -> tuple[np.ndarray, tuple[np.ndarray | None, ...]]:
+    """Assemble the scalar plan and native R/G/B/post tables.
+
+    An absent object is None. Active zero-valued channel controls still build
+    their real curve tables; numerical parameters and tables are computed by
+    C++, while this adapter selects buffers according to the native flags.
+    """
+    plan = native_acr_prepare_exposure_optional(controls)
+    channels = tuple(
+        native_acr_prepare_exposure_channel_lut(
+            float(plan[9 + 2 * channel]), float(plan[10 + 2 * channel]), float(plan[15]))
+        for channel in range(3)
+    ) if plan[7] else (None, None, None)
+    post = native_acr_prepare_exposure_post_lut(float(plan[16])) if plan[8] else None
+    return plan, (*channels, post)
+
+
+def native_acr_signed_exposure_prepared(
+    rgb: np.ndarray, controls: object, *, mask: object | None = None,
+    channel_luts: object = (None, None, None), gray_lut: object | None = None,
+) -> np.ndarray:
+    """Run the explicit signed exposure CPU kernel with resolved internal state.
+
+    Each LUT is None or (float array, inclusive max_index, float scale).
+    This adapter supplies buffers only; it does not choose a host branch,
+    derive UI parameters or compute output pixels.
+    """
+    source = np.require(rgb, dtype=np.float32, requirements=["C", "A"])
+    if (source.ndim != 3 or source.shape[2] != 3 or not source.size
+            or source.shape[0] * source.shape[1] > (1 << 26)):
+        raise ValueError("ACR signed exposure requires a nonempty HxWx3 source")
+    values = np.require(controls, dtype=np.float32, requirements=["C", "A"])
+    if values.shape != (4,):
+        raise ValueError("ACR signed exposure requires four prepared float controls")
+    if not isinstance(channel_luts, (list, tuple)) or len(channel_luts) != 3:
+        raise ValueError("ACR signed exposure requires three channel LUT descriptors")
+    descriptors = (_AcrExposureLutF32 * 4)()
+    retained_tables = []
+    for index, descriptor in enumerate([*channel_luts, gray_lut]):
+        if descriptor is None:
+            descriptors[index] = _AcrExposureLutF32(None, 0, 0, 1.0)
+            continue
+        if not isinstance(descriptor, (list, tuple)) or len(descriptor) != 3:
+            raise ValueError("Each ACR exposure LUT must be (values, max_index, scale)")
+        table, max_index, scale = descriptor
+        if (isinstance(max_index, (bool, np.bool_))
+                or not isinstance(max_index, (int, np.integer))
+                or not 0 <= int(max_index) <= 0x7ffffffe):
+            raise ValueError("ACR exposure LUT max_index is outside its signed index range")
+        table_values = np.require(table, dtype=np.float32, requirements=["C", "A"])
+        if table_values.ndim != 1:
+            raise ValueError("ACR exposure LUT values must be one dimensional")
+        retained_tables.append(table_values)
+        descriptors[index] = _AcrExposureLutF32(
+            table_values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            table_values.size, int(max_index), float(scale))
+    if mask is None:
+        mask_values = None
+        mask_pointer = None
+        mask_count = 0
+    else:
+        mask_values = np.require(mask, dtype=np.float32, requirements=["C", "A"])
+        if mask_values.shape != source.shape[:2]:
+            raise ValueError("ACR exposure mask must match source height and width")
+        mask_pointer = mask_values.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        mask_count = mask_values.size
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_signed_exposure_prepared_f32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide signed ACR exposure")
+    output = np.empty_like(source)
+    status = function(
+        source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size,
+        source.shape[0] * source.shape[1],
+        values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), values.size,
+        descriptors, len(descriptors), mask_pointer, mask_count,
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size)
+    if status in (1, 4):
+        raise ValueError("Native ACR signed exposure rejected its prepared buffers or state")
+    if status:
+        raise NativeRendererError(f"Native ACR signed exposure failed (status {status})")
+    return output
+
+
 def native_acr_source_limit_scene_u16(rgb: np.ndarray, controls: object) -> np.ndarray:
     """Native zero-pedestal scene/no-filter source pyramid through limitEV88.
 
@@ -2309,6 +2997,391 @@ def native_acr_camera_float(rgb: np.ndarray, controls: object) -> np.ndarray:
     if status:
         raise NativeRendererError(f"Native camera operator failed (status {status})")
     return output
+
+
+def native_acr_camera_combined_prepared(
+    rgb: np.ndarray, controls: object, order3: object = (0, 1, 2), flags: int = 0,
+) -> np.ndarray:
+    """Run ordinary modern Camera on HWC input with explicit prepared state.
+
+    Controls are [A,B,U,retained_floor,sorted_matrix9]. Native code selects
+    channels using order3 and outputs fixed ProPhoto RGB with the retained
+    floor. This component does not apply post-camera black, exposure or display.
+    """
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) <= 0
+            or rgb.size > 128 * 1024 * 1024):
+        raise ValueError("ACR combined Camera requires nonempty float32 HxWx3 input")
+    values = np.asarray(controls, dtype=np.float64)
+    if (values.shape != (13,) or not np.isfinite(values).all()
+            or np.any(np.abs(values) > np.finfo(np.float32).max)):
+        raise ValueError("ACR combined Camera requires 13 finite float32-representable controls")
+    order = np.asarray(order3)
+    if (order.shape != (3,) or order.dtype.kind not in "iu"
+            or sorted(order.tolist()) != [0, 1, 2]):
+        raise ValueError("ACR combined Camera order must be a permutation of 0,1,2")
+    if (not isinstance(flags, (int, np.integer)) or isinstance(flags, (bool, np.bool_))
+            or not 0 <= flags <= 0xffffffff):
+        raise ValueError("ACR combined Camera flags must be uint32")
+    source = np.ascontiguousarray(rgb)
+    parameters = np.ascontiguousarray(values)
+    permutation = np.ascontiguousarray(order, dtype=np.uint32)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_camera_combined_prepared_f32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide modern combined Camera")
+    output = np.empty_like(source)
+    height, width = source.shape[:2]
+    status = function(
+        source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), source.size, width * 3,
+        height, width, parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        parameters.size, permutation.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32)),
+        int(flags), output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+        width * 3,
+    )
+    if status in (1, 4):
+        raise ValueError("Native combined Camera rejected prepared controls or input")
+    if status:
+        raise NativeRendererError(f"Native combined Camera failed (status {status})")
+    return output
+
+
+def native_acr_postcamera_black_prepared(image: np.ndarray, black: float) -> np.ndarray:
+    """Apply the recovered 4096-segment post-camera black LUT in float mode.
+
+    Input is finite float32 in [0,1]; black is the prepared double retained
+    floor. Zero floor preserves active bits. Actual RAW pipe format selection
+    and later exposure/Profile/display remain the caller's responsibility.
+    """
+    return _native_acr_postcamera_black(image, black, False)
+
+
+def native_acr_postcamera_black_prepared_u16(image: np.ndarray, black: float) -> np.ndarray:
+    """Apply the recovered 65536-entry unsigned mode1 black LUT in C++.
+
+    This explicit entry does not choose request policy or adjacent conversion.
+    Zero floor bypasses the LUT and preserves input samples.
+    """
+    return _native_acr_postcamera_black(image, black, True)
+
+
+def _native_acr_postcamera_black(image: np.ndarray, black: float, integer: bool) -> np.ndarray:
+    dtype = np.dtype('uint16' if integer else 'float32')
+    scalar = ctypes.c_uint16 if integer else ctypes.c_float
+    if (not isinstance(image, np.ndarray) or image.dtype != dtype
+            or image.ndim not in (2, 3) or min(image.shape) <= 0
+            or image.size > 128 * 1024 * 1024):
+        raise ValueError(f"ACR post-camera black requires nonempty {dtype} 2D/3D input")
+    try:
+        value = float(black)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("ACR post-camera black must be a finite scalar in [0,1)") from error
+    if not np.isfinite(value) or not 0 <= value < 1:
+        raise ValueError("ACR post-camera black must be a finite scalar in [0,1)")
+    source = np.ascontiguousarray(image)
+    output = np.empty_like(source)
+    height = source.shape[0]
+    row_samples = source.size // height
+    library, _ = _get_library()
+    symbol = ("im_native_acr_postcamera_black_prepared_u16" if integer
+              else "im_native_acr_postcamera_black_prepared_f32")
+    function = getattr(library, symbol, None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide post-camera black")
+    status = function(
+        source.ctypes.data_as(ctypes.POINTER(scalar)), source.size, row_samples,
+        height, row_samples, value, output.ctypes.data_as(ctypes.POINTER(scalar)),
+        output.size, row_samples,
+    )
+    if status in (1, 4):
+        raise ValueError("Native post-camera black rejected prepared controls or input")
+    if status:
+        raise NativeRendererError(f"Native post-camera black failed (status {status})")
+    return output
+
+
+def native_acr_stage3_prepared_image(
+    cfa: np.ndarray, gains: object, *, source_floor: int, cubic: bool,
+    amount: float, suppress_refine: bool = False, hot_threshold: int = 8000,
+    cold_threshold: int = 6000, tile_shape: tuple[int, int] = (256, 256),
+    origin: tuple[int, int] = (0, 0),
+) -> np.ndarray:
+    """Compose prepared CPU Stage3 into camera RGB16, before lens/profile.
+
+    The input is linearized uint16 CFA on a canonical global RGGB lattice.
+    All controls are supplied explicitly; this does not bind Adobe host state,
+    select a profile or RAW decoder, or enable the default full-res dispatcher.
+    ``origin`` and ``tile_shape`` use row/column order. Python validates and
+    allocates buffers; all image arithmetic runs in the native CPU operator.
+    """
+    if (not isinstance(cfa, np.ndarray) or cfa.dtype != np.uint16
+            or cfa.ndim != 2 or min(cfa.shape) < 2
+            or cfa.size * 3 > 128 * 1024 * 1024):
+        raise ValueError("Prepared Stage3 requires a uint16 CFA image of at least 2x2")
+    parameters = np.asarray(gains, dtype=np.float64)
+    if (parameters.shape != (3,) or not np.isfinite(parameters).all()
+            or np.any(parameters <= 0) or np.any(parameters >= 128)):
+        raise ValueError("Prepared Stage3 gains must be three finite values in (0, 128)")
+
+    def integer(value, low, high, name):
+        if (isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                or not low <= int(value) <= high):
+            raise ValueError(f"Prepared Stage3 {name} must be an integer in [{low}, {high}]")
+        return int(value)
+
+    floor = integer(source_floor, 0, 65534, "source floor")
+    hot = integer(hot_threshold, 0, 65535, "hot threshold")
+    cold = integer(cold_threshold, 0, 65535, "cold threshold")
+    if not isinstance(cubic, (bool, np.bool_)) or not isinstance(suppress_refine, (bool, np.bool_)):
+        raise ValueError("Prepared Stage3 cubic and suppression must be boolean")
+    try:
+        scalar = float(amount)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Prepared Stage3 amount must be finite float32") from exc
+    if (isinstance(amount, (bool, np.bool_)) or not math.isfinite(scalar)
+            or abs(scalar) > np.finfo(np.float32).max):
+        raise ValueError("Prepared Stage3 amount must be finite float32")
+    if not isinstance(tile_shape, (tuple, list)) or len(tile_shape) != 2:
+        raise ValueError("Prepared Stage3 tile shape must contain height and width")
+    tile_h, tile_w = [integer(v, 1, 1024, "tile dimension") for v in tile_shape]
+    if not isinstance(origin, (tuple, list)) or len(origin) != 2:
+        raise ValueError("Prepared Stage3 origin must contain row and column")
+    top, left = [integer(v, -2147483648, 2147483647, "origin") for v in origin]
+    height, width = cfa.shape
+    bottom = integer(top + height, -2147483648, 2147483647, "bottom")
+    right = integer(left + width, -2147483648, 2147483647, "right")
+    rect = np.asarray([top, left, bottom, right], dtype=np.int32)
+    source = np.ascontiguousarray(cfa)
+    parameters = np.ascontiguousarray(parameters)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_stage3_prepared_image_u16", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide prepared Stage3 image composition")
+    output = np.empty((height, width, 3), dtype=np.uint16)
+    status = function(
+        source.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), source.size, width,
+        rect.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), floor, int(cubic),
+        scalar, int(suppress_refine), hot, cold, tile_w, tile_h,
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)), output.size,
+    )
+    if status in (1, 4):
+        raise ValueError("Native prepared Stage3 rejected input, controls, or image geometry")
+    if status:
+        raise NativeRendererError(f"Native prepared Stage3 failed (status {status})")
+    return output
+
+
+def native_acr_gainmap_prepared(
+    image: np.ndarray, gain_map: object, *, black_floor: int,
+    list_stage: int = 3, tile_shape: tuple[int, int] = (256, 256),
+    image_origin: tuple[int, int] = (0, 0),
+) -> np.ndarray:
+    """Apply recovered CPU GainMap to prepared HWC camera samples.
+
+    The map supplies parsed metadata; all pixels, including uint16 format
+    conversion, run in C++. Explicit image bounds and tile dimensions govern
+    interpolation. Different grids can round differently. This does not select
+    Adobe host state or apply Warp, Profile, or display highlight protection.
+    """
+    if (not isinstance(image, np.ndarray) or image.dtype not in (np.dtype('float32'), np.dtype('uint16'))
+            or image.ndim != 3 or min(image.shape) < 1
+            or image.size > 128 * 1024 * 1024):
+        raise ValueError("Prepared GainMap requires a nonempty float32/uint16 HWC image")
+    if image.dtype == np.float32 and not np.isfinite(image).all():
+        raise ValueError("Prepared GainMap input must be finite")
+
+    def integer(value, low, high, name):
+        if (isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                or not low <= int(value) <= high):
+            raise ValueError(f"Prepared GainMap {name} must be an integer in [{low}, {high}]")
+        return int(value)
+
+    floor = integer(black_floor, 0, 65535, "black floor")
+    stage = integer(list_stage, 0, 4294967295, "list stage")
+    if stage >= 2 and floor == 65535:
+        raise ValueError("Prepared GainMap black floor must be below 65535 at stage 2/3")
+    if not isinstance(tile_shape, (tuple, list)) or len(tile_shape) != 2:
+        raise ValueError("Prepared GainMap tile shape must contain height and width")
+    tile_h, tile_w = [integer(v, 1, 1024, "tile dimension") for v in tile_shape]
+    if not isinstance(image_origin, (tuple, list)) or len(image_origin) != 2:
+        raise ValueError("Prepared GainMap origin must contain row and column")
+    top, left = [integer(v, -2147483648, 2147483647, "origin") for v in image_origin]
+    height, width, planes = image.shape
+    bounds = [top, left, integer(top+height, -2147483648, 2147483647, "bottom"),
+              integer(left+width, -2147483648, 2147483647, "right")]
+    try:
+        area = [integer(getattr(gain_map, name), -2147483648, 2147483647, name)
+                for name in ("top", "left", "bottom", "right")]
+        first, count = [integer(getattr(gain_map, name), 0, 4294967295, name)
+                        for name in ("plane", "planes")]
+        row_pitch, col_pitch, mv, mh, mp = [
+            integer(getattr(gain_map, name), 1, 4294967295, name)
+            for name in ("row_pitch", "col_pitch", "map_points_v", "map_points_h", "map_planes")]
+        gains = gain_map.gains
+        geometry = np.asarray([gain_map.map_spacing_v, gain_map.map_spacing_h,
+                               gain_map.map_origin_v, gain_map.map_origin_h], dtype=np.float64)
+    except AttributeError as exc:
+        raise ValueError("Prepared GainMap requires parsed map metadata") from exc
+    if not count or first+count > 4294967295:
+        raise ValueError("Prepared GainMap plane range is invalid")
+    if (not isinstance(gains, np.ndarray) or gains.dtype != np.float32
+            or gains.shape != (mv, mh, mp) or gains.size > 1000000
+            or not np.isfinite(gains).all()):
+        raise ValueError("Prepared GainMap grid must be finite float32 VxHxP")
+    if geometry.shape != (4,):
+        raise ValueError("Prepared GainMap coordinates must contain four scalar values")
+    if mv == 1:
+        geometry[0], geometry[2] = 1., 0.
+    if mh == 1:
+        geometry[1], geometry[3] = 1., 0.
+    if not np.isfinite(geometry).all() or np.any(geometry[:2] <= 0):
+        raise ValueError("Prepared GainMap coordinates must be finite with positive spacing")
+    rects = np.asarray(bounds+area, dtype=np.int32)
+    controls = np.asarray([planes, first, count, row_pitch, col_pitch, mv, mh, mp, stage], dtype=np.uint32)
+    source, grid = np.ascontiguousarray(image), np.ascontiguousarray(gains)
+    library, _ = _get_library()
+    floating = source.dtype == np.float32
+    function = getattr(library, "im_native_acr_gainmap_prepared_f32" if floating
+                       else "im_native_acr_gainmap_prepared_u16", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide prepared GainMap")
+    scalar = ctypes.c_float if floating else ctypes.c_uint16
+    output = np.empty_like(source)
+    status = function(
+        source.ctypes.data_as(ctypes.POINTER(scalar)), source.size, width*planes,
+        rects.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        controls.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32)),
+        geometry.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        grid.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), grid.size,
+        floor, tile_w, tile_h, output.ctypes.data_as(ctypes.POINTER(scalar)), output.size,
+    )
+    if status in (1, 4):
+        raise ValueError("Native GainMap rejected prepared input, controls, or conversion domain")
+    if status:
+        raise NativeRendererError(f"Native GainMap failed (status {status})")
+    return output
+
+
+def native_acr_warp_prepared(
+    image: np.ndarray, coefficients: np.ndarray, *, aspect: float,
+    center: tuple[float, float] = (0.5, 0.5),
+    tile_shape: tuple[int, int] = (256, 256),
+    image_origin: tuple[int, int] = (0, 0),
+) -> np.ndarray:
+    """Run recovered pure-radial id1 Warp on prepared camera samples in C++.
+
+    Coefficients must retain the original double payload (Px6, P=1 or image
+    planes). ``aspect`` is an explicit prepared host value. Both float32 and
+    uint16 inputs produce float32; the uint16 normalization runs in C++.
+    This does not bind Adobe's host geometry, scheduler or final writeback.
+    """
+    if (not isinstance(image, np.ndarray) or image.ndim != 3
+            or image.dtype not in (np.dtype('float32'), np.dtype('uint16'))
+            or min(image.shape) < 1 or not 1 <= image.shape[2] <= 4
+            or image.size > 128*1024*1024):
+        raise ValueError("Prepared Warp requires a nonempty float32/uint16 HWC image with 1..4 planes")
+    if (not isinstance(coefficients, np.ndarray) or coefficients.dtype != np.float64
+            or coefficients.ndim != 2 or coefficients.shape[1] != 6
+            or coefficients.shape[0] not in (1, image.shape[2])
+            or not np.isfinite(coefficients).all()
+            or np.any(coefficients[:, 4:] != 0)):
+        raise ValueError("Prepared Warp requires original finite double Px6 pure-radial coefficients")
+
+    def integers(values, low, high, label):
+        if not isinstance(values, (tuple, list)) or len(values) != 2:
+            raise ValueError(f"Prepared Warp {label} requires two integers")
+        result = []
+        for value in values:
+            if (isinstance(value, (bool, np.bool_))
+                    or not isinstance(value, (int, np.integer)) or not low <= int(value) <= high):
+                raise ValueError(f"Prepared Warp {label} is out of range")
+            result.append(int(value))
+        return result
+
+    tile_h, tile_w = integers(tile_shape, 1, 1024, "tile shape")
+    top, left = integers(image_origin, -2147483648, 2147483647, "image origin")
+    if (not isinstance(center, (tuple, list)) or len(center) != 2
+            or any(isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, float, np.number))
+                   or not np.isrealobj(v) for v in center)
+            or isinstance(aspect, (bool, np.bool_))
+            or not isinstance(aspect, (int, float, np.number)) or not np.isrealobj(aspect)):
+        raise ValueError("Prepared Warp center/aspect must be real scalar numbers")
+    geometry = np.asarray([*center, aspect], dtype=np.float64)
+    if (not np.isfinite(geometry).all() or np.any(geometry[:2] < 0)
+            or np.any(geometry[:2] > 1) or geometry[2] <= 0):
+        raise ValueError("Prepared Warp center/aspect is outside its finite prepared domain")
+    height, width, planes = image.shape
+    if top+height > 2147483647 or left+width > 2147483647:
+        raise ValueError("Prepared Warp bounds exceed int32")
+    rects = np.asarray([top, left, top+height, left+width], dtype=np.int32)
+    controls = np.asarray([planes, coefficients.shape[0]], dtype=np.uint32)
+    source = np.ascontiguousarray(image)
+    parameters = np.ascontiguousarray(coefficients)
+    library, _ = _get_library()
+    floating = source.dtype == np.float32
+    function = getattr(library, "im_native_acr_warp_prepared_f32" if floating
+                       else "im_native_acr_warp_prepared_u16_f32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide prepared Warp")
+    scalar = ctypes.c_float if floating else ctypes.c_uint16
+    output = np.empty(source.shape, dtype=np.float32)
+    status = function(
+        source.ctypes.data_as(ctypes.POINTER(scalar)), source.size, width*planes,
+        rects.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        controls.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32)),
+        geometry.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        parameters.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), parameters.size,
+        tile_w, tile_h, output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.size,
+    )
+    if status in (1, 4):
+        raise ValueError("Native Warp rejected prepared input, controls or geometry")
+    if status:
+        raise NativeRendererError(f"Native Warp failed (status {status})")
+    return output
+
+
+def _native_acr_buffer_convert(image: np.ndarray, to_float: bool) -> np.ndarray:
+    source_dtype = np.dtype('uint16' if to_float else 'float32')
+    output_dtype = np.dtype('float32' if to_float else 'uint16')
+    if (not isinstance(image, np.ndarray) or image.dtype != source_dtype
+            or image.ndim not in (2, 3) or min(image.shape) < 1
+            or image.size > 128*1024*1024):
+        raise ValueError(f"ACR buffer conversion requires a nonempty {source_dtype} 2D/3D image")
+    source = np.ascontiguousarray(image)
+    destination = np.empty(source.shape, dtype=output_dtype)
+    height = source.shape[0]
+    row_samples = source.size//height
+    symbol = 'im_native_acr_buffer_u16_to_f32' if to_float else 'im_native_acr_buffer_f32_to_u16'
+    library, _ = _get_library()
+    function = getattr(library, symbol, None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide ACR buffer format conversion")
+    input_scalar, output_scalar = (ctypes.c_uint16, ctypes.c_float) if to_float else (ctypes.c_float, ctypes.c_uint16)
+    status = function(source.ctypes.data_as(ctypes.POINTER(input_scalar)), source.size,
+        row_samples, height, row_samples, destination.ctypes.data_as(ctypes.POINTER(output_scalar)),
+        destination.size, row_samples)
+    if status in (1, 4):
+        raise ValueError("Native ACR buffer conversion rejected input")
+    if status:
+        raise NativeRendererError(f"Native ACR buffer conversion failed (status {status})")
+    return destination
+
+
+def native_acr_buffer_to_float(image: np.ndarray) -> np.ndarray:
+    """Normalize uint16 pixels using the recovered scalar CopyArea route in C++."""
+    return _native_acr_buffer_convert(image, True)
+
+
+def native_acr_buffer_to_u16(image: np.ndarray) -> np.ndarray:
+    """Store float pixels using recovered fused-half-up CopyArea in C++.
+
+    This is the static generic buffer route, distinct from core3's ties-to-even
+    converter. NaN becomes 0, positive infinity 65535, negative infinity 0.
+    """
+    return _native_acr_buffer_convert(image, False)
 
 
 def native_acr_tone_prepared_sdr(guide_rgb: np.ndarray, tone_rgb: np.ndarray,
@@ -2490,8 +3563,8 @@ def _prepare_native_acr_gray_log_arguments(
             or min(rgb.shape[:2]) <= 0
             or int(rgb.shape[0]) * int(rgb.shape[1]) > (1 << 26)):
         raise ValueError("ACR gray log requires nonempty float32 HxWx3 RGB")
-    if not np.isfinite(rgb).all() or np.any(rgb < 0.0):
-        raise ValueError("ACR gray log RGB must be finite and nonnegative")
+    if not np.isfinite(rgb).all():
+        raise ValueError("ACR gray log RGB must be finite")
 
     values = np.asarray(coefficients, dtype=np.float64)
     if values.shape != (3,) or not np.isfinite(values).all():
@@ -2518,8 +3591,9 @@ def native_acr_gray_log(
 
     ``rgb`` must already be in the RGB domain expected by the caller, and
     ``coefficients`` must be the resolved row for that domain. This float
-    variant returns an HxW float32 source-log plane plus six float64 coefficient
-    diagnostics. It does not construct a true RAW anchor, select a stage,
+    variant accepts finite signed/overrange RGB and returns an HxW float32
+    source-log plane plus six float64 coefficient diagnostics. Non-finite gray
+    intermediates are rejected. It does not construct a true RAW anchor, select a stage,
     assemble source/EV inputs, apply a transfer curve, perform the normalized
     render's uint16 store/reload, or Pin overrange values; those remain caller
     responsibilities.
@@ -2557,9 +3631,10 @@ def native_acr_gray_u16_log(
     """Apply prepared gray conversion, uint16 store/reload, and source log.
 
     The caller must provide already-prepared RGB, upstream Pin/stage/source/
-    guide/EV decisions, and absolute image origin. The native operation rejects
-    derived gray outside [0,1]; this adapter does not clamp or quantize pixels
-    in Python. It does not generate a true RAW anchor or claim a complete ACR
+    guide/EV decisions, and absolute image origin. Finite signed/overrange gray
+    is accepted: dither=False stores the low 16 bits after ARM int32 conversion,
+    while dither=True saturates after that conversion. This adapter does not
+    clamp or quantize pixels in Python. It does not generate a true RAW anchor or claim a complete ACR
     render. Origins are signed int32 coordinates used for the 128x128 dither
     phase; ``dither`` accepts only bool or numpy.bool_.
     """

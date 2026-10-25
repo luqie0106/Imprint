@@ -33,6 +33,7 @@ from native_renderer import (
     native_acr_scale_sdr, native_acr_project_srgb, native_acr_profile_stage_sdr,
     native_acr_prepare_huesatmap, native_acr_illuminant_temperatures,
     native_acr_prepare_analog_balance, native_acr_prepare_camera_calibration,
+    native_acr_buffer_to_float,
 )
 from acr_profile_metadata import read_acr_profile_tags, read_embedded_acr_profile_tags
 from dng_writer import _embedded_profile_tags
@@ -42,6 +43,7 @@ from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profi
 PROFILE_PREVIEW_VERSION = "camera-profile-preview-v3-gpu-stages"
 PROFILE_PREVIEW_VERSION += "-acr-camera-v1-look-bulk-sdr-cpp-v1"
 PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v4-source-calibration"
+PROFILE_PREVIEW_VERSION += "-acr-buffer-u16-f32-cpp-v1"
 _ACR_PROFILE_WHITE_ENABLED = os.environ.get("IMPRINT_ACR_PROFILE_WHITE") == "1"
 if _ACR_PROFILE_WHITE_ENABLED:
     PROFILE_PREVIEW_VERSION += "-acr-white-cpp-v1"
@@ -907,7 +909,7 @@ def render_profile(
         output = np.empty(camera_u16.shape, dtype=np.uint8)
         for start in range(0, camera_u16.shape[0], 128):
             end = min(start + 128, camera_u16.shape[0])
-            camera = camera_u16[start:end].astype(np.float32) / np.float32(65535.0)
+            camera = native_acr_buffer_to_float(camera_u16[start:end])
             sorted_camera = np.ascontiguousarray(camera[..., order], dtype=np.float32)
             based = native_acr_camera_float(sorted_camera, camera_controls)
             if hue_sat_table is not None:

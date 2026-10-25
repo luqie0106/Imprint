@@ -167,8 +167,7 @@ GrayStatus apply_rgb_to_gray(const float *input_rgb, float *output_gray,
             const float green = input_rgb[pixel * 3 + 1];
             const float blue = input_rgb[pixel * 3 + 2];
             if (!std::isfinite(red) || !std::isfinite(green) ||
-                !std::isfinite(blue) || red < 0.0f || green < 0.0f ||
-                blue < 0.0f) {
+                !std::isfinite(blue)) {
                 return GrayStatus::invalid_rgb;
             }
 

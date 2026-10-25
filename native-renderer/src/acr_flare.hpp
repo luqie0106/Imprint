@@ -15,6 +15,12 @@ enum class Status : int {
     allocation_failure = 5,
 };
 
+enum class IntegerTableKind : int {
+    black = 0,
+    forward = 1,
+    inverse = 2,
+};
+
 struct Crop {
     std::size_t x;
     std::size_t y;
@@ -41,6 +47,13 @@ struct StatisticsLevel {
     std::uint32_t level = 0;
     std::vector<std::uint16_t> pixels;
 };
+
+// Build one of the uint16 flare lookup tables for validation and internal
+// reuse. The output is unchanged unless Status::ok is returned.
+Status prepare_integer_lut(std::uint16_t black_offset,
+                           IntegerTableKind kind,
+                           std::uint16_t* output,
+                           std::size_t count) noexcept;
 
 // Bounded ordinary-image transcription of the uint16 packed-RGB flare-source
 // path. The input and outputs are caller-owned. If last_level_rgb is supplied,

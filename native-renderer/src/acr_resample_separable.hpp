@@ -1,5 +1,6 @@
 #pragma once
 
+#include "acr_resample_axis.hpp"
 #include "acr_resample_row.hpp"
 
 #include <cstddef>
@@ -21,6 +22,7 @@ enum class ResampleSeparableStatus : int {
     vertical_stage_failure = 9,
     horizontal_stage_failure = 10,
     allocation_failure = 11,
+    unsupported_axis_kind = 12,
 };
 
 inline constexpr std::size_t kResampleSeparableMaximumElements =
@@ -57,18 +59,44 @@ struct PreparedSeparableAxis {
     PreparedResampleRows coefficients;
 };
 
+// Private C++ handoff for an axis already classified by the ordinary-axis
+// preparation stage. Coefficients are consumed only for resample geometry;
+// identity and integer-translation axes do not inspect them.
+struct PreparedOrdinaryAxis {
+    ResampleAxisPlan geometry;
+    PreparedResampleRows coefficients;
+};
+
 // Run the prepared ordinary vertical 0x48 stage followed by the horizontal
 // 0x47 baseline over logical pixels only. The intermediate keeps the complete
 // source width in tightly packed HWC order; it is not Adobe tile memory layout.
 // Source, coefficient rows, and produced intermediate values must be finite for
 // success. This does not prepare source EV, matrix/skew geometry, Adobe padding,
-// identity/integer-copy paths, or layer selection. Pixels are neither pinned
-// nor clamped to a value range. On failure result is unchanged. source.data may
-// alias result's storage.
+// identity/integer-copy paths, or layer selection. Use
+// process_ordinary_resample for classified ordinary axes. Pixels are neither
+// pinned nor clamped to a value range. On failure result is unchanged.
+// source.data may alias result's storage.
 ResampleSeparableStatus process_resample_separable(
     const SourceView &source, const DestinationRect &destination,
     const PreparedSeparableAxis &vertical_axis,
     const PreparedSeparableAxis &horizontal_axis,
+    std::vector<float> &result) noexcept;
+
+// Execute ordinary separable geometry in vertical-then-horizontal order.
+// General resample axes use their prepared coefficients, while identity axes
+// copy pixels at the same absolute logical coordinates. Integer-translation
+// axes materialize the relocated logical rectangle by reading source
+// coordinates destination minus the stored integer offset; this is not a claim
+// about raw descriptor-memory memcpy. Rectangle extents use a non-wrapping
+// int32 coordinate domain, so an integer relocation outside that domain
+// returns coordinate_overflow. Identity and integer-translation axes do not
+// inspect coefficients. Source/coefficient finiteness, packed HWC layout,
+// atomic result replacement, and aliasing behavior match
+// process_resample_separable.
+ResampleSeparableStatus process_ordinary_resample(
+    const SourceView &source, const DestinationRect &destination,
+    const PreparedOrdinaryAxis &vertical_axis,
+    const PreparedOrdinaryAxis &horizontal_axis,
     std::vector<float> &result) noexcept;
 
 }  // namespace imprint::acr
