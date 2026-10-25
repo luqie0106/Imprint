@@ -17,6 +17,7 @@ import ModelsPage from "./views/ModelsPage.vue";
 import TrainerPage from "./views/TrainerPage.vue";
 import EnhancePage from "./views/EnhancePage.vue";
 import RicohPage from "./views/RicohPage.vue";
+import GeographicOverlayPage from "./views/GeographicOverlayPage.vue";
 import SettingsPage from "./views/SettingsPage.vue";
 import appLogo from "./assets/logo.png";
 import {
@@ -31,10 +32,11 @@ import {
   Monitor,
   WandSparkles,
   Camera,
+  Map,
   Settings,
 } from "lucide-vue-next";
 
-type TabType = "burst" | "enhance" | "ricoh" | "models" | "trainer" | "settings";
+type TabType = "burst" | "enhance" | "ricoh" | "geo" | "models" | "trainer" | "settings";
 const activeTab = ref<TabType>("burst");
 watch(activeTab, () => { void flushPendingSaves(); });
 
@@ -102,6 +104,15 @@ onMounted(() => {
         </button>
 
         <button
+          @click="activeTab = 'geo'"
+          class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full"
+          :class="activeTab === 'geo' ? 'text-blue-700 dark:text-blue-300 font-semibold after:bg-blue-600' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 after:bg-transparent'"
+        >
+          <Map class="w-3.5 h-3.5" />
+          地理叠加
+        </button>
+
+        <button
           @click="activeTab = 'models'"
           class="relative h-full px-2 text-[13px] font-medium transition flex items-center gap-2 cursor-pointer after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:rounded-full"
           :class="
@@ -145,7 +156,7 @@ onMounted(() => {
 
         <!-- 后端就绪状态 -->
         <div
-          v-if="isServerReady"
+          v-if="activeTab !== 'geo' && isServerReady"
           class="flex items-center gap-1.5 text-slate-500 dark:text-zinc-400 font-medium px-1.5 py-1"
         >
           <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
@@ -153,7 +164,7 @@ onMounted(() => {
         </div>
 
         <div
-          v-else-if="isConnecting"
+          v-else-if="activeTab !== 'geo' && isConnecting"
           class="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-medium px-1.5 py-1"
         >
           <RefreshCw class="w-3 h-3 animate-spin" />
@@ -161,7 +172,7 @@ onMounted(() => {
         </div>
 
         <div
-          v-else
+          v-else-if="activeTab !== 'geo'"
           class="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-medium px-1.5 py-1"
         >
           <AlertTriangle class="w-3 h-3" />
@@ -174,7 +185,7 @@ onMounted(() => {
     <main class="flex-1 overflow-hidden relative">
       <!-- 异常友好提示界面（非白屏） -->
       <div
-        v-if="!isServerReady && !isConnecting"
+        v-if="activeTab !== 'geo' && !isServerReady && !isConnecting"
         class="absolute inset-0 z-50 flex flex-col items-center justify-center p-8 bg-zinc-100/90 dark:bg-zinc-900/90 backdrop-blur-xl gap-4 text-center"
       >
         <div class="w-14 h-14 rounded-2xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shadow-sm">
@@ -197,7 +208,7 @@ onMounted(() => {
 
       <!-- 启动等待中界面 -->
       <div
-        v-else-if="!isServerReady && isConnecting"
+        v-else-if="activeTab !== 'geo' && !isServerReady && isConnecting"
         class="absolute inset-0 z-50 flex flex-col items-center justify-center p-8 bg-zinc-100/80 dark:bg-zinc-900/80 backdrop-blur-xl gap-3 text-center"
       >
         <RefreshCw class="w-8 h-8 text-indigo-500 animate-spin" />
@@ -213,6 +224,7 @@ onMounted(() => {
       <BurstPage v-show="activeTab === 'burst'" />
       <EnhancePage v-show="activeTab === 'enhance'" :active="activeTab === 'enhance'" />
       <RicohPage v-show="activeTab === 'ricoh'" :active="activeTab === 'ricoh'" />
+      <GeographicOverlayPage v-show="activeTab === 'geo'" />
       <ModelsPage v-show="activeTab === 'models'" />
       <TrainerPage v-show="activeTab === 'trainer'" />
       <SettingsPage v-show="activeTab === 'settings'" />

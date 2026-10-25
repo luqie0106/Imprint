@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{Manager, State};
 
+mod geographic_overlay;
+
 #[derive(Default)]
 pub struct AppState {
     pub api_port: Arc<Mutex<Option<u16>>>,
@@ -354,6 +356,7 @@ fn spawn_python_sidecar(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState::default();
+    let geo_state = geographic_overlay::GeoState::default();
     let api_port_arc = Arc::clone(&app_state.api_port);
     let python_child_arc = Arc::clone(&app_state.python_child);
 
@@ -373,10 +376,18 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(app_state)
+        .manage(geo_state)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![get_api_port])
+        .invoke_handler(tauri::generate_handler![
+            get_api_port,
+            geographic_overlay::geo_open,
+            geographic_overlay::geo_preview,
+            geographic_overlay::geo_export,
+            geographic_overlay::geo_save_project,
+            geographic_overlay::geo_load_project
+        ])
         .setup(|app| {
             // macOS 磨砂效果 / Windows Mica 效果（支持深浅自适应）
             if let Some(window) = app.get_webview_window("main") {

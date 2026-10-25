@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.16)
+project(imprint_geo LANGUAGES CXX)
+
+option(IMPRINT_GEO_BUILD_TESTS "Build standalone native tests" ON)
+
+add_library(imprint_geo STATIC src/geo.cpp)
+target_include_directories(imprint_geo PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(imprint_geo PUBLIC cxx_std_17)
+set_target_properties(imprint_geo PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+  target_compile_options(imprint_geo PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(imprint_geo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(IMPRINT_GEO_BUILD_TESTS)
+  enable_testing()
+  add_executable(imprint_geo_tests tests/native_geo_test.cpp)
+  target_link_libraries(imprint_geo_tests PRIVATE imprint_geo)
+  add_test(NAME imprint_geo_tests COMMAND imprint_geo_tests)
+endif()
