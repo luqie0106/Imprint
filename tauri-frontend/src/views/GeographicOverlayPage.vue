@@ -41,6 +41,7 @@ import {
   loadGeographicProject,
   openGeographicPhoto,
   redoGeoConfig,
+  refreshGeographicPreview,
   resetGeoLocationToExif,
   saveGeographicProject,
   undoGeoConfig,
@@ -57,6 +58,7 @@ type PreviewMode = "effect" | "original" | "split";
 
 const previewMode = ref<PreviewMode>("effect");
 const showLayer = ref(false);
+const actualPixels = ref(false);
 const exportFormat = ref<GeoFormat>("png");
 const sourceAndEffect = computed(() => previewMode.value === "split");
 const mainImage = computed(() => previewMode.value === "original"
@@ -87,7 +89,7 @@ const rangeControls: Array<{
   suffix?: string;
 }> = [
   { key: "opacity", label: "图层透明度", min: 0, max: 1, step: 0.01 },
-  { key: "radius_km", label: "覆盖半径", min: 0.05, max: 1000, step: 0.05, suffix: "km" },
+  { key: "radius_km", label: "覆盖半径", min: 0.05, max: 20, step: 0.05, suffix: "km" },
   { key: "scale", label: "图层缩放", min: 0.1, max: 4, step: 0.01 },
   { key: "rotation", label: "旋转", min: -180, max: 180, step: 0.5, suffix: "°" },
   { key: "line_width", label: "线宽", min: 0.25, max: 40, step: 0.25 },
@@ -282,7 +284,7 @@ async function exportImage(overlayOnly: boolean) {
           <span v-else-if="geographicProjectPath" class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">项目已保存</span>
         </div>
         <div class="flex shrink-0 items-center gap-2">
-          <span class="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">Mock 示例数据</span>
+          <span class="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">{{ geographicConfig.provider === 1 ? "OpenStreetMap / Overpass" : "Mock 示例数据" }}</span>
           <span class="hidden text-[10px] text-slate-500 sm:inline dark:text-zinc-400">仅照片后期图层；不会写入 RAW 或 ACR 参数</span>
         </div>
       </div>
@@ -311,6 +313,8 @@ async function exportImage(overlayOnly: boolean) {
           </div>
           <div class="flex items-center gap-2">
             <span v-if="geographicPreviewing" class="inline-flex items-center gap-1 text-[11px] text-indigo-600 dark:text-indigo-300"><LoaderCircle class="h-3 w-3 animate-spin" />正在更新预览</span>
+            <button type="button" @click="refreshGeographicPreview" :disabled="!geographicPhoto || geographicPreviewing" class="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] font-medium dark:border-zinc-700 dark:bg-zinc-800 disabled:opacity-40">{{ geographicPreviewing ? "正在生成预览…" : "刷新地图" }}</button>
+            <button type="button" @click="actualPixels = !actualPixels" :disabled="!geographicPhoto || sourceAndEffect" :aria-pressed="actualPixels" class="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] font-medium dark:border-zinc-700 dark:bg-zinc-800 disabled:opacity-40">{{ actualPixels ? "适应窗口" : "100% 原尺寸" }}</button>
             <button type="button" @click="showLayer = !showLayer" :disabled="!geographicPreview?.overlay" class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800">
               <Layers2 class="h-3.5 w-3.5" />
               {{ showLayer ? "隐藏透明层" : "查看透明层" }}
@@ -334,8 +338,8 @@ async function exportImage(overlayOnly: boolean) {
               <span v-else class="px-5 text-center text-xs text-zinc-400">等待原生预览返回</span>
             </figure>
           </div>
-          <div v-else class="relative flex min-h-0 flex-1 items-center justify-center overflow-auto bg-zinc-950 p-4">
-            <img :src="mainImage" :alt="previewMode === 'original' ? `${geographicPhoto.source_name} 原图` : `${geographicPhoto.source_name} 地理叠加效果`" class="max-h-[72vh] max-w-full object-contain" />
+          <div v-else class="relative flex min-h-0 flex-1 overflow-auto bg-zinc-950 p-4" :class="actualPixels ? 'items-start justify-start' : 'items-center justify-center'">
+            <img :src="mainImage" :alt="previewMode === 'original' ? `${geographicPhoto.source_name} 原图` : `${geographicPhoto.source_name} 地理叠加效果`" :class="actualPixels ? 'max-h-none max-w-none shrink-0' : 'max-h-[72vh] max-w-full object-contain'" />
             <span v-if="previewMode === 'effect' && !geographicPreview?.image" class="absolute rounded-lg bg-black/60 px-3 py-2 text-xs text-zinc-200">{{ geographicPreviewing ? "正在生成原生预览…" : "等待原生预览返回" }}</span>
           </div>
           <div v-if="showLayer && geographicPreview?.overlay" class="border-t border-white/10 bg-zinc-900 p-3">
@@ -344,6 +348,12 @@ async function exportImage(overlayOnly: boolean) {
               <img :src="geographicPreview.overlay" alt="原生返回的透明地理图层" class="max-h-48 max-w-full object-contain" />
             </div>
           </div>
+          <div v-if="geographicConfig.provider === 1 && geographicPreview?.attribution" class="flex flex-wrap justify-between gap-2 border-t border-white/10 px-3.5 py-2 text-[10px] text-zinc-300">
+            <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" class="underline">{{ geographicPreview.attribution }}</a>
+            <span v-if="geographicConfig.enabled && (geographicPreview.feature_count ?? 0) > 0">{{ geographicPreview.feature_count }} 个地理要素 · {{ geographicPreview.cache_hit ? "本地缓存" : "已查询" }}</span>
+            <span v-else>尚未请求地图数据</span>
+          </div>
+          <div v-if="geographicPreview?.render_backend" class="px-3.5 py-1 text-[10px] text-zinc-400">{{ geographicPreview.render_backend }} · 原尺寸预览</div>
           <div v-if="geographicWarning" class="border-t border-amber-500/20 bg-amber-950/30 px-3.5 py-2 text-[10px] text-amber-200">{{ geographicWarning }}</div>
         </div>
 
@@ -395,7 +405,7 @@ async function exportImage(overlayOnly: boolean) {
             <label class="block text-[10px] text-slate-500 dark:text-zinc-400">数据来源
               <select :value="geographicConfig.provider" @change="setSelectNumber('provider', $event)" class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800 outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100">
                 <option :value="0">Mock 示例数据</option>
-                <option :value="1">OSM / Overpass（未实现）</option>
+                <option :value="1">OSM / Overpass（真实地图）</option>
               </select>
             </label>
             <label class="block text-[10px] text-slate-500 dark:text-zinc-400">叠加风格
@@ -406,7 +416,7 @@ async function exportImage(overlayOnly: boolean) {
             <label v-if="geographicConfig.provider === 1" class="block text-[10px] text-slate-500 dark:text-zinc-400">Overpass 地址
               <input type="url" :value="geographicConfig.overpass_endpoint" @input="setEndpoint($event)" @change="commitGeoConfigHistory" class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-800 outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100" />
             </label>
-            <p class="rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-4 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">Mock 预览会明确标记为示例数据，不代表真实 OSM 或 Terrain 地图。</p>
+            <p class="rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-4 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">{{ geographicConfig.provider === 1 ? "查询仅发送经纬度和半径，不上传照片；地图数据会本地缓存。公共实例不需要 API Key，查询半径上限 20 km。" : "Mock 是测试几何，不代表真实地图。" }}</p>
           </div>
         </details>
 

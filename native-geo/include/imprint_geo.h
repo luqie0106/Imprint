@@ -34,6 +34,21 @@ typedef struct GeoConfig {
     int32_t provider;
 } GeoConfig;
 
+/* Geographic feature input for a real dataset. Coordinates are WGS84 degrees.
+ * kind: 0=road, 1=waterway, 2=coastline, 3=place (one point). Labels are
+ * optional UTF-8 NUL-terminated strings limited to 256 bytes. */
+typedef struct GeoVertex {
+    double latitude;
+    double longitude;
+} GeoVertex;
+
+typedef struct GeoFeatureView {
+    uint32_t kind;
+    uint32_t point_count;
+    const GeoVertex *points;
+    const char *label;
+} GeoFeatureView;
+
 /* Input is tightly packed RGB8 sRGB. Output is straight-alpha RGBA8 sRGB. */
 int32_t imprint_geo_render(const uint8_t *rgb,
                            uint32_t width,
@@ -42,6 +57,19 @@ int32_t imprint_geo_render(const uint8_t *rgb,
                            uint8_t *overlay_rgba,
                            char *error,
                            uint32_t error_capacity);
+
+/* Render caller-supplied real geographic features (provider must be 1).
+ * This function performs no network request and never falls back to Mock.
+ * Limits: 10,000 features, 500,000 points total, 256 UTF-8 label bytes. */
+int32_t imprint_geo_render_features(const uint8_t *rgb,
+                                    uint32_t width,
+                                    uint32_t height,
+                                    const GeoConfig *config,
+                                    const GeoFeatureView *features,
+                                    uint32_t feature_count,
+                                    uint8_t *overlay_rgba,
+                                    char *error,
+                                    uint32_t error_capacity);
 
 /* Straight-alpha source-over in sRGB code values. Alpha zero is byte-exact identity. */
 int32_t imprint_geo_composite(const uint8_t *rgb,

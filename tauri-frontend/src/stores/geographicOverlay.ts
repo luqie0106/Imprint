@@ -53,6 +53,11 @@ export interface GeoPreview {
   width: number;
   height: number;
   warning: string;
+  attribution?: string;
+  feature_count?: number;
+  cache_hit?: boolean;
+  provider?: string;
+  render_backend?: string;
 }
 
 interface GeoHistoryEntry {
@@ -113,7 +118,7 @@ function createDefaultGeoConfig(): GeoConfig {
     scale_bar: true,
     photo_marker: true,
     adaptive: true,
-    provider: 0,
+    provider: 1,
     overpass_endpoint: defaultOverpassEndpoint,
   };
 }
@@ -170,6 +175,9 @@ export function updateGeoConfig(patch: Partial<GeoConfig>, commitHistory = false
   const next = { ...geographicConfig.value, ...patch };
   if (JSON.stringify(next) === JSON.stringify(geographicConfig.value)) return;
   geographicConfig.value = next;
+  if (["provider", "latitude", "longitude", "radius_km", "overpass_endpoint"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) {
+    geographicPreview.value = null;
+  }
   if (Object.prototype.hasOwnProperty.call(patch, "latitude") || Object.prototype.hasOwnProperty.call(patch, "longitude")) {
     geographicLocationSource.value = "manual";
   }
@@ -245,7 +253,7 @@ function validateGeoConfig(config: GeoConfig): string {
 }
 
 function unsupportedSourceMessage(config: GeoConfig): string {
-  if (config.provider === 1) return "OSM / Overpass 数据源尚未实现。当前只能使用明确标记的 Mock 示例数据。";
+  if (config.provider === 1 && config.radius_km > 20) return "公共 Overpass 查询半径最大为 20 km，请减小覆盖半径。";
   if (config.style === 3) return "Terrain 地形图层尚未实现。请选择自动、城市或海岸样式。";
   return "";
 }
@@ -447,4 +455,9 @@ export async function exportGeographicImage(path: string, format: GeoFormat, ove
 export function clearGeographicMessages() {
   geographicError.value = "";
   geographicNotice.value = "";
+}
+
+export function refreshGeographicPreview() {
+  geographicError.value = "";
+  scheduleGeoPreview();
 }

@@ -6,6 +6,7 @@ use std::thread;
 use tauri::{Manager, State};
 
 mod geographic_overlay;
+mod native_preview;
 
 #[derive(Default)]
 pub struct AppState {

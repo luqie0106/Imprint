@@ -1,3 +1,6 @@
+#[path = "geo_osm.rs"]
+mod geo_osm;
+
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use exif::{Reader as ExifReader, Tag, Value};
 use image::codecs::jpeg::JpegEncoder;
@@ -12,13 +15,14 @@ use std::ffi::{c_char, CStr, CString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::State;
 use uuid::Uuid;
 
 const MAX_PIXELS: u64 = 100_000_000;
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const MAX_PREVIEW_SIDE: u32 = 1600;
+const MAX_SESSION_RGB_BYTES: usize = 256 * 1024 * 1024;
 const MAX_OPEN_SESSIONS: usize = 12;
 const PROJECT_FORMAT: &str = "imprint.geographic-overlay";
 const PROJECT_VERSION: u32 = 1;
@@ -52,12 +56,37 @@ struct NativeGeoConfig {
     provider: i32,
 }
 
+#[repr(C)]
+struct GeoVertex {
+    latitude: f64,
+    longitude: f64,
+}
+
+#[repr(C)]
+struct GeoFeatureView {
+    kind: u32,
+    point_count: u32,
+    points: *const GeoVertex,
+    label: *const c_char,
+}
+
 extern "C" {
     fn imprint_geo_render(
         rgb: *const u8,
         width: u32,
         height: u32,
         config: *const NativeGeoConfig,
+        overlay_rgba: *mut u8,
+        error: *mut c_char,
+        error_capacity: u32,
+    ) -> i32;
+    fn imprint_geo_render_features(
+        rgb: *const u8,
+        width: u32,
+        height: u32,
+        config: *const NativeGeoConfig,
+        features: *const GeoFeatureView,
+        feature_count: u32,
         overlay_rgba: *mut u8,
         error: *mut c_char,
         error_capacity: u32,
@@ -226,6 +255,24 @@ impl GeoConfig {
         {
             return Err("Overpass 地址过长或包含控制字符。".into());
         }
+        if self.provider == 1 {
+            if self.radius_km > 20.0 {
+                return Err("公共 Overpass 查询范围最大为 20 公里；请手动缩小查询范围。".into());
+            }
+            geo_osm::validate_endpoint(&self.overpass_endpoint)?;
+            if self.style == 3 {
+                return Err("OSM 数据源不包含地形模型，不能使用地形样式。".into());
+            }
+        }
+        if self.provider == 1 {
+            if self.radius_km > 20.0 {
+                return Err("公共 Overpass 查询范围最大为 20 公里；请手动缩小查询范围。".into());
+            }
+            geo_osm::validate_endpoint(&self.overpass_endpoint)?;
+            if self.style == 3 {
+                return Err("OSM 数据源不包含地形模型，不能使用地形样式。".into());
+            }
+        }
         if self.enabled && !self.has_location {
             return Err("请先提供照片 GPS 位置或手动设置位置。".into());
         }
@@ -284,6 +331,11 @@ pub struct GeoPreview {
     pub width: u32,
     pub height: u32,
     pub warning: String,
+    pub attribution: String,
+    pub feature_count: u32,
+    pub cache_hit: bool,
+    pub provider: String,
+    pub render_backend: String,
 }
 
 #[derive(Clone, Default)]
@@ -297,8 +349,11 @@ struct GeoSession {
     width: u32,
     height: u32,
     preview_rgb: RgbImage,
+    native_backend: String,
+    render_mutex: Mutex<()>,
     exif_location: Option<GeoLocation>,
     project_path: Mutex<Option<PathBuf>>,
+    preview_generation: AtomicU64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -460,13 +515,14 @@ impl GeoState {
 struct GeoStateInner {
     sessions: Mutex<HashMap<String, Arc<GeoSession>>>,
     order: Mutex<VecDeque<String>>,
+    osm: geo_osm::OsmClient,
 }
 
 fn open_sync(state: &Arc<GeoStateInner>, path: &Path) -> Result<GeoPhoto, String> {
     let decoded = decode_source(path)?;
     let full_width = decoded.rgb.width();
     let full_height = decoded.rgb.height();
-    let (preview_rgb, _, _) = make_preview(&decoded.rgb);
+    let (preview_rgb, native_backend) = crate::native_preview::prepare(decoded.rgb);
     let preview = png_data_uri_rgb(&preview_rgb)?;
     let id = Uuid::new_v4().to_string();
     let photo = GeoPhoto {
@@ -483,8 +539,11 @@ fn open_sync(state: &Arc<GeoStateInner>, path: &Path) -> Result<GeoPhoto, String
         width: full_width,
         height: full_height,
         preview_rgb,
+        native_backend,
+        render_mutex: Mutex::new(()),
         exif_location: decoded.exif_location,
         project_path: Mutex::new(None),
+        preview_generation: AtomicU64::new(0),
     });
     insert_session(state, id, session)?;
     Ok(photo)
@@ -506,7 +565,14 @@ fn insert_session(
     sessions.insert(id.clone(), session);
     order.retain(|existing| existing != &id);
     order.push_back(id);
-    while order.len() > MAX_OPEN_SESSIONS {
+    while order.len() > MAX_OPEN_SESSIONS
+        || (order.len() > 1
+            && sessions
+                .values()
+                .map(|item| item.preview_rgb.as_raw().len())
+                .sum::<usize>()
+                > MAX_SESSION_RGB_BYTES)
+    {
         if let Some(expired) = order.pop_front() {
             sessions.remove(&expired);
         }
@@ -528,16 +594,50 @@ fn get_session(state: &GeoStateInner, id: &str) -> Result<Arc<GeoSession>, Strin
 fn preview_sync(state: &GeoStateInner, id: &str, config: &GeoConfig) -> Result<GeoPreview, String> {
     config.validate()?;
     let session = get_session(state, id)?;
-    let (overlay, composite) = render_overlay_and_composite(&session.preview_rgb, config)?;
+    let generation = session
+        .preview_generation
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
+    let _render_guard = session
+        .render_mutex
+        .lock()
+        .map_err(|_| "预览渲染锁不可用。".to_string())?;
+    if session.preview_generation.load(Ordering::Acquire) != generation {
+        return Err("预览请求已由新参数替代。".into());
+    }
+    let fetched = if config.provider == 1 && config.enabled {
+        Some(state.osm.fetch(
+            &config.overpass_endpoint,
+            config.latitude,
+            config.longitude,
+            config.radius_km,
+        )?)
+    } else {
+        None
+    };
+    let features = fetched
+        .as_ref()
+        .map(|data| data.features.as_slice())
+        .unwrap_or(&[]);
+    if session.preview_generation.load(Ordering::Acquire) != generation {
+        return Err("OSM 预览请求已取消，因为更新的预览已启动。".into());
+    }
+    let (overlay, composite) =
+        render_overlay_and_composite(&session.preview_rgb, config, features)?;
+    if session.preview_generation.load(Ordering::Acquire) != generation {
+        return Err("OSM 预览请求已取消，因为更新的预览已启动。".into());
+    }
     let overlay_is_empty = overlay.pixels().all(|pixel| pixel[3] == 0);
-    let warning = if config.provider == 1 {
-        "Overpass 数据源当前尚未接入；没有发起网络请求。".to_string()
+    let warning = if config.provider == 1 && !config.enabled {
+        "OSM 数据源已选择；启用叠加后将查询当前坐标和半径。".to_string()
+    } else if config.provider == 1 && overlay_is_empty {
+        "OSM 要素已载入，但当前保护遮罩内没有可见线条。可调整位置；如需手动预览，请关闭自动天空渐隐并设置手动保护边界。".to_string()
     } else if config.style == 3 {
         "地形样式需要已验证的 DEM 数据源，目前不可用。".to_string()
     } else if !config.has_location && session.exif_location.is_none() {
         "照片没有 GPS 位置；请手动设置位置后再生成地理叠加。".to_string()
     } else if config.enabled && overlay_is_empty {
-        "未检测到可用天空，当前叠加层为空；请收紧天空区域或调整手动地平线。".to_string()
+        "未检测到可靠天空，当前叠加层为空。可关闭自动天空渐隐并设置手动保护边界后重试。".to_string()
     } else if config.enabled {
         "天空保护采用图像启发式判断；请检查地图线条是否避开主体边缘。".to_string()
     } else {
@@ -549,6 +649,23 @@ fn preview_sync(state: &GeoStateInner, id: &str, config: &GeoConfig) -> Result<G
         width: session.preview_rgb.width(),
         height: session.preview_rgb.height(),
         warning,
+        attribution: fetched
+            .as_ref()
+            .map(|data| format!("© OpenStreetMap contributors · {}", data.endpoint_host))
+            .unwrap_or_else(|| {
+                if config.provider == 1 {
+                    "© OpenStreetMap contributors".to_string()
+                } else {
+                    "Mock 数据源；不包含真实地图数据".to_string()
+                }
+            }),
+        feature_count: fetched
+            .as_ref()
+            .map(|data| data.features.len() as u32)
+            .unwrap_or(0),
+        cache_hit: fetched.as_ref().is_some_and(|data| data.cache_hit),
+        provider: if config.provider == 1 { "osm" } else { "mock" }.into(),
+        render_backend: session.native_backend.clone(),
     })
 }
 
@@ -576,12 +693,33 @@ fn export_sync(
         return Err("输出路径不能覆盖原始照片。".into());
     }
 
+    // Serialize full-size work with preview and discard superseded preview results.
+    session.preview_generation.fetch_add(1, Ordering::AcqRel);
+    let _render_guard = session
+        .render_mutex
+        .lock()
+        .map_err(|_| "导出渲染锁不可用。".to_string())?;
     // Export intentionally reopens and decodes the original full-size source.
     let decoded = decode_source(&session.source_path)?;
     if decoded.rgb.width() != session.width || decoded.rgb.height() != session.height {
         return Err("原始照片尺寸与打开时不一致，已停止导出。".into());
     }
-    let (overlay, composite) = render_overlay_and_composite(&decoded.rgb, config)?;
+    let fetched = if config.provider == 1 && config.enabled {
+        Some(state.osm.fetch(
+            &config.overpass_endpoint,
+            config.latitude,
+            config.longitude,
+            config.radius_km,
+        )?)
+    } else {
+        None
+    };
+    let features = fetched
+        .as_ref()
+        .map(|data| data.features.as_slice())
+        .unwrap_or(&[]);
+    let (source_rgb, _) = crate::native_preview::prepare(decoded.rgb);
+    let (overlay, composite) = render_overlay_and_composite(&source_rgb, config, features)?;
     let rgb = if overlay_only { None } else { Some(composite) };
     let rgba = if overlay_only { Some(overlay) } else { None };
     write_image_no_clobber(&target, kind, rgb.as_ref(), rgba.as_ref())?;
@@ -591,6 +729,7 @@ fn export_sync(
 fn render_overlay_and_composite(
     rgb: &RgbImage,
     config: &GeoConfig,
+    features: &[geo_osm::GeoFeature],
 ) -> Result<(RgbaImage, RgbImage), String> {
     let width = rgb.width();
     let height = rgb.height();
@@ -598,16 +737,29 @@ fn render_overlay_and_composite(
     let mut overlay_bytes = vec![0u8; pixel_count * 4];
     let native_config = config.to_native();
     let mut error = [0 as c_char; 1024];
-    let status = unsafe {
-        imprint_geo_render(
-            rgb.as_raw().as_ptr(),
-            width,
-            height,
+    let status = if config.provider == 1 && !config.enabled {
+        overlay_bytes.fill(0);
+        0
+    } else if config.provider == 1 {
+        render_osm_features(
+            rgb,
             &native_config,
-            overlay_bytes.as_mut_ptr(),
-            error.as_mut_ptr(),
-            error.len() as u32,
-        )
+            features,
+            &mut overlay_bytes,
+            &mut error,
+        )?
+    } else {
+        unsafe {
+            imprint_geo_render(
+                rgb.as_raw().as_ptr(),
+                width,
+                height,
+                &native_config,
+                overlay_bytes.as_mut_ptr(),
+                error.as_mut_ptr(),
+                error.len() as u32,
+            )
+        }
     };
     if status != 0 {
         return Err(native_error(&error, "地理叠加渲染失败。"));
@@ -630,6 +782,86 @@ fn render_overlay_and_composite(
     let composite = ImageBuffer::from_raw(width, height, composite_bytes)
         .ok_or_else(|| "合成结果尺寸无效。".to_string())?;
     Ok((overlay, composite))
+}
+
+fn render_osm_features(
+    rgb: &RgbImage,
+    native_config: &NativeGeoConfig,
+    features: &[geo_osm::GeoFeature],
+    overlay_bytes: &mut [u8],
+    error: &mut [c_char],
+) -> Result<i32, String> {
+    let total_points = features
+        .iter()
+        .try_fold(0usize, |total, feature| {
+            total.checked_add(feature.points.len())
+        })
+        .ok_or_else(|| "OSM 几何点数超出范围。".to_string())?;
+    if features.len() > 10_000 || total_points > 500_000 {
+        return Err("OSM 几何超过原生渲染上限。".into());
+    }
+    let mut points = Vec::with_capacity(total_points);
+    let mut labels = Vec::with_capacity(features.len());
+    for feature in features {
+        if feature.points.is_empty()
+            || feature.points.iter().any(|point| {
+                !point.latitude.is_finite()
+                    || !point.longitude.is_finite()
+                    || !(-90.0..=90.0).contains(&point.latitude)
+                    || !(-180.0..=180.0).contains(&point.longitude)
+            })
+        {
+            return Err("OSM 几何包含空要素或无效经纬度。".into());
+        }
+        if feature.label.len() > 256 || !feature.label.is_ascii() || feature.label.contains('\0') {
+            return Err("OSM 地名标签超过长度限制或包含无效字符。".into());
+        }
+        if feature.kind > 3 {
+            return Err("OSM 要素类型无效。".into());
+        }
+        points.extend(feature.points.iter().map(|point| GeoVertex {
+            latitude: point.latitude,
+            longitude: point.longitude,
+        }));
+        labels.push(
+            CString::new(feature.label.as_bytes())
+                .map_err(|_| "OSM 地名标签包含无效字符。".to_string())?,
+        );
+    }
+    let mut point_offset = 0usize;
+    let feature_views = features
+        .iter()
+        .enumerate()
+        .map(|(index, feature)| {
+            let count = feature.points.len();
+            let view = GeoFeatureView {
+                kind: feature.kind,
+                point_count: count as u32,
+                points: points[point_offset..point_offset + count].as_ptr(),
+                label: labels[index].as_ptr(),
+            };
+            point_offset += count;
+            view
+        })
+        .collect::<Vec<_>>();
+    let feature_ptr = if feature_views.is_empty() {
+        std::ptr::null()
+    } else {
+        feature_views.as_ptr()
+    };
+    Ok(unsafe {
+        imprint_geo_render_features(
+            rgb.as_raw().as_ptr(),
+            rgb.width(),
+            rgb.height(),
+            native_config,
+            feature_ptr,
+            feature_views.len() as u32,
+            overlay_bytes.as_mut_ptr(),
+            error.as_mut_ptr(),
+            error.len() as u32,
+        )
+    })
 }
 
 fn decode_source(path: &Path) -> Result<DecodedSource, String> {
@@ -1354,20 +1586,6 @@ fn linear_to_srgb(value: f64) -> f64 {
     }
 }
 
-fn make_preview(image: &RgbImage) -> (RgbImage, u32, u32) {
-    let source_width = image.width();
-    let source_height = image.height();
-    let scale = (MAX_PREVIEW_SIDE as f64 / source_width as f64)
-        .min(MAX_PREVIEW_SIDE as f64 / source_height as f64)
-        .min(1.0);
-    let target_width = ((source_width as f64 * scale).round() as u32).max(1);
-    let target_height = ((source_height as f64 * scale).round() as u32).max(1);
-    let thumbnail = imageops::thumbnail(image, target_width, target_height);
-    let width = thumbnail.width();
-    let height = thumbnail.height();
-    (thumbnail, width, height)
-}
-
 fn png_data_uri_rgb(image: &RgbImage) -> Result<String, String> {
     let mut bytes = Vec::new();
     PngEncoder::new(&mut bytes)
@@ -1766,6 +1984,29 @@ mod tests {
     }
 
     #[test]
+    fn disabled_osm_preview_does_not_fetch_or_require_features() {
+        let directory = tempfile::tempdir().unwrap();
+        let input_path = directory.path().join("small.png");
+        RgbImage::from_pixel(4, 3, Rgb([20, 40, 60]))
+            .save_with_format(&input_path, ImageFormat::Png)
+            .unwrap();
+        let state = Arc::new(GeoStateInner::default());
+        let photo = open_sync(&state, &input_path).unwrap();
+        let config = GeoConfig {
+            provider: 1,
+            overpass_endpoint: "http://127.0.0.1:1/api/interpreter".into(),
+            ..GeoConfig::default()
+        };
+
+        let preview = preview_sync(&state, &photo.id, &config).unwrap();
+
+        assert_eq!(preview.provider, "osm");
+        assert_eq!(preview.feature_count, 0);
+        assert!(!preview.cache_hit);
+        assert!(preview.warning.contains("启用叠加后将查询"));
+    }
+
+    #[test]
     fn open_preview_save_load_and_export_keep_full_dimensions_and_session_identity() {
         let directory = tempfile::tempdir().unwrap();
         let input_path = directory.path().join("wide.png");
@@ -1782,21 +2023,21 @@ mod tests {
         assert_eq!((photo.width, photo.height), (1801, 905));
         let config = GeoConfig::default();
         let preview = preview_sync(&state, &photo.id, &config).unwrap();
-        assert!(preview.width <= MAX_PREVIEW_SIDE);
-        assert!(preview.height <= MAX_PREVIEW_SIDE);
-        assert_ne!(
+        assert_eq!(
             (preview.width, preview.height),
-            (photo.width, photo.height),
-            "preview dimensions did not shrink"
+            (1801, 905),
+            "preview must return every original pixel, not a 1600px thumbnail"
         );
-        let scaled_height = photo.height as f64 * preview.width as f64 / photo.width as f64;
-        assert!(
-            (preview.height as f64 - scaled_height).abs() <= 1.0,
-            "preview dimensions {}x{} changed the source aspect ratio {}x{}",
-            preview.width,
-            preview.height,
-            photo.width,
-            photo.height
+        let encoded = preview
+            .image
+            .strip_prefix("data:image/png;base64,")
+            .unwrap();
+        let bytes = BASE64.decode(encoded).unwrap();
+        let preview_image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(preview_image.dimensions(), input.dimensions());
+        assert_eq!(
+            preview_image, input,
+            "disabled full-resolution preview preserves every source pixel"
         );
         assert!(preview.image.starts_with("data:image/png;base64,"));
         assert!(preview.overlay.starts_with("data:image/png;base64,"));
@@ -1836,6 +2077,119 @@ mod tests {
     }
 
     #[test]
+    fn full_resolution_osm_preview_export_and_disabled_identity_use_one_query() {
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/api/interpreter", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("local OSM fixture connection: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&chunk[..n]);
+                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            assert!(request.starts_with(b"POST /api/interpreter"));
+            let body = r#"{"elements":[{"type":"way","id":1,"tags":{"highway":"residential","name:en":"TEST ROAD"},"geometry":[{"lat":1.0,"lon":1.999},{"lat":1.0,"lon":2.001}]},{"type":"node","id":2,"tags":{"place":"village","name:en":"TEST PLACE"},"lat":1.0005,"lon":2.0}]}"#;
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("finished.png");
+        let input = RgbImage::from_pixel(1801, 905, image::Rgb([60, 80, 120]));
+        input
+            .save_with_format(&source_path, ImageFormat::Png)
+            .unwrap();
+        let original_bytes = fs::read(&source_path).unwrap();
+        let state = Arc::new(GeoStateInner::default());
+        let photo = open_sync(&state, &source_path).unwrap();
+        let mut config = GeoConfig {
+            enabled: true,
+            has_location: true,
+            provider: 1,
+            latitude: 1.0,
+            longitude: 2.0,
+            radius_km: 0.2,
+            auto_sky_fade: false,
+            overpass_endpoint: endpoint,
+            ..GeoConfig::default()
+        };
+        let first = preview_sync(&state, &photo.id, &config).unwrap();
+        assert_eq!((first.width, first.height), (1801, 905));
+        assert_eq!(first.provider, "osm");
+        assert_eq!(first.feature_count, 2);
+        assert!(!first.cache_hit);
+        assert!(first.attribution.contains("OpenStreetMap contributors"));
+        let overlay = BASE64
+            .decode(
+                first
+                    .overlay
+                    .strip_prefix("data:image/png;base64,")
+                    .unwrap(),
+            )
+            .unwrap();
+        let overlay = image::load_from_memory(&overlay).unwrap().to_rgba8();
+        assert_eq!(overlay.dimensions(), input.dimensions());
+        assert!(
+            overlay.pixels().any(|pixel| pixel[3] > 0),
+            "OSM geometry must reach the native overlay, not only a status field"
+        );
+        config.opacity = 0.3;
+        let second = preview_sync(&state, &photo.id, &config).unwrap();
+        assert!(second.cache_hit);
+        let output = directory.path().join("overlay.png");
+        export_sync(&state, &photo.id, &config, &output, "png", false).unwrap();
+        assert_eq!(
+            ImageReader::open(output).unwrap().decode().unwrap().width(),
+            1801
+        );
+        config.enabled = false;
+        let disabled = preview_sync(&state, &photo.id, &config).unwrap();
+        let disabled = BASE64
+            .decode(
+                disabled
+                    .image
+                    .strip_prefix("data:image/png;base64,")
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(image::load_from_memory(&disabled).unwrap().to_rgb8(), input);
+        assert_eq!(fs::read(source_path).unwrap(), original_bytes);
+        server.join().unwrap();
+    }
+
+    #[test]
     #[ignore = "requires IMPRINT_GEO_SMOKE_INPUT to point to a real DNG"]
     fn real_dng_open_and_export_uses_full_resolution_rgb_pixels() {
         let path = std::env::var("IMPRINT_GEO_SMOKE_INPUT").expect("set IMPRINT_GEO_SMOKE_INPUT");
@@ -1855,16 +2209,19 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("full_resolution.png");
         let id = Uuid::new_v4().to_string();
-        let (preview, width, height) = make_preview(&decoded.rgb);
-        assert!(width <= MAX_PREVIEW_SIDE && height <= MAX_PREVIEW_SIDE);
+        let preview = decoded.rgb.clone();
+        assert_eq!(preview.dimensions(), decoded.rgb.dimensions());
         let session = Arc::new(GeoSession {
             source_path: decoded.source_path.clone(),
             source_name: decoded.source_name.clone(),
             width: decoded.rgb.width(),
             height: decoded.rgb.height(),
             preview_rgb: preview,
+            native_backend: "native test source".into(),
+            render_mutex: Mutex::new(()),
             exif_location: decoded.exif_location.clone(),
             project_path: Mutex::new(None),
+            preview_generation: AtomicU64::new(0),
         });
         let state = GeoStateInner::default();
         state.sessions.lock().unwrap().insert(id.clone(), session);

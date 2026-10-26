@@ -13,7 +13,7 @@ async page => {
       if(command==='plugin:dialog|open')return args.options.title.includes('项目')?'/tmp/ui-contract.imprint-geo.json':'/tmp/finished.jpg';
       if(command==='plugin:dialog|save')return args.options.title.includes('项目')?'/tmp/ui-contract.imprint-geo.json':'/tmp/ui-contract.png';
       if(command==='geo_open')return photo;
-      if(command==='geo_preview')return {image:pixel,overlay:pixel,width:1600,height:1200,warning:'UI transport stub; no visual acceptance'};
+      if(command==='geo_preview')return {image:pixel,overlay:pixel,width:4000,height:3000,warning:'UI transport stub; no visual acceptance',attribution:'© OpenStreetMap contributors',provider:'osm',feature_count:2,cache_hit:false,render_backend:'Metal (test stub)'};
       if(command==='geo_save_project'){window.__geoTest.saved=JSON.parse(JSON.stringify(args.config));return args.path;}
       if(command==='geo_load_project')return {photo:{...photo,id:'ui-contract-loaded'},config:window.__geoTest.saved};
       if(command==='geo_export')return args.path;
@@ -30,6 +30,10 @@ async page => {
   await enable.check();
   await page.waitForFunction(()=>window.__geoTest.calls.some(x=>x.command==='geo_preview'&&x.args.config.enabled));
   await geo.getByRole('img',{name:'finished.jpg 地理叠加效果',exact:true}).waitFor();
+  await geo.getByRole('button',{name:'100% 原尺寸',exact:true}).click();
+  assert(await geo.getByRole('button',{name:'适应窗口',exact:true}).getAttribute('aria-pressed') === 'true', '100% pixel mode toggles');
+  assert(await geo.getByText('4000 × 3000',{exact:true}).isVisible(), 'preview reports source resolution');
+  await geo.getByRole('link',{name:'© OpenStreetMap contributors',exact:true}).waitFor();
   await geo.getByRole('button',{name:'查看透明层',exact:true}).click();
   await geo.getByRole('img',{name:'原生返回的透明地理图层',exact:true}).waitFor();
   await geo.getByRole('button',{name:'保存项目…',exact:true}).click();

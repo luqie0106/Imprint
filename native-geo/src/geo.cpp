@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <new>
 #include <utility>
 
@@ -169,6 +170,9 @@ using imprint::geo::kPi;
 using imprint::geo::radians;
 
 constexpr uint64_t kMaximumPixels = 100000000ULL;
+constexpr uint32_t kMaximumFeatures = 10000;
+constexpr uint64_t kMaximumFeaturePoints = 500000;
+constexpr size_t kMaximumLabelBytes = 256;
 
 void write_error(char *dst, uint32_t capacity, const char *message) noexcept {
     if (dst == nullptr || capacity == 0) return;
@@ -424,15 +428,15 @@ public:
         }
     }
 
-    void text(double x,double y,const char *s,int scale,Color c,double alpha=1.0) noexcept;
+    void text(double x,double y,const std::string &s,int scale,Color c,double alpha=1.0);
 private:
     uint8_t *rgba_;
     uint32_t width_,height_;
     double cx_,cy_,radius_,opacity_;
 };
 
-std::array<uint8_t,7> glyph(char ch) noexcept {
-    if (ch>='a'&&ch<='z') ch=static_cast<char>(ch-'a'+'A');
+std::array<uint8_t,7> glyph(uint32_t ch) noexcept {
+    if (ch>='a'&&ch<='z') ch=ch-'a'+'A';
     switch(ch) {
 #define G(ch_,a,b,c,d,e,f,g) case ch_: return {{a,b,c,d,e,f,g}}
         G('A',14,17,17,31,17,17,17); G('B',30,17,17,30,17,17,30); G('C',14,17,16,16,16,17,14);
@@ -450,22 +454,104 @@ std::array<uint8_t,7> glyph(char ch) noexcept {
         G('9',14,17,17,15,1,1,14); G('-',0,0,0,31,0,0,0); G('.',0,0,0,0,0,12,12);
         G(':',0,12,12,0,12,12,0); G('/',1,2,2,4,8,8,16); G('+',0,4,4,31,4,4,0);
         G(',',0,0,0,0,0,4,8); G(' ',0,0,0,0,0,0,0); G('_',0,0,0,0,0,0,31);
+        G('?',30,1,2,4,0,4,0); G(0x00A9,14,17,23,20,23,16,14);
 #undef G
-        default: return {{0,0,0,0,0,0,0}};
+        default: return {{30,1,2,4,0,4,0}}; // Unknown Unicode/ASCII glyph: '?' fallback.
     }
 }
 
-void Canvas::text(double x,double y,const char *s,int scale,Color c,double alpha) noexcept {
-    if (!s || scale<1) return;
-    const double start=x;
-    for (;*s;++s,x+=6.0*scale) {
-        const auto rows=glyph(*s);
+size_t text_codepoint_count(const std::string &s) noexcept {
+    size_t count=0;
+    for (uint8_t ch : s) if ((ch&0xC0)!=0x80) ++count;
+    return count;
+}
+
+uint32_t next_text_codepoint(const std::string &s,size_t *index) noexcept {
+    const size_t i=*index;
+    const uint8_t lead=static_cast<uint8_t>(s[i]);
+    if (lead<0x80) { *index=i+1; return lead; }
+    uint32_t cp=0;
+    size_t count=0;
+    if ((lead&0xE0)==0xC0) { cp=lead&0x1F; count=2; }
+    else if ((lead&0xF0)==0xE0) { cp=lead&0x0F; count=3; }
+    else if ((lead&0xF8)==0xF0) { cp=lead&0x07; count=4; }
+    else { *index=i+1; return '?'; }
+    if (i+count>s.size()) { *index=i+1; return '?'; }
+    for (size_t j=1;j<count;++j) {
+        const uint8_t next=static_cast<uint8_t>(s[i+j]);
+        if ((next&0xC0)!=0x80) { *index=i+1; return '?'; }
+        cp=(cp<<6)|(next&0x3F);
+    }
+    *index=i+count;
+    return cp;
+}
+
+bool valid_utf8(const char *s,size_t length) noexcept {
+    size_t i=0;
+    while (i<length) {
+        const uint8_t lead=static_cast<uint8_t>(s[i]);
+        if (lead<0x80) { ++i; continue; }
+        size_t count=0;
+        uint32_t cp=0;
+        if (lead>=0xC2&&lead<=0xDF) { count=2; cp=lead&0x1F; }
+        else if (lead>=0xE0&&lead<=0xEF) { count=3; cp=lead&0x0F; }
+        else if (lead>=0xF0&&lead<=0xF4) { count=4; cp=lead&0x07; }
+        else return false;
+        if (i+count>length) return false;
+        for (size_t j=1;j<count;++j) {
+            const uint8_t next=static_cast<uint8_t>(s[i+j]);
+            if ((next&0xC0)!=0x80) return false;
+            cp=(cp<<6)|(next&0x3F);
+        }
+        if ((count==3&&cp<0x800)||(count==4&&cp<0x10000)||
+            cp>0x10FFFF||(cp>=0xD800&&cp<=0xDFFF)) return false;
+        i+=count;
+    }
+    return true;
+}
+
+bool read_label(const char *input,std::string *label) {
+    if (label==nullptr) return false;
+    label->clear();
+    if (input==nullptr) return true;
+    size_t length=0;
+    while (length<=kMaximumLabelBytes&&input[length]!='\0') ++length;
+    if (length>kMaximumLabelBytes || !valid_utf8(input,length)) return false;
+    label->assign(input,length);
+    return true;
+}
+
+void Canvas::text(double x,double y,const std::string &s,int scale,Color c,double alpha) {
+    if (scale<1) return;
+    size_t index=0;
+    while (index<s.size()) {
+        const auto rows=glyph(next_text_codepoint(s,&index));
         for (int row=0;row<7;++row) for (int col=0;col<5;++col) {
             if ((rows[row] & (1u << (4-col)))==0) continue;
             for (int py=0;py<scale;++py) for (int px=0;px<scale;++px)
-                pixel(static_cast<int>(start+(x-start)+col*scale+px),static_cast<int>(y+row*scale+py),c,alpha);
+                pixel(static_cast<int>(x+col*scale+px),static_cast<int>(y+row*scale+py),c,alpha);
         }
+        x+=6.0*scale;
     }
+}
+
+bool clip_line_to_rect(double *x0,double *y0,double *x1,double *y1,
+                       double left,double top,double right,double bottom) noexcept {
+    if (!x0||!y0||!x1||!y1||left>right||top>bottom) return false;
+    const double dx=*x1-*x0,dy=*y1-*y0;
+    double t0=0.0,t1=1.0;
+    const double p[4]={-dx,dx,-dy,dy};
+    const double q[4]={*x0-left,right-*x0,*y0-top,bottom-*y0};
+    for (int i=0;i<4;++i) {
+        if (std::fabs(p[i])<1e-15) { if (q[i]<0.0) return false; continue; }
+        const double r=q[i]/p[i];
+        if (p[i]<0.0) { if (r>t1) return false; t0=std::max(t0,r); }
+        else { if (r<t0) return false; t1=std::min(t1,r); }
+    }
+    const double ox=*x0,oy=*y0;
+    *x0=ox+dx*t0; *y0=oy+dy*t0;
+    *x1=ox+dx*t1; *y1=oy+dy*t1;
+    return std::isfinite(*x0)&&std::isfinite(*y0)&&std::isfinite(*x1)&&std::isfinite(*y1);
 }
 
 struct Palette {
@@ -494,13 +580,16 @@ struct TextItem {
 bool safe_text_box(const TextItem &item, uint32_t width, uint32_t height,
                    const SkyRegion &sky, bool check_sky, bool manual, double manual_y,
                    double feather_px) noexcept {
+    if (!std::isfinite(item.x)||!std::isfinite(item.y)||item.scale<1||item.x<0.0||item.y<0.0) return false;
+    const double x1d=item.x+static_cast<double>(text_codepoint_count(item.text))*6*item.scale;
+    const double y1d=item.y+7.0*item.scale;
+    if (x1d>width||y1d>height) return false;
+    if (manual && y1d+feather_px>manual_y) return false;
+    if (!check_sky) return true;
     const int x0=static_cast<int>(std::floor(item.x));
     const int y0=static_cast<int>(std::floor(item.y));
-    const int x1=x0+static_cast<int>(item.text.size())*6*item.scale;
-    const int y1=y0+7*item.scale;
-    if (x0<0 || y0<0 || x1>static_cast<int>(width) || y1>static_cast<int>(height)) return false;
-    if (manual && y1+feather_px>manual_y) return false;
-    if (!check_sky) return true;
+    const int x1=static_cast<int>(std::ceil(x1d));
+    const int y1=static_cast<int>(std::ceil(y1d));
     const double safe_distance=feather_px+item.scale;
     for (int y=y0;y<y1;++y) for (int x=x0;x<x1;++x) {
         const size_t i=static_cast<size_t>(y)*width+static_cast<size_t>(x);
@@ -521,8 +610,20 @@ bool render_impl(const uint8_t *rgb,uint32_t width,uint32_t height,const GeoConf
     if (c.style==static_cast<int32_t>(imprint::geo::Style::Terrain)) {
         *why="Terrain style is unsupported because this core has no verified DEM source."; return false;
     }
-    if (c.provider==static_cast<int32_t>(imprint::geo::ProviderKind::Overpass)) {
-        *why="Overpass provider is unsupported in this native core; no network request was made."; return false;
+    GeoQuery query{c.latitude,c.longitude,c.radius_km*1000.0};
+    GeoDataset dataset;
+    std::string provider_error;
+    if (!data_provider.load(query,&dataset,&provider_error)) {
+        *why=provider_error.empty()?"Geographic data provider failed.":provider_error.c_str();
+        return false;
+    }
+    if (dataset.features.empty()) {
+        *why="No geographic features were returned; overlay has no map data.";
+        return false;
+    }
+    if (c.provider==static_cast<int32_t>(imprint::geo::ProviderKind::Overpass)&&dataset.mock_data) {
+        *why="Overpass provider returned mock data; refusing to label it as a real map.";
+        return false;
     }
 
     SkyRegion sky;
@@ -564,12 +665,6 @@ bool render_impl(const uint8_t *rgb,uint32_t width,uint32_t height,const GeoConf
     Palette palette=make_palette(dark,c.color_rgb);
     std::vector<TextItem> pending_labels;
 
-    GeoQuery query{c.latitude,c.longitude,c.radius_km*1000.0};
-    GeoDataset dataset;
-    std::string provider_error;
-    if (!data_provider.load(query,&dataset,&provider_error)) {
-        *why="Geographic data provider failed or is unsupported."; return false;
-    }
     imprint::geo::Style style=static_cast<imprint::geo::Style>(c.style);
     if (style==imprint::geo::Style::Auto) {
         style=imprint::geo::Style::Urban;
@@ -587,21 +682,47 @@ bool render_impl(const uint8_t *rgb,uint32_t width,uint32_t height,const GeoConf
     };
     const double detail_scale=std::min(width,height)/1000.0;
     const double lw=c.line_width*detail_scale;
+    const double clip_left=std::max(0.0,cx-panel_radius-lw*2.0-1.0);
+    const double clip_top=std::max(0.0,cy-panel_radius-lw*2.0-1.0);
+    const double clip_right=std::min(static_cast<double>(width)-1.0,cx+panel_radius+lw*2.0+1.0);
+    const double clip_bottom=std::min(static_cast<double>(height)-1.0,cy+panel_radius+lw*2.0+1.0);
     for (const GeoFeature &feature:dataset.features) {
         if (feature.kind==FeatureKind::Coastline && style!=imprint::geo::Style::Coastal) continue;
+        if (feature.kind==FeatureKind::Place && feature.points_deg.size()!=1) continue;
+        if (feature.kind!=FeatureKind::Place && feature.points_deg.size()<2) continue;
         Color color=feature.kind==FeatureKind::Road?palette.road:
-                    feature.kind==FeatureKind::Waterway?palette.water:palette.coast;
+                    feature.kind==FeatureKind::Waterway?palette.water:
+                    feature.kind==FeatureKind::Coastline?palette.coast:palette.marker;
         const double feature_width=feature.kind==FeatureKind::Road?lw:
-                                   feature.kind==FeatureKind::Coastline?lw*1.35:lw*1.15;
+                                   feature.kind==FeatureKind::Coastline?lw*1.35:
+                                   feature.kind==FeatureKind::Place?lw*2.0:lw*1.15;
+        if (feature.kind==FeatureKind::Place) {
+            double x=0,y=0;
+            if (map_point(feature.points_deg[0].first,feature.points_deg[0].second,&x,&y) &&
+                x>=clip_left-2.0&&x<=clip_right+2.0&&y>=clip_top-2.0&&y<=clip_bottom+2.0) {
+                const double marker_radius=std::max(2.0*detail_scale,feature_width*1.8);
+                canvas.fill_circle(x,y,marker_radius,color,0.95);
+                if (c.labels!=0&&!feature.label.empty()) {
+                    const int ts=std::max(1,std::min(3,static_cast<int>(std::lround(panel_radius/500.0))));
+                    pending_labels.push_back({x+marker_radius+2.0,y-4.0*ts,feature.label,ts,palette.text,0.96});
+                }
+            }
+            continue;
+        }
         double last_x=0,last_y=0;
         bool have_last=false;
         for (const auto &point:feature.points_deg) {
             double x=0,y=0;
             if (!map_point(point.first,point.second,&x,&y)) { have_last=false; continue; }
-            if (have_last) canvas.line(last_x,last_y,x,y,feature_width,color,0.95);
+            if (have_last) {
+                if (std::hypot(x-last_x,y-last_y)<0.75) continue;
+                double x0=last_x,y0=last_y,x1=x,y1=y;
+                if (clip_line_to_rect(&x0,&y0,&x1,&y1,clip_left,clip_top,clip_right,clip_bottom))
+                    canvas.line(x0,y0,x1,y1,feature_width,color,0.95);
+            }
             last_x=x; last_y=y; have_last=true;
         }
-        if (c.labels!=0 && feature.points_deg.size()>2) {
+        if (c.labels!=0 && !feature.label.empty() && feature.points_deg.size()>2) {
             const size_t pi=feature.points_deg.size()/2;
             double x=0,y=0;
             if (map_point(feature.points_deg[pi].first,feature.points_deg[pi].second,&x,&y)) {
@@ -618,9 +739,10 @@ bool render_impl(const uint8_t *rgb,uint32_t width,uint32_t height,const GeoConf
                       c.longitude<0.0?'W':'E',std::fabs(c.longitude));
         const int ts=std::max(1,std::min(4,static_cast<int>(std::lround(panel_radius/400.0))));
         pending_labels.push_back({cx-panel_radius*0.70,cy-panel_radius*0.76,coords,ts,palette.text,0.98});
-        pending_labels.push_back({cx-panel_radius*0.70,cy-panel_radius*0.76+10.0*ts,
-                                  "MOCK DATA - EXAMPLE ONLY",ts,palette.marker,1.0});
-    } else {
+        if (dataset.mock_data)
+            pending_labels.push_back({cx-panel_radius*0.70,cy-panel_radius*0.76+10.0*ts,
+                                      "MOCK DATA - EXAMPLE ONLY",ts,palette.marker,1.0});
+    } else if (dataset.mock_data) {
         const int ts=std::max(1,std::min(3,static_cast<int>(std::lround(panel_radius/500.0))));
         pending_labels.push_back({cx-panel_radius*0.35,cy-panel_radius*0.78,"MOCK MAP",ts,palette.marker,0.95});
     }
@@ -666,29 +788,33 @@ bool render_impl(const uint8_t *rgb,uint32_t width,uint32_t height,const GeoConf
     const double feather_px=c.feather*std::min(width,height);
     const bool manual=c.manual_horizon>0.0;
     const double manual_y=manual?c.manual_horizon*height:static_cast<double>(height);
-    bool mock_notice_safe=false;
-    for (const TextItem &item:pending_labels) {
-        if (item.text.rfind("MOCK",0)==0 &&
-            safe_text_box(item,width,height,sky,c.auto_sky_fade!=0,manual,manual_y,feather_px)) {
-            mock_notice_safe=true;
-            break;
+    if (!dataset.mock_data) {
+        const std::string attribution="© OpenStreetMap contributors";
+        const int ts=std::max(1,std::min(3,static_cast<int>(std::lround(panel_radius/900.0))));
+        const double text_width=static_cast<double>(text_codepoint_count(attribution))*6*ts;
+        const double text_height=7.0*ts;
+        // Place credit inside the protected sky rather than only at image edges,
+        // where the feather distance would otherwise reject every candidate.
+        const double inset=feather_px+4.0+ts;
+        const double safe_left=c.auto_sky_fade?sky.min_x+inset:4.0;
+        const double safe_right=c.auto_sky_fade?sky.max_x-text_width-inset:static_cast<double>(width)-text_width-4.0;
+        const double safe_top=c.auto_sky_fade?sky.min_y+inset:4.0;
+        const double safe_bottom=c.auto_sky_fade?sky.max_y-text_height-inset:static_cast<double>(height)-text_height-4.0;
+        const std::array<std::pair<double,double>,4> candidates{{
+            {safe_left,safe_bottom},{safe_right,safe_bottom},
+            {safe_left,safe_top},{safe_right,safe_top}}};
+        for (const auto &position:candidates) {
+            TextItem item{position.first,position.second,attribution,ts,palette.text,0.96};
+            if (safe_text_box(item,width,height,sky,c.auto_sky_fade!=0,manual,manual_y,feather_px)) {
+                pending_labels.push_back(std::move(item));
+                break;
+            }
         }
-    }
-    if (!mock_notice_safe) {
-        const double x=std::max(0.0,std::min(static_cast<double>(width)-24.0,cx-12.0));
-        const double y=c.auto_sky_fade!=0?static_cast<double>(std::max(0,sky.min_y)):
-                       std::max(0.0,cy-panel_radius*0.75);
-        TextItem compact_notice{x,y,"MOCK",1,palette.marker,1.0};
-        if (!safe_text_box(compact_notice,width,height,sky,c.auto_sky_fade!=0,manual,manual_y,feather_px)) {
-            std::memset(out,0,count*4);
-            return true;
-        }
-        pending_labels.push_back(std::move(compact_notice));
     }
     Canvas label_canvas(out,width,height,cx,cy,std::hypot(static_cast<double>(width),static_cast<double>(height)),1.0);
     for (const TextItem &item:pending_labels) {
         if (!safe_text_box(item,width,height,sky,c.auto_sky_fade!=0,manual,manual_y,feather_px)) continue;
-        label_canvas.text(item.x,item.y,item.text.c_str(),item.scale,item.color,item.alpha);
+        label_canvas.text(item.x,item.y,item.text,item.scale,item.color,item.alpha);
     }
     for (size_t i=0;i<count;++i) {
         const uint32_t y=static_cast<uint32_t>(i/width);
@@ -729,27 +855,33 @@ bool imprint::geo::TopConnectedRgbSkyMaskProvider::build(const uint8_t *rgb,uint
         imprint::geo::SkyMask mask;
         bool valid=false;
     };
-    static thread_local Cache cache;
+    static std::mutex cache_mutex;
+    static Cache cache;
     uint64_t hash=1469598103934665603ULL ^ (static_cast<uint64_t>(width)<<32) ^ height;
     for (size_t i=0;i<bytes;++i) {
         hash^=rgb[i];
         hash*=1099511628211ULL;
     }
-    constexpr size_t kCachePixelLimit=16000000;
-    if (static_cast<size_t>(width)*height<=kCachePixelLimit && cache.valid &&
-        cache.hash==hash && cache.width==width && cache.height==height &&
-        cache.exact_rgb.size()==bytes && std::memcmp(cache.exact_rgb.data(),rgb,bytes)==0) {
-        *out=cache.mask;
-        return true;
+    constexpr size_t kCachePixelLimit=32000000;
+    const bool cacheable=static_cast<size_t>(width)*height<=kCachePixelLimit;
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (cache.valid && cache.hash==hash && cache.width==width && cache.height==height &&
+            cache.exact_rgb.size()==bytes && std::memcmp(cache.exact_rgb.data(),rgb,bytes)==0) {
+            *out=cache.mask;
+            return true;
+        }
     }
     imprint::geo::SkyMask computed=find_top_connected_sky(rgb,width,height);
-    if (static_cast<size_t>(width)*height<=kCachePixelLimit) {
+    if (cacheable) {
         Cache next;
         next.hash=hash; next.width=width; next.height=height; next.valid=true;
         next.exact_rgb.assign(rgb,rgb+bytes);
         next.mask=computed;
+        std::lock_guard<std::mutex> lock(cache_mutex);
         cache=std::move(next);
     } else {
+        std::lock_guard<std::mutex> lock(cache_mutex);
         cache=Cache{};
     }
     *out=std::move(computed);
@@ -763,7 +895,7 @@ bool imprint::geo::render_with_sky_provider(const uint8_t *rgb,uint32_t width,ui
     if (config.provider==static_cast<int32_t>(imprint::geo::ProviderKind::Overpass)) {
         if (overlay_rgba && static_cast<uint64_t>(width)*height<=kMaximumPixels)
             std::memset(overlay_rgba,0,static_cast<size_t>(width)*height*4);
-        if (error) *error="Overpass provider is unsupported in this native core; no map request was made.";
+        if (error) *error="Overpass rendering needs caller-supplied features; use render_with_providers or imprint_geo_render_features.";
         return false;
     }
     imprint::geo::MockGeoDataProvider data_provider;
@@ -829,7 +961,7 @@ extern "C" int32_t imprint_geo_render(const uint8_t *rgb,uint32_t width,uint32_t
         }
         if (config->provider==1) {
             std::memset(overlay_rgba,0,count*4);
-            write_error(error,error_capacity,"Overpass provider is unsupported in this native core; no network request was made."); return 4;
+            write_error(error,error_capacity,"Overpass rendering needs caller-supplied features; use imprint_geo_render_features."); return 4;
         }
         imprint::geo::TopConnectedRgbSkyMaskProvider sky_provider;
         imprint::geo::MockGeoDataProvider data_provider;
@@ -844,6 +976,122 @@ extern "C" int32_t imprint_geo_render(const uint8_t *rgb,uint32_t width,uint32_t
         return 6;
     } catch (...) {
         std::memset(overlay_rgba,0,count*4);
+        write_error(error,error_capacity,"Unexpected native geographic overlay failure.");
+        return 7;
+    }
+}
+
+extern "C" int32_t imprint_geo_render_features(const uint8_t *rgb,uint32_t width,uint32_t height,
+                                                 const GeoConfig *config,
+                                                 const GeoFeatureView *features,uint32_t feature_count,
+                                                 uint8_t *overlay_rgba,char *error,uint32_t error_capacity) {
+    if (error&&error_capacity) error[0]='\0';
+    size_t pixel_count=0;
+    if (!checked_pixel_count(width,height,&pixel_count)) {
+        write_error(error,error_capacity,"Image dimensions are zero or exceed the native pixel limit.");
+        return 1;
+    }
+    if (config==nullptr||rgb==nullptr||overlay_rgba==nullptr) {
+        write_error(error,error_capacity,"RGB input, GeoConfig, and RGBA output buffers are required.");
+        return 1;
+    }
+    std::memset(overlay_rgba,0,pixel_count*4);
+    try {
+        const char *why=nullptr;
+        if (!valid_config(*config,&why)) {
+            write_error(error,error_capacity,why);
+            return 2;
+        }
+        if (config->provider!=static_cast<int32_t>(imprint::geo::ProviderKind::Overpass)) {
+            write_error(error,error_capacity,"Feature rendering requires provider=1 (Overpass/OSM).");
+            return 4;
+        }
+        // A disabled layer is an identity operation and must not require map data.
+        if (config->enabled==0) return 0;
+        if (feature_count==0) {
+            write_error(error,error_capacity,"No geographic features were supplied; overlay has no map data.");
+            return 4;
+        }
+        if (feature_count>kMaximumFeatures||features==nullptr) {
+            write_error(error,error_capacity,"Feature count exceeds 10,000 or the feature array is null.");
+            return 4;
+        }
+
+        GeoDataset dataset;
+        dataset.mock_data=false;
+        dataset.features.reserve(feature_count);
+        uint64_t total_points=0;
+        for (uint32_t i=0;i<feature_count;++i) {
+            const GeoFeatureView &view=features[i];
+            if (view.kind>3) {
+                write_error(error,error_capacity,"Feature kind must be 0=road, 1=water, 2=coast, or 3=place.");
+                return 4;
+            }
+            const bool place=view.kind==3;
+            if ((place&&view.point_count!=1)||(!place&&view.point_count<2)) {
+                write_error(error,error_capacity,"Place features need one point; line features need at least two.");
+                return 4;
+            }
+            total_points+=view.point_count;
+            if (total_points>kMaximumFeaturePoints) {
+                write_error(error,error_capacity,"Feature geometry exceeds the 500,000 point limit.");
+                return 4;
+            }
+            if (view.points==nullptr) {
+                write_error(error,error_capacity,"Feature point array is null.");
+                return 4;
+            }
+            GeoFeature feature;
+            feature.kind=static_cast<FeatureKind>(view.kind);
+            if (!read_label(view.label,&feature.label)) {
+                write_error(error,error_capacity,"Feature labels must be valid UTF-8 strings no longer than 256 bytes.");
+                return 4;
+            }
+            feature.points_deg.reserve(view.point_count);
+            for (uint32_t point=0;point<view.point_count;++point) {
+                const double lat=view.points[point].latitude;
+                const double lon=view.points[point].longitude;
+                if (!std::isfinite(lat)||!std::isfinite(lon)||lat < -90.0||lat > 90.0||lon < -180.0||lon > 180.0) {
+                    write_error(error,error_capacity,"Feature coordinates must be finite WGS84 latitude/longitude.");
+                    return 4;
+                }
+                feature.points_deg.emplace_back(lat,lon);
+            }
+            dataset.features.push_back(std::move(feature));
+        }
+        if (dataset.features.empty()) {
+            write_error(error,error_capacity,"No geographic features were supplied; overlay has no map data.");
+            return 4;
+        }
+
+        struct SuppliedFeatureProvider final : imprint::geo::IGeoDataProvider {
+            const GeoDataset &dataset;
+            explicit SuppliedFeatureProvider(const GeoDataset &value):dataset(value) {}
+            bool load(const GeoQuery &,GeoDataset *out,std::string *load_error) const override {
+                if (out==nullptr) {
+                    if (load_error) *load_error="A dataset output is required.";
+                    return false;
+                }
+                *out=dataset;
+                if (load_error) load_error->clear();
+                return true;
+            }
+        } data_provider(dataset);
+        imprint::geo::TopConnectedRgbSkyMaskProvider sky_provider;
+        std::string render_error;
+        if (!imprint::geo::render_with_providers(rgb,width,height,*config,overlay_rgba,
+                                                 data_provider,sky_provider,&render_error)) {
+            std::memset(overlay_rgba,0,pixel_count*4);
+            write_error(error,error_capacity,render_error.c_str());
+            return 5;
+        }
+        return 0;
+    } catch (const std::bad_alloc &) {
+        std::memset(overlay_rgba,0,pixel_count*4);
+        write_error(error,error_capacity,"Native geographic overlay ran out of memory.");
+        return 6;
+    } catch (...) {
+        std::memset(overlay_rgba,0,pixel_count*4);
         write_error(error,error_capacity,"Unexpected native geographic overlay failure.");
         return 7;
     }

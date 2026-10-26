@@ -10,7 +10,7 @@
 
 namespace imprint::geo {
 
-enum class FeatureKind { Road, Waterway, Coastline };
+enum class FeatureKind { Road, Waterway, Coastline, Place };
 enum class Style { Auto = 0, Urban = 1, Coastal = 2, Terrain = 3 };
 enum class ProviderKind { Mock = 0, Overpass = 1 };
 

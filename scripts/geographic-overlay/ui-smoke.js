@@ -29,12 +29,13 @@ async page => {
   assert(await page.getByRole('checkbox',{name:'使用位置坐标',exact:true}).isChecked(), 'manual zero latitude is valid location');
   await page.getByText('地图来源与样式', {exact:true}).click();
   await page.getByRole('combobox',{name:'数据来源',exact:true}).selectOption('1');
-  assert(await page.getByText('OSM / Overpass 数据源尚未实现。当前只能使用明确标记的 Mock 示例数据。',{exact:true}).isVisible(), 'Overpass unsupported is explicit');
+  assert(!await geo.getByRole('alert').isVisible(), 'OSM is available rather than blocked as unsupported');
+  assert(await geo.getByRole('combobox',{name:'数据来源',exact:true}).inputValue() === '1', 'real OSM selection is active');
   await page.getByRole('combobox',{name:'数据来源',exact:true}).selectOption('0');
   await page.getByRole('combobox',{name:'叠加风格',exact:true}).selectOption('3');
   assert(await page.getByText('Terrain 地形图层尚未实现。请选择自动、城市或海岸样式。',{exact:true}).isVisible(), 'Terrain unsupported is explicit');
   await page.getByRole('combobox',{name:'叠加风格',exact:true}).selectOption('0');
-  assert(!requests.some(url=>url.includes('overpass-api')), 'No real network request to reserved provider');
+  assert(!requests.some(url=>url.includes('overpass-api')), 'Browser mode must not issue map requests without a selected native photo');
   assert(failures.length===0, 'No page errors: '+failures.join(';'));
   assert(consoleErrors.length===0, 'No console errors: '+consoleErrors.join(';'));
   return {status:'passed',url:page.url(),viewport:[1100,780],checks:12,sidebar_before:before,sidebar_after:after,console_errors:consoleErrors,page_errors:failures,network_requests:requests.length};

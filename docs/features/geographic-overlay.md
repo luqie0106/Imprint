@@ -1,38 +1,47 @@
 # Geographic Overlay
 
-Geographic Overlay 是 Vue / Tauri 中独立的成品图工具。读取 Photoshop 等软件处理完成的 JPG/JPEG、TIF/TIFF、PNG 或 DNG，在显示变换之后叠加地图，另存 JPEG/PNG 或独立透明 PNG 图层。它不进入 ACR 算子链，不写入原照片，不裁剪照片。SwiftUI 入口本阶段不修改。
+Geographic Overlay 是 Vue / Tauri 的独立成品图工具。输入 JPG/JPEG、TIF/TIFF、PNG 或 DNG，最终叠加地图并另存 JPEG/PNG 或透明 PNG。原照片不写回，不进入 ACR 数值链；SwiftUI 本阶段不修改。
 
-## 模块边界
+## 预览与原生接口
 
-- `tauri-frontend/src/views/GeographicOverlayPage.vue`：参数、预览、历史、文件选择和保存。
-- `tauri-frontend/src/stores/geographicOverlay.ts`：前端配置模型和原生调用契约。
-- `tauri-frontend/src-tauri/src/geographic_overlay.rs`：原生图像 IO、会话、项目、全尺寸导出及阻塞工作调度。
-- `native-geo/`：独立 C++17 Provider、投影、布局、天空保护、抗锯齿地图和透明图层渲染。
+预览和导出都使用原尺寸像素。界面默认适应窗口，可切换“100% 原尺寸”；图片实际尺寸不再固定到 1600px。
 
-功能核心通过 Cargo 编译静态链接，不需要 Python 或单独部署 C++ 动态库。Imprint 的其他工具仍沿用既有后端；本页不以该后端就绪作为可用条件。
+成品底图优先调用现有 `native-renderer` 稳定 C ABI：RGB8/16 转换、neutral `im_renderer_render_full` 与输出复制。只接受与输入 RGB8 逐字节相同的结果，防止对 Photoshop 成品再次应用色彩调整。库缺失、GPU 不可用或中性输出不一致时，保留原像素并使用 C++ CPU 地图路径，明确显示实际后端。
 
-## 数据与真实性
+开发工作树自动寻找自己的原生构建库及共同 checkout 中已有的构建库；可通过现有变量 `IMPRINT_NATIVE_RENDERER_LIB` 指定路径。原生库运行中更新后应重启软件。Geographic Overlay 不调用 Python 进程；Imprint 其他工具仍可能使用原有 Sidecar。
 
-默认 Provider 是 **Mock 测试数据**。道路、水系、海岸线和英文地名是渲染测试几何，不是真实地理信息。坐标与查询半径用于投影和尺度验证，不能据此把 Mock 当作目标位置的真实地图。
+## OSM / Overpass
 
-Overpass 接口地址可保存，当前 Provider 返回明确的未实现错误，不发起联网请求。Terrain 没有 DEM，当前明确不支持，不生成虚构等高线。项目应保留版本、Provider 与来源元数据。
+新照片默认选择真实 OSM，图层默认关闭。有 GPS 时读取 EXIF，否则允许手动输入；(0,0) 是有效坐标。
 
-未来接入 Overpass 时，需要实现查询构造、HTTP 超时和取消、Overpass JSON 转 GeoData、限流和服务错误、缓存时效及 OSM 署名；复用现有投影、样式、布局、渲染和 UI。不能将网络失败回退为未标识的 Mock 成功结果。
+启用 OSM 时，仅将经纬度、查询半径发送到配置的 Overpass endpoint，不上传照片内容。该外发已获得用户明确授权。默认 endpoint：`https://overpass-api.de/api/interpreter`；默认服务不可用时，只尝试一次官方公共备用实例 `https://overpass.private.coffee/api/interpreter`。用户自设 endpoint 不自动切换。
 
-## 天空与布局
+网络与 JSON 解析由 Rust 原生适配层负责，C++ 接收 WGS84 要素数组，统一执行投影、筛选/简化、布局和透明图层渲染。支持道路、水系、水域边界、海岸线与英文地名点；不将 OSM 当作地形 DEM。Terrain 尚不支持。
 
-本阶段使用保守天空估计，而非语义分割模型。天空接口独立，便于后续替换。本地检测、连通空间和主体边缘羽化共同约束 Alpha；手动保护边界可进一步收紧可用区域。覆盖范围是用户上限，地图不固定于顶部 15%。查询半径与显示缩放分别控制地理数据范围和版式。
+公共查询范围限制为 0.05–20 km，不静默缩小请求；过大的旧项目需用户调整半径。响应、要素与点数均有上限；HTTP 错误、限流、超时、解析错误与无数据明确提示，绝不回落为未标记的 Mock。参数透明度/颜色/线宽变化复用已有地理数据缓存。数据未加载或需要重试时可点击“刷新地图”。
 
-无可靠天空时应保守留空。高楼、树木、山脊、灰白立面和细小风机存在识别局限，使用者应检查透明层和成品图，必要时收紧手动边界。不能将启发式检测称作可靠语义分割或宣称所有建筑均受保护。
+读取既有 HTTP(S) 环境代理与 macOS 静态系统代理；也可设置 `IMPRINT_GEO_HTTP_PROXY`。不修改系统代理，不处理 PAC 自动代理脚本。来源与版权信息随预览返回，界面提供 OpenStreetMap 版权链接；渲染器在安全空间允许时绘制署名。
 
-## 渲染规则
+Mock 保留为明确标识的测试模式。Mock 的道路、水系、海岸线与地名均为虚构，不代表目标位置。
 
-核心输入是已完成显示变换的 sRGB RGB8，输出是 straight Alpha 的 sRGB RGBA8 透明图层；source-over 在 sRGB 编码值上合成，是最终图层的明确定义，不参与场景线性曝光/色彩运算。Alpha 为零时保持对应输入像素逐字节不变。关闭图层的核心结果为空层；JPEG 本身有损重编码，不代表关闭导出 JPEG 与原文件逐字节一致。
+## 天空与图层
 
-地图使用局部米制投影及统一缩放，比例尺由投影到画布比例计算。透明底色无边框。文字和导航元素使用独立安全区域布局，空间不足时应减少内容。
+天空保护仍是保守的颜色/边缘连通检测，未作为可靠语义分割模型。采用二维主体边界距离羽化，地图随可用天空空间布局，不固定于顶部 15%。标签放不下时只跳过标签，不再清空已绘制地图。没有可靠天空时允许留空，并给出可诊断信息；用户可以调整手动边界与自动天空开关。
 
-## 开发验证
+天空视觉效果由用户验收，本次开发不宣称通过实际建筑保护或羽化质量验收。
 
-C++ 核心可单独构建和测试。Rust 测试验证 IO、配置和持久化边界，Vue 使用生产类型检查和构建。Vue 界面通过 Playwright CLI 执行 DOM、Console、Network 和程序化断言。天空羽化与主体保护的视觉验收由用户进行，开发交付不将这项视觉验收列为已通过。
+输入工作图是 sRGB RGB8，输出是 straight-alpha sRGB RGBA8；source-over 在 sRGB 编码值中合成。Alpha 为零时保留工作图对应像素。关闭图层不需要地图数据或网络，恢复工作底图。PNG/JPEG 输出为 8-bit；不宣称保留源 16-bit 精度或全部 EXIF/ICC。
 
-最终验证记录见同目录的验收记录。真实 RAW 和照片不应加入 Git。
+地图采用米制局部等距投影及一致缩放，比例尺对应真实投影比例。查询半径与图层显示缩放分开。
+
+## 源码与验证
+
+- `native-geo/`：C++ 地图、天空接口、共享缓存、图层与旧 renderer 适配器。
+- `tauri-frontend/src-tauri/src/geo_osm.rs`：HTTP、代理、OSM JSON 与数据缓存。
+- `tauri-frontend/src-tauri/src/native_preview.rs`：旧 renderer 库发现和安全调用。
+- `tauri-frontend/src-tauri/src/geographic_overlay.rs`：输入、会话、预览、项目和导出。
+- `tauri-frontend/src/views/GeographicOverlayPage.vue` 与 `stores/geographicOverlay.ts`：工具界面、参数、历史与调用竞态保护。
+
+配置与照片项目关联保存，旧项目缺少 GeoConfig 时保持关闭。最终导出重新读取全尺寸源图，并以临时文件与原子无覆盖提交输出。
+
+验证与启动命令见 [交付记录](geographic-overlay-validation.md)。Overpass 数据格式与公共实例参考 [OSM 官方 Wiki](https://wiki.openstreetmap.org/wiki/Overpass_API)、[Overpass 输出格式](https://dev.overpass-api.de/overpass-doc/en/targets/formats.html)。
