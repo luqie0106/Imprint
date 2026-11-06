@@ -32,6 +32,7 @@ set(IMPRINT_RENDERER_SOURCES
     src/acr_profile_tone_api.cpp
     src/acr_negative_curve.cpp
     src/acr_exposure.cpp
+    src/acr_exposure_allocation.cpp
     src/acr_exposure_api.cpp
     src/acr_exposure_limit.cpp
     src/acr_exposure_limit_api.cpp
@@ -73,6 +74,15 @@ set(IMPRINT_RENDERER_SOURCES
     src/acr_profile_gain.cpp
     src/acr_profile_gain_map.cpp
     src/acr_profile_gain_cache.cpp
+    src/acr_profile_gain_control130.cpp
+    src/acr_profile_gain_control130_api.cpp
+    src/acr_profile_gain_scalar.cpp
+    src/acr_profile_gain_scalar_api.cpp
+    src/acr_source_rational.cpp
+    src/acr_source_stage3_geometry.cpp
+    src/acr_source_stage3_geometry_api.cpp
+    src/acr_profile_gain_image.cpp
+    src/acr_profile_gain_image_api.cpp
     src/acr_profile_gain_apply.cpp
     src/acr_profile_gain_coordinates.cpp
     src/acr_stage3_curve.cpp
@@ -180,13 +190,14 @@ target_compile_definitions(imprint_renderer PRIVATE IMPRINT_RENDERER_BUILD ${IMP
 target_link_libraries(imprint_renderer PRIVATE Threads::Threads)
 # Keep the dense CPU operators' float32 evaluation order aligned with NumPy.
 if(MSVC)
+    set_source_files_properties(src/acr_exposure_allocation.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_resample_axis.cpp src/acr_resample_matrix.cpp src/acr_resample_plan.cpp src/acr_render_geometry.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_stage3_prepared_image.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_gainmap.cpp src/acr_gainmap_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_warp.cpp src/acr_warp_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_buffer_format.cpp src/acr_buffer_format_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_profile_gain.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
-    set_source_files_properties(src/acr_profile_gain_map.cpp src/acr_profile_gain_cache.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+    set_source_files_properties(src/acr_profile_gain_map.cpp src/acr_profile_gain_cache.cpp src/acr_profile_gain_control130.cpp src/acr_profile_gain_control130_api.cpp src/acr_profile_gain_scalar.cpp src/acr_profile_gain_scalar_api.cpp src/acr_source_rational.cpp src/acr_source_stage3_geometry.cpp src/acr_source_stage3_geometry_api.cpp src/acr_profile_gain_image.cpp src/acr_profile_gain_image_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_profile_gain_apply.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_profile_gain_coordinates.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_camera_combined.cpp src/acr_camera_combined_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
@@ -196,13 +207,14 @@ if(MSVC)
     set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp src/acr_color_kernels.cpp src/acr_profile_tone.cpp src/acr_negative_curve.cpp src/acr_exposure.cpp src/acr_camera_prepare.cpp src/acr_colorspec.cpp src/acr_display.cpp src/acr_flare.cpp src/acr_highlight_stat.cpp src/acr_tone_kernels.cpp src/acr_tone_mapping.cpp src/acr_camera_kernels.cpp src/acr_tone_pixels.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:strict")
 else()
+    set_source_files_properties(src/acr_exposure_allocation.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_resample_axis.cpp src/acr_resample_matrix.cpp src/acr_resample_plan.cpp src/acr_render_geometry.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_stage3_prepared_image.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_gainmap.cpp src/acr_gainmap_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_warp.cpp src/acr_warp_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_buffer_format.cpp src/acr_buffer_format_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_profile_gain.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
-    set_source_files_properties(src/acr_profile_gain_map.cpp src/acr_profile_gain_cache.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+    set_source_files_properties(src/acr_profile_gain_map.cpp src/acr_profile_gain_cache.cpp src/acr_profile_gain_control130.cpp src/acr_profile_gain_control130_api.cpp src/acr_profile_gain_scalar.cpp src/acr_profile_gain_scalar_api.cpp src/acr_source_rational.cpp src/acr_source_stage3_geometry.cpp src/acr_source_stage3_geometry_api.cpp src/acr_profile_gain_image.cpp src/acr_profile_gain_image_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_profile_gain_apply.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_profile_gain_coordinates.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_camera_combined.cpp src/acr_camera_combined_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")

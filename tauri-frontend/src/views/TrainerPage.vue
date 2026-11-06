@@ -153,7 +153,7 @@ watch(() => messages.value.length, async () => {
 
       <section class="flex min-w-0 min-h-0 flex-col border-r border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-950">
         <div class="workspace-main-scroll flex-1 px-7 py-6">
-          <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col gap-5">
+          <div class="flex min-h-full w-full flex-col gap-5">
             <p class="wide-workspace-description hidden text-sm text-slate-500 dark:text-zinc-400">
               用喜欢与不喜欢的样片，训练符合个人摄影审美的本地模型
             </p>
@@ -361,7 +361,7 @@ watch(() => messages.value.length, async () => {
   scrollbar-gutter: stable;
 }
 
-@media (min-aspect-ratio: 3 / 2) {
+@media (min-width: 1280px) and (min-aspect-ratio: 3 / 2) {
   .wide-workspace-grid {
     grid-template-columns: 270px minmax(0, 1fr) clamp(360px, 24vw, 430px);
   }

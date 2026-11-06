@@ -646,6 +646,87 @@ IMPRINT_API im_status im_native_acr_buffer_u16_to_f32(
     size_t height, size_t row_samples, float *destination,
     size_t destination_count, size_t destination_row_stride);
 
+/* Prepared CPU ProfileGain image stage: payload reader -> source/cache map ->
+   coordinate preparation -> lookup -> fresh-stage RGB application (pivot 0,
+   scalar mode, clipping disabled). The caller selects the map and supplies
+   geometry; this function does not infer source metadata or Adobe routing.
+   rects contains exactly 16 int32 values: map_rect, reference_zero,
+   state_rect, tile_rect, each [top,left,bottom,right). matrix50 contains
+   exactly nine row-major doubles. HWC RGB strides/counts use float elements.
+   Exact in-place operation requires identical pointer/count/stride; other
+   output overlap with inputs is rejected. Failures preserve destination and
+   padding. A coordinate task is unsupported (BACKEND_UNAVAILABLE).
+   amount is positive. At amount 100 and predicate bit 0 clear, the parsed
+   source map is used directly; otherwise the cache transform caps amount at
+   200. lookup_flag is a raw byte. predicate is the prepared-params predicate
+   (b6842c), distinct from the geometry feature gate; only its low bit is used. */
+IMPRINT_API im_status im_native_acr_profile_gain_image_prepared_f32(
+    const float *source, size_t source_count, size_t source_row_stride,
+    float *destination, size_t destination_count, size_t destination_row_stride,
+    const uint8_t *payload, size_t payload_bytes, uint32_t tag, uint32_t byte_order,
+    const int32_t *rects, size_t rect_count, const double *matrix50,
+    size_t matrix_count, double scalar, int32_t amount, uint32_t lookup_flag,
+    uint32_t predicate, uint32_t has_coordinate_task);
+
+/* Validate one serialized ProfileGain map payload with the recovered CPU
+   parser. tag is 52525 (legacy) or 52544 (extended); byte_order is 0=little,
+   1=big. Does not select a profile/source map, prepare geometry, generate a
+   cache table or process pixels. The payload is read only and no borrowed
+   state survives this call. Allocation failure returns RUNTIME_ERROR;
+   malformed/unsupported/resource-limited input returns INVALID_ARGUMENT. */
+IMPRINT_API im_status im_native_acr_profile_gain_payload_validate(
+    const uint8_t *payload, size_t payload_bytes, uint32_t tag,
+    uint32_t byte_order);
+
+typedef struct im_acr_profile_gain_control130_result {
+    int32_t value;
+    uint32_t wrote;
+    double blended;
+} im_acr_profile_gain_control130_result;
+
+/* One recovered profile indexed-loop operation for Basic ID130. Inputs are
+   the loop-time current slot, profile default/version and the independent
+   profile scalar (Q+0xb60), not a complete Prepare object. Scalar must be
+   finite. Ineligible profile/version inputs preserve current and set wrote=0.
+   Eligible calls expose the pre-rounding double and the rounded [0,200] slot
+   with wrote=1, including a zero profile default. Earlier/later Prepare
+   writers, profile selection and image geometry remain caller supplied.
+   A null/misaligned output or invalid scalar returns INVALID_ARGUMENT;
+   every failure leaves the output unchanged. */
+IMPRINT_API im_status im_native_acr_profile_gain_control130(
+    int32_t current, int32_t profile_default, uint32_t profile_version,
+    double profile_scalar, im_acr_profile_gain_control130_result *output);
+
+/* Local recovered profile-scalar quantization to hundredths in [0,2].
+   Quiet NaN and positive infinity produce 2; negative infinity produces +0.
+   Signaling NaN, null or misaligned output returns INVALID_ARGUMENT and
+   leaves output unchanged. Does not reproduce Adobe FP exception/error ABI
+   or execute the complete Prepare operation. */
+IMPRINT_API im_status im_native_acr_profile_gain_scalar_quantize(
+    double input, double *output);
+
+/* Prepared numeric snapshot, not an Adobe object or serialized TIFF record.
+   Pairs are unsigned numerator/denominator in this order: source fields
+   +0x30,+0x38,+0x40,+0x48,+0x90,+0x98. Scales are source +0xe0,+0xe8.
+   The fixed host-ABI layout is 64 bytes; scales begin at byte 48. */
+typedef struct im_acr_source_stage3_geometry {
+    uint32_t rationals[12];
+    double scales[2];
+} im_acr_source_stage3_geometry;
+
+/* Recovered finite-scale numerical block 01311308..01311380. For each axis
+   greater than 1, scale its first two rationals by that factor and its third
+   by the reciprocal, then set that scale to 1. Other finite scales retain
+   their bits and corresponding pairs. Zero denominators are preserved by
+   positive rescaling; they are not replaced by defaults. Null/misaligned
+   pointers, partial input/output overlap, nonfinite scales, address overflow
+   and unrepresentable arithmetic return INVALID_ARGUMENT with output
+   unchanged. Exact in-place use is supported. This does not select or run
+   Stage3, host/opcode processing, source/profile maps or the full wrapper. */
+IMPRINT_API im_status im_native_acr_source_stage3_geometry_normalize(
+    const im_acr_source_stage3_geometry *input,
+    im_acr_source_stage3_geometry *output);
+
 /* Recovered CPU tone subset on two prepared float32 RGB images of identical
    geometry. guide_rgb is the domain entering MakeGrayLog after camera and
    earlier preparation; tone_rgb is the domain at the enabled tone stage.

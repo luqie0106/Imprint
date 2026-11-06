@@ -41,6 +41,17 @@ struct PreparedAnchorGeometry {
     std::vector<AnchorFilterBounds> filters;
 };
 
+// Prepared level-zero inputs for routes that gate the actual and reference
+// filter chains independently. Each false flag returns its corresponding raw
+// int32 bounds unchanged; filters are consumed only by enabled chains.
+struct PreparedAnchorLevel0Bounds {
+    AnchorRectI32 actual_level0_bounds;
+    AnchorRectI32 reference_level0_bounds;
+    std::vector<AnchorFilterBounds> filters;
+    bool transform_actual = false;
+    bool transform_reference = false;
+};
+
 enum class AnchorGeometryStatus : int {
     ok = 0,
     invalid_input = 1,
@@ -63,10 +74,23 @@ struct AnchorGeometryResult {
     AnchorRectI32 destination_zero_origin_rect{};
 };
 
+struct AnchorLevel0BoundsResult {
+    AnchorRectI32 actual_level0_bounds{};
+    AnchorRectI32 reference_level0_bounds{};
+};
+
 // Computes normalized anchor maps and the initial requested level from already
 // prepared signed-int32 bounds. On failure, result is left unchanged.
 AnchorGeometryStatus compute_anchor_geometry(
     const PreparedAnchorGeometry &input,
     AnchorGeometryResult &result) noexcept;
+
+// Computes independently gated level-zero actual/reference bounds and packs
+// transformed results through the recovered 000196f0 rounding rule. Unlike
+// compute_anchor_geometry, signed extents are allowed when representable.
+// On failure, result is left unchanged.
+AnchorGeometryStatus compute_anchor_level0_bounds(
+    const PreparedAnchorLevel0Bounds &input,
+    AnchorLevel0BoundsResult &result) noexcept;
 
 }  // namespace imprint::acr

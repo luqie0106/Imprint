@@ -82,17 +82,10 @@ html, body, #app {
   }
 }
 
-/* 三栏/双栏工作区在宽屏上保持可读的内容宽度，小窗口仍然占满可用空间。 */
+/* 工作区容器始终占满父级宽度，窄屏留白由各页面内边距控制。 */
 .workspace-wide-frame {
   width: 100%;
   min-width: 0;
-}
-
-@media (min-width: 1440px) {
-  .workspace-wide-frame {
-    max-width: 1500px;
-    margin-inline: auto;
-  }
 }
 
 /* 统一的参数滑杆：旧调用方用 --range-progress，新调用方可指定蓝色区间。 */

@@ -1106,7 +1106,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="editor-page enhance-scroll h-full bg-slate-50 p-5 dark:bg-zinc-950 dark:text-white">
-    <div class="enhance-layout mx-auto grid h-full min-h-0 max-w-[1500px] gap-4">
+    <div class="workspace-wide-frame enhance-layout grid h-full min-h-0 gap-4">
       <aside class="enhance-left-column min-h-0 space-y-4">
         <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div class="mb-3 flex items-center gap-2"><ImagePlus class="h-4 w-4 text-blue-600" /><h2 class="text-sm font-semibold">输入照片</h2></div>

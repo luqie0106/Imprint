@@ -15,7 +15,7 @@ struct GrayImage {
 // Named subset of flags=0 BuildStats needed for local-mask anchors and tone
 // nodes. This is not the full 33-double Adobe stats object (moments omitted).
 struct LogSceneStats {
-    double center;
+    double center;   // source center (stats[2], record byte offset +0x10)
     double low;      // effective quantile .0001 (stats[13])
     double high;     // effective quantile .9999 (stats[20])
     double median;   // effective midpoint median (stats[23])

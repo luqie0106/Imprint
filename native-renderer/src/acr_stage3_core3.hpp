@@ -13,10 +13,12 @@ namespace imprint::acr {
 //   0x08197068 -> FUN_0081376c   six gradient/edge rows
 //   0x08197070 -> FUN_00813368   five-tap local energy (horizontal + vertical)
 //
-// The remaining entries (0080f2b8, 008134b8, 00814230, 008145b4) and the
-// producer of the float input / consumer of the RGB output are not ported yet.
-// These functions only implement the two recovered pixel consumers; they do
-// not claim full-resolution RGB output. They are phase-agnostic: they consume
+// This header exposes the two gradient/energy consumers. The recovered green,
+// colour, refine and format operations live in the corresponding
+// acr_stage3_core3_* modules; acr_stage3_core3_compose.hpp combines them over
+// explicitly prepared input. That composition does not bind Adobe's pre/post
+// balance stages or its full-resolution Stage3 entry.
+// These two row kernels are phase-agnostic: they consume
 // float rows produced by the caller's input stage and do not read CFA
 // metadata. The caller owns the CFA phase/scale, rect origin and tile/halo
 // mapping; the row contracts below only describe the local guard/capacity

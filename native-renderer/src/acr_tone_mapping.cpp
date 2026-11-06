@@ -94,8 +94,9 @@ struct ShiftedStats {
 ShiftedStats shifted_stats(const LogSceneStats &stats, double ev90) {
     ShiftedStats result{stats.center, stats.low, stats.high};
     if (ev90 > 0.0) {
-        // 009d94dc shifts the first 22 doubles. In this named subset that is
-        // center/low/high; median (stats[23]) remains unchanged.
+        // 009d94dc shifts stats[0] and stats[2..21] (21 doubles).
+        // This subset retains center[2]/low[13]/high[20]; median[23]
+        // remains unchanged.
         result.center = sub(result.center, ev90);
         result.low = sub(result.low, ev90);
         result.high = sub(result.high, ev90);

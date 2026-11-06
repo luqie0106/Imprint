@@ -9,10 +9,10 @@
 
 namespace imprint::acr {
 
-// Caller-supplied coefficients for the pure, row/column coordinate transform
-// recovered from the early ProfileGain CPU path. Matrix preparation and the
-// source/meaning of these coefficients remain unresolved: this API does not
-// construct or infer an upstream matrix, select a map, or dispatch a task.
+// Coefficients for the pure row/column transform recovered from the early
+// ProfileGain CPU path. prepare_profile_gain_coordinate_fields builds these
+// from explicit geometry. Runtime geometry/map selection and coordinate-task
+// dispatch remain outside this local representation.
 struct ProfileGainCoordinatePrepared {
     std::array<float, 6> coefficients{};
     bool has_coordinate_task = false;

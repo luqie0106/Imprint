@@ -1,4 +1,5 @@
 #include "acr_exposure.hpp"
+#include "acr_exposure_allocation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -69,64 +70,26 @@ ExposureStatus prepare_exposure(const ExposureInput &input,
     }
     result.second_arg = input.three_color_planes ? result.first_arg : 0.0;
 
-    result.exposure_gain = std::exp2(result.context_ev50 + result.second_arg);
-
-    // FUN_00dbea08 ordering: combine Exposure, the selected second argument,
-    // and source context +0x50. Whites at +0x80 is allocated separately
-    // through the recovered limit fields before writing EV90/98/100/108/112.
-    const double total_ev = result.manual_exposure_ev + result.second_arg +
-                            result.context_ev50;
-    double positive_remainder = 0.0;
-    double positive_base = 0.0;
-    if (0.0 < total_ev) {
-        positive_base = result.limit_ev88 + result.second_arg;
-        if (input.hdr_edit) {
-            positive_base = total_ev;
-        }
-        if (total_ev <= positive_base) {
-            positive_base = total_ev;
-        }
-        positive_remainder = total_ev - positive_base;
+    // One recovered modern update from the constructor's initial state.
+    // This API remains a single-call preparation; source-level pipelines that
+    // invoke dbea08 more than once must carry ModernExposureAllocation state.
+    const ModernExposureAllocation initial{
+        result.manual_exposure_ev, 0.0, 0.0, result.context_ev50,
+        input.profile_gain_amount, 1.0, result.whites_ev, input.limit_ev88,
+        0.0, 0.0, 0.0, 0.0, 0.0};
+    ModernExposureAllocation allocated{};
+    if (update_modern_exposure_allocation(initial, result.first_arg,
+            result.second_arg, input.hdr_edit, allocated) !=
+        ExposureAllocationStatus::ok) {
+        return ExposureStatus::result_not_finite;
     }
-
-    double negative_white = 0.0;
-    if (result.whites_ev < 0.0) {
-        negative_white = -result.whites_ev;
-    }
-
-    double transfer = positive_remainder;
-    if (result.whites_ev <= positive_remainder) {
-        transfer = result.whites_ev;
-    }
-    if (0.0 < result.whites_ev) {
-        positive_base = positive_base + transfer;
-        positive_remainder = positive_remainder - transfer;
-        negative_white = 0.0 - result.whites_ev;
-    }
-
-    if (total_ev < 0.0) {
-        double profile_negative = total_ev;
-        if (input.hdr_edit) {
-            profile_negative = 0.0;
-        }
-        double remaining_negative = -0.0;
-        if (input.hdr_edit) {
-            remaining_negative = total_ev;
-        }
-        if (input.profile_gain_amount == 0.0) {
-            // 00dbeafc..00dbeb10: each allocation contributes at most -1 EV
-            // to the negative curve; the remainder stays in the EV98 lane.
-            result.context_ev18_change = std::max(profile_negative, -1.0);
-            profile_negative = profile_negative - result.context_ev18_change;
-        }
-        positive_base = positive_base + remaining_negative + profile_negative;
-    }
-
-    result.ev90 = result.second_arg;
-    result.ev98 = positive_base;
-    result.ev100 = positive_remainder;
-    result.ev108 = (positive_remainder + positive_base) - result.second_arg;
-    result.ev112 = negative_white;
+    result.exposure_gain = allocated.exposure_gain;
+    result.ev90 = allocated.ev90;
+    result.ev98 = allocated.ev98;
+    result.ev100 = allocated.ev100;
+    result.ev108 = allocated.ev108;
+    result.ev112 = allocated.ev112;
+    result.context_ev18_change = allocated.negative_curve_ev;
 
     result.camera_scale = 1.0;
     result.rounded_source_limit = std::floor(

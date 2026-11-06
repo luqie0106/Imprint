@@ -33,7 +33,7 @@ from native_renderer import (
     native_acr_scale_sdr, native_acr_project_srgb, native_acr_profile_stage_sdr,
     native_acr_prepare_huesatmap, native_acr_illuminant_temperatures,
     native_acr_prepare_analog_balance, native_acr_prepare_camera_calibration,
-    native_acr_buffer_to_float,
+    native_acr_buffer_to_float, native_acr_validate_profile_gain_payload,
 )
 from acr_profile_metadata import read_acr_profile_tags, read_embedded_acr_profile_tags
 from dng_writer import _embedded_profile_tags
@@ -44,6 +44,7 @@ PROFILE_PREVIEW_VERSION = "camera-profile-preview-v3-gpu-stages"
 PROFILE_PREVIEW_VERSION += "-acr-camera-v1-look-bulk-sdr-cpp-v1"
 PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v4-source-calibration"
 PROFILE_PREVIEW_VERSION += "-acr-buffer-u16-f32-cpp-v1"
+PROFILE_PREVIEW_VERSION += "-pgtm2-metadata-cpp-v1"
 _ACR_PROFILE_WHITE_ENABLED = os.environ.get("IMPRINT_ACR_PROFILE_WHITE") == "1"
 if _ACR_PROFILE_WHITE_ENABLED:
     PROFILE_PREVIEW_VERSION += "-acr-white-cpp-v1"
@@ -71,7 +72,12 @@ _PROFILE_CACHE_SIZE = 24
 
 @dataclass(frozen=True)
 class Profile:
-    """A validated camera profile and the file identity used to load it."""
+    """A validated camera profile and the file identity used to load it.
+
+    ``profile_gain_table_map2_payload`` is the serialized selected-profile
+    payload after C++ validation. It is retained as metadata only and is not
+    automatically applied by profile rendering.
+    """
 
     name: str
     fingerprint: tuple[Any, ...]
@@ -100,6 +106,7 @@ class Profile:
     source_analog_balance: np.ndarray | None = None
     source_calibration1: np.ndarray | None = None
     source_calibration2: np.ndarray | None = None
+    profile_gain_table_map2_payload: bytes | None = None
 
 
 def _file_signature(path: Path) -> tuple[int, int, int, int] | None:
@@ -336,6 +343,20 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
         _validate_identity_huesat_maps(tags)
         hsm1, hsm2, hsm_dims, hsm_encoding = None, None, (0, 0, 0), 0
 
+    profile_gain_table_map2_payload = None
+    if _acr_extended and 52544 in tags:
+        gain_tag = tags[52544]
+        gain_payload = bytes(gain_tag.data)
+        if (int(gain_tag.kind) != 7 or int(gain_tag.count) != len(gain_payload)
+                or not gain_payload):
+            raise ValueError("invalid selected-profile GainTableMap2 payload")
+        # The TIFF reader already enforces root-IFD bounds and size limits.
+        # Leave all serialized-table semantics and resource validation to C++.
+        native_acr_validate_profile_gain_payload(
+            gain_payload, tag=52544, byte_order=0,
+        )
+        profile_gain_table_map2_payload = gain_payload
+
     curve = _require_values(tags, 50940, int(tags.get(50940).count) if tags.get(50940) else 0)
     if curve.size < 4 or curve.size % 2:
         raise ValueError("invalid profile tone curve")
@@ -384,6 +405,7 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
         source_analog_balance=analog_balance,
         source_calibration1=calibration1,
         source_calibration2=calibration2,
+        profile_gain_table_map2_payload=profile_gain_table_map2_payload,
     )
 
 
@@ -572,6 +594,11 @@ def _resolve_cached(
                 _source_dng=source.suffix.lower() == ".dng" and source == reference,
             )
         return _parse_profile(tags, expected_name, fingerprint)
+    except NativeRendererError:
+        # Profile resolution is optional during preview preparation. Keep a
+        # missing native validator/library on the same fallback path as an
+        # unsupported profile; direct _parse_profile callers still see it.
+        return None
     except (OSError, UnicodeError, ValueError, TypeError, OverflowError, np.linalg.LinAlgError):
         return None
 

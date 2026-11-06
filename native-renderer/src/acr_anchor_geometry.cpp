@@ -78,10 +78,12 @@ void zero_origin_nonnegative_extent(AnchorRectD &rect) noexcept {
     rect.right = width > 0.0 ? width : 0.0;
 }
 
-Status compute_actual_map(const PreparedAnchorGeometry &input,
-                          AnchorRectD &out) noexcept {
-    AnchorRectD current = to_double(input.actual_level0_bounds);
-    for (const AnchorFilterBounds &filter : input.filters) {
+Status compute_actual_map(
+    const AnchorRectI32 &base_bounds,
+    const std::vector<AnchorFilterBounds> &filters,
+    AnchorRectD &out) noexcept {
+    AnchorRectD current = to_double(base_bounds);
+    for (const AnchorFilterBounds &filter : filters) {
         if (!filter.non_null || same_rect(filter.offset_58, filter.offset_78))
             continue;
         AnchorRectD relative{};
@@ -97,10 +99,12 @@ Status compute_actual_map(const PreparedAnchorGeometry &input,
     return Status::ok;
 }
 
-Status compute_reference_map(const PreparedAnchorGeometry &input,
-                             int level, AnchorRectD &out) noexcept {
-    AnchorRectD current = to_double(input.reference_bounds[level]);
-    for (const AnchorFilterBounds &filter : input.filters) {
+Status compute_reference_map(
+    const AnchorRectI32 &base_bounds,
+    const std::vector<AnchorFilterBounds> &filters,
+    int level, AnchorRectD &out) noexcept {
+    AnchorRectD current = to_double(base_bounds);
+    for (const AnchorFilterBounds &filter : filters) {
         if (!filter.non_null || same_rect(filter.offset_68, filter.offset_88))
             continue;
         AnchorRectD relative{};
@@ -158,6 +162,32 @@ Status round_rect_and_size(const AnchorRectD &rect, AnchorRectI32 &out,
     return Status::ok;
 }
 
+Status round_rect_and_signed_diffs(const AnchorRectD &rect,
+                                   AnchorRectI32 &out) noexcept {
+    AnchorRectI32 candidate{};
+    Status status = round_coordinate(rect.top, candidate.top);
+    if (status != Status::ok) return status;
+    status = round_coordinate(rect.left, candidate.left);
+    if (status != Status::ok) return status;
+    status = round_coordinate(rect.bottom, candidate.bottom);
+    if (status != Status::ok) return status;
+    status = round_coordinate(rect.right, candidate.right);
+    if (status != Status::ok) return status;
+
+    const std::int64_t height64 =
+        static_cast<std::int64_t>(candidate.bottom) - candidate.top;
+    const std::int64_t width64 =
+        static_cast<std::int64_t>(candidate.right) - candidate.left;
+    if (height64 < std::numeric_limits<std::int32_t>::min() ||
+        height64 > std::numeric_limits<std::int32_t>::max() ||
+        width64 < std::numeric_limits<std::int32_t>::min() ||
+        width64 > std::numeric_limits<std::int32_t>::max()) {
+        return Status::int32_overflow;
+    }
+    out = candidate;
+    return Status::ok;
+}
+
 }  // namespace
 
 AnchorGeometryStatus compute_anchor_geometry(
@@ -167,13 +197,16 @@ AnchorGeometryStatus compute_anchor_geometry(
 
     AnchorGeometryResult candidate{};
     if (input.geometry_enabled) {
-        Status status = compute_actual_map(input, candidate.actual_map);
+        Status status = compute_actual_map(input.actual_level0_bounds,
+                                           input.filters,
+                                           candidate.actual_map);
         if (status != Status::ok) return status;
         candidate.actual_map_valid = true;
 
         for (int level = 0; level <= 5; ++level) {
             if (!input.level_available[level]) continue;
-            status = compute_reference_map(input, level,
+            status = compute_reference_map(input.reference_bounds[level],
+                                           input.filters, level,
                                            candidate.reference_map[level]);
             if (status != Status::ok) return status;
             candidate.reference_map_valid[level] = true;
@@ -234,6 +267,37 @@ AnchorGeometryStatus compute_anchor_geometry(
     candidate.destination_zero_origin_rect = {
         0, 0, output_height, output_width,
     };
+    result = candidate;
+    return Status::ok;
+}
+
+AnchorGeometryStatus compute_anchor_level0_bounds(
+    const PreparedAnchorLevel0Bounds &input,
+    AnchorLevel0BoundsResult &result) noexcept {
+    AnchorLevel0BoundsResult candidate{};
+    candidate.actual_level0_bounds = input.actual_level0_bounds;
+    candidate.reference_level0_bounds = input.reference_level0_bounds;
+
+    if (input.transform_actual) {
+        AnchorRectD actual_map{};
+        const Status status = compute_actual_map(
+            input.actual_level0_bounds, input.filters, actual_map);
+        if (status != Status::ok) return status;
+        const Status pack_status = round_rect_and_signed_diffs(
+            actual_map, candidate.actual_level0_bounds);
+        if (pack_status != Status::ok) return pack_status;
+    }
+
+    if (input.transform_reference) {
+        AnchorRectD reference_map{};
+        const Status status = compute_reference_map(
+            input.reference_level0_bounds, input.filters, 0, reference_map);
+        if (status != Status::ok) return status;
+        const Status pack_status = round_rect_and_signed_diffs(
+            reference_map, candidate.reference_level0_bounds);
+        if (pack_status != Status::ok) return pack_status;
+    }
+
     result = candidate;
     return Status::ok;
 }

@@ -72,6 +72,16 @@ class _AcrExposureLutF32(ctypes.Structure):
     ]
 
 
+class _AcrProfileGainControl130Result(ctypes.Structure):
+    _fields_ = [("value", ctypes.c_int32), ("wrote", ctypes.c_uint32),
+                ("blended", ctypes.c_double)]
+
+
+class _AcrSourceStage3Geometry(ctypes.Structure):
+    _fields_ = [("rationals", ctypes.c_uint32 * 12),
+                ("scales", ctypes.c_double * 2)]
+
+
 @dataclass
 class _PreviewCacheEntry:
     library: object
@@ -3373,6 +3383,232 @@ def _native_acr_buffer_convert(image: np.ndarray, to_float: bool) -> np.ndarray:
 def native_acr_buffer_to_float(image: np.ndarray) -> np.ndarray:
     """Normalize uint16 pixels using the recovered scalar CopyArea route in C++."""
     return _native_acr_buffer_convert(image, True)
+
+
+def native_acr_validate_profile_gain_payload(
+    payload: bytes | bytearray | memoryview, *, tag: int = 52544,
+    byte_order: int = 0,
+) -> None:
+    """Validate serialized map bytes in C++; does not select or apply a map."""
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise TypeError("PGTM payload must be bytes-like")
+    if memoryview(payload).nbytes > (1 << 26) + 80:
+        raise ValueError("PGTM payload exceeds the supported table size")
+    if (isinstance(tag, (bool, np.bool_)) or not isinstance(tag, (int, np.integer))
+            or tag not in (52525, 52544)):
+        raise ValueError("PGTM tag must be 52525 or 52544")
+    if (isinstance(byte_order, (bool, np.bool_))
+            or not isinstance(byte_order, (int, np.integer)) or byte_order not in (0, 1)):
+        raise ValueError("PGTM byte order must be 0 or 1")
+    payload_array = np.frombuffer(bytes(payload), dtype=np.uint8)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_profile_gain_payload_validate", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide PGTM payload validation")
+    function.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
+                         ctypes.c_uint32, ctypes.c_uint32]
+    function.restype = ctypes.c_int
+    status = function(payload_array.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                      payload_array.size, int(tag), int(byte_order))
+    if status == 1:
+        raise ValueError("Native PGTM parser rejected the serialized payload")
+    if status:
+        raise NativeRendererError(f"Native PGTM payload validation failed (status {status})")
+
+
+def native_acr_profile_gain_control130(
+    current: int, profile_default: int, profile_version: int,
+    profile_scalar: float,
+) -> tuple[int, bool, float]:
+    """Run one profile ID130 indexed-loop operation in C++ CPU.
+
+    Returns (slot_value, wrote, pre_rounding_double). These are loop-time
+    prepared inputs, including the independent profile scalar Q+0xb60;
+    this does not execute the other Prepare writers or select an image map.
+    """
+    for name, value, lower, upper in (
+        ("current", current, -(1 << 31), (1 << 31) - 1),
+        ("profile_default", profile_default, -(1 << 31), (1 << 31) - 1),
+        ("profile_version", profile_version, 0, (1 << 32) - 1),
+    ):
+        if (isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                or not lower <= int(value) <= upper):
+            raise ValueError(f"PGTM {name} is outside its integer domain")
+    if (isinstance(profile_scalar, (bool, np.bool_))
+            or not isinstance(profile_scalar, (int, float, np.integer, np.floating))):
+        raise ValueError("PGTM profile scalar must be finite")
+    try:
+        scalar = float(profile_scalar)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("PGTM profile scalar must be finite") from exc
+    if not np.isfinite(scalar):
+        raise ValueError("PGTM profile scalar must be finite")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_profile_gain_control130", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide PGTM control preparation")
+    function.argtypes = [ctypes.c_int32, ctypes.c_int32, ctypes.c_uint32,
+                         ctypes.c_double, ctypes.POINTER(_AcrProfileGainControl130Result)]
+    function.restype = ctypes.c_int
+    result = _AcrProfileGainControl130Result()
+    status = function(int(current), int(profile_default), int(profile_version),
+                      scalar, ctypes.byref(result))
+    if status:
+        raise NativeRendererError(f"Native PGTM control preparation failed (status {status})")
+    return int(result.value), bool(result.wrote), float(result.blended)
+
+
+def native_acr_quantize_profile_gain_scalar(value: float) -> float:
+    """Quantize the recovered local profile scalar in C++ CPU.
+
+    Quiet NaNs/+Inf map to 2, -Inf to +0; signaling NaNs fail. This explicit
+    suboperation does not run the complete profile Prepare chain.
+    """
+    if (isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, float, np.integer, np.floating))):
+        raise ValueError("Profile scalar must be a binary64-compatible number")
+    try:
+        scalar = float(value)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("Profile scalar must be a binary64-compatible number") from exc
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_profile_gain_scalar_quantize", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide profile scalar quantization")
+    function.argtypes = [ctypes.c_double, ctypes.POINTER(ctypes.c_double)]
+    function.restype = ctypes.c_int
+    result = ctypes.c_double()
+    status = function(scalar, ctypes.byref(result))
+    if status:
+        raise NativeRendererError(f"Native profile scalar quantization failed (status {status})")
+    return float(result.value)
+
+
+def native_acr_normalize_source_stage3_geometry(
+    rationals: np.ndarray, scales: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run the recovered finite source-geometry normalization in C++ CPU.
+
+    rationals is uint32 (6,2), ordered by source field offsets
+    0x30/0x38/0x40/0x48/0x90/0x98. scales is float64 (2,) for 0xe0/0xe8.
+    This explicit prepared operation does not run Stage3 or infer metadata,
+    image bounds, source/map selection, opcode processing or final geometry.
+    """
+    if (not isinstance(rationals, np.ndarray)
+            or rationals.dtype != np.uint32 or rationals.shape != (6, 2)):
+        raise ValueError("Source geometry rationals must be uint32 with shape (6, 2)")
+    if (not isinstance(scales, np.ndarray)
+            or scales.dtype != np.float64 or scales.shape != (2,)
+            or not np.isfinite(scales).all()):
+        raise ValueError("Source geometry scales must be finite float64 with shape (2,)")
+    snapshot = _AcrSourceStage3Geometry()
+    snapshot.rationals[:] = [int(value) for value in rationals.flat]
+    snapshot.scales[:] = [float(value) for value in scales]
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_source_stage3_geometry_normalize", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide source geometry normalization")
+    function.argtypes = [ctypes.POINTER(_AcrSourceStage3Geometry)] * 2
+    function.restype = ctypes.c_int
+    result = _AcrSourceStage3Geometry()
+    status = function(ctypes.byref(snapshot), ctypes.byref(result))
+    if status:
+        raise NativeRendererError(f"Native source geometry normalization failed (status {status})")
+    pairs = np.ctypeslib.as_array(result.rationals).copy().reshape(6, 2)
+    normalized_scales = np.ctypeslib.as_array(result.scales).copy()
+    return pairs, normalized_scales
+
+
+def native_acr_profile_gain_image_prepared(
+    rgb: np.ndarray, payload: bytes | bytearray | memoryview, *,
+    tag: int, byte_order: int, amount: int, lookup_flag: int, predicate: int,
+    map_rect: object, reference_zero: object, state_rect: object,
+    tile_rect: object, matrix50: object, scalar: float = 1.0,
+    has_coordinate_task: bool = False,
+) -> np.ndarray:
+    """Run the prepared fresh-stage PGTM composition entirely in C++ CPU.
+
+    Four TLBR rectangles and a row-major 3x3 matrix describe the tile's
+    absolute geometry. This bridge does not select a source/profile map or
+    infer ActiveArea, orientation or crop. Pivot is zero; clipping is off.
+    At amount 100 with the prepared-params predicate's low bit clear, the
+    source table is used directly; other positive amounts use the generated
+    cache. This predicate is distinct from the geometry feature gate.
+    """
+    if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.float32
+            or rgb.ndim != 3 or rgb.shape[2] != 3
+            or min(rgb.shape[:2]) < 1 or rgb.size > (1 << 26)):
+        raise ValueError("PGTM image input must be a bounded float32 HxWx3 array")
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise TypeError("PGTM payload must be bytes-like")
+    if memoryview(payload).nbytes > (1 << 26) + 80:
+        raise ValueError("PGTM payload exceeds the supported table size")
+
+    def integer(value: object, lower: int, upper: int, name: str) -> int:
+        try:
+            result = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid PGTM {name}") from exc
+        if result != value or not lower <= result <= upper:
+            raise ValueError(f"invalid PGTM {name}")
+        return result
+
+    tag_value = integer(tag, 0, (1 << 32) - 1, "tag")
+    order_value = integer(byte_order, 0, 1, "byte order")
+    amount_value = integer(amount, 1, (1 << 31) - 1, "amount")
+    flag_value = integer(lookup_flag, 0, 255, "lookup flag")
+    predicate_value = integer(predicate, 0, (1 << 32) - 1, "predicate")
+    task_value = integer(has_coordinate_task, 0, 1, "coordinate task")
+    rects = np.asarray([map_rect, reference_zero, state_rect, tile_rect], dtype=np.float64)
+    if (rects.shape != (4, 4) or not np.isfinite(rects).all()
+            or not np.equal(rects, np.floor(rects)).all()
+            or np.any(rects < -(1 << 31)) or np.any(rects > (1 << 31) - 1)):
+        raise ValueError("PGTM rectangles must contain four int32 TLBR tuples")
+    rects = np.ascontiguousarray(rects, dtype=np.int32)
+    tile = rects[3].astype(np.int64)
+    if (int(tile[2] - tile[0]), int(tile[3] - tile[1])) != rgb.shape[:2]:
+        raise ValueError("PGTM tile rectangle must match the input image")
+    matrix = np.asarray(matrix50, dtype=np.float64)
+    if matrix.shape not in ((3, 3), (9,)) or not np.isfinite(matrix).all():
+        raise ValueError("PGTM matrix50 must contain nine finite doubles")
+    matrix = np.ascontiguousarray(matrix.reshape(9))
+    scalar_value = float(scalar)
+    if not math.isfinite(scalar_value):
+        raise ValueError("PGTM scalar must be finite")
+
+    source = np.ascontiguousarray(rgb)
+    payload_copy = bytes(payload)
+    payload_array = np.frombuffer(payload_copy, dtype=np.uint8)
+    output = np.empty(source.shape, dtype=np.float32)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_profile_gain_image_prepared_f32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide the PGTM image stage")
+    fp = ctypes.POINTER(ctypes.c_float)
+    function.argtypes = [
+        fp, ctypes.c_size_t, ctypes.c_size_t, fp, ctypes.c_size_t, ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_int32), ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_double), ctypes.c_size_t, ctypes.c_double,
+        ctypes.c_int32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+    ]
+    function.restype = ctypes.c_int
+    row_samples = source.shape[1] * 3
+    status = function(
+        source.ctypes.data_as(fp), source.size, row_samples,
+        output.ctypes.data_as(fp), output.size, row_samples,
+        payload_array.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        payload_array.size, tag_value, order_value,
+        rects.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)), rects.size,
+        matrix.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), matrix.size,
+        scalar_value, amount_value, flag_value, predicate_value, task_value,
+    )
+    if status in (1, 4):
+        raise ValueError("Native PGTM image stage rejected the payload, pixels or geometry")
+    if status:
+        raise NativeRendererError(f"Native PGTM image stage failed (status {status})")
+    return output
 
 
 def native_acr_buffer_to_u16(image: np.ndarray) -> np.ndarray:

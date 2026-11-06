@@ -24,6 +24,10 @@ _ACR_PROFILE_TAGS = {
     # Preserve third-illuminant markers so the two-illuminant preview parser
     # can reject the unsupported profile instead of silently dropping them.
     52529, 52530, 52531, 52532, 52535, 52537,
+    # This is the selected profile's serialized GainTableMap2 payload.
+    # Tag 52525 belongs to a separate source-IFD path and is intentionally
+    # excluded from this root-IFD profile reader.
+    52544,
 }
 
 
