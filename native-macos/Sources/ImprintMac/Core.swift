@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import ImageIO
 import SwiftUI
@@ -68,17 +69,28 @@ enum PreviewImageDecoder {
     @Published var sortBackend = UserDefaults.standard.string(forKey: "sortBackend") ?? "python" {
         didSet { UserDefaults.standard.set(sortBackend, forKey: "sortBackend") }
     }
-    private var process: Process?
+    private let backend = BackendProcess()
+    private var signalHandler: BackendSignalHandler?
+    private var backendID: UUID?
+    private var connectTask: Task<Void, Never>?
+    private var startupTimeoutTask: Task<Void, Never>?
     private let endpoint = APIClient()
+
+    init() {
+        signalHandler = BackendSignalHandler(backend: backend) { number in
+            Darwin.exit(128 + number)
+        }
+    }
 
     var api: APIClient { endpoint }
     var ready: Bool { port != nil }
 
     func start() {
-        if process != nil {
+        if backend.isRunning {
             if ready { return }
-            stop()
         }
+        stop()
+        status = "正在启动本地引擎…"
         let environment = ProcessInfo.processInfo.environment
         let current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let candidates = [
@@ -105,61 +117,82 @@ enum PreviewImageDecoder {
             status = "本地引擎离线"
             return
         }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: python)
-        task.arguments = [root.appendingPathComponent("src/app_api.py").path]
-        task.currentDirectoryURL = root
-        task.environment = environment.merging(["PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"]) { _, new in new }
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.standardError
         let lines = LineAccumulator()
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            for line in lines.append(data) {
-                guard let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                      let port = json["port"] as? Int else { continue }
-                Task { @MainActor [weak self] in await self?.connect(port: port) }
-            }
-        }
-        task.terminationHandler = { [weak self, weak task] _ in
-            Task { @MainActor [weak self] in
-                guard let task, self?.process === task else { return }
-                self?.port = nil
-                self?.api.baseURL = nil
-                self?.process = nil
-                self?.status = "本地引擎已停止"
-            }
-        }
         do {
-            try task.run()
-            process = task
+            let id = try backend.start(
+                executable: URL(fileURLWithPath: python),
+                arguments: [root.appendingPathComponent("src/app_api.py").path],
+                directory: root,
+                environment: environment.merging(["PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"]) { _, new in new },
+                onOutput: { [weak self] id, data in
+                    for line in lines.append(data) {
+                        guard let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                              let port = json["port"] as? Int, (1...65535).contains(port) else { continue }
+                        Task { @MainActor [weak self] in
+                            guard let self, self.backendID == id, self.backend.isCurrent(id),
+                                  self.connectTask == nil else { return }
+                            self.connectTask = Task { await self.connect(port: port, id: id) }
+                        }
+                    }
+                },
+                onExit: { [weak self] id, _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.backendID == id else { return }
+                        self.stop()
+                        self.status = "本地引擎已停止"
+                    }
+                }
+            )
+            backendID = id
             error = nil
+            startupTimeoutTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                guard let self, self.backendID == id, !self.ready else { return }
+                self.failStartup(id: id)
+            }
         } catch {
             self.error = error.localizedDescription
             status = "本地引擎离线"
         }
     }
 
-    private func connect(port: Int) async {
-        endpoint.baseURL = URL(string: "http://127.0.0.1:\(port)")
+    private func connect(port: Int, id: UUID) async {
+        let health = APIClient()
+        health.baseURL = URL(string: "http://127.0.0.1:\(port)")
         for _ in 0..<60 {
-            if (try? await endpoint.json("/api/health")) != nil {
+            guard backendID == id, backend.isCurrent(id), !Task.isCancelled else { return }
+            let response = try? await health.json("/api/health", timeout: 1)
+            guard backendID == id, backend.isCurrent(id), !Task.isCancelled else { return }
+            if response != nil {
+                endpoint.baseURL = health.baseURL
                 self.port = port
                 status = "本地引擎就绪"
                 error = nil
+                startupTimeoutTask?.cancel()
+                startupTimeoutTask = nil
                 return
             }
-            try? await Task.sleep(for: .milliseconds(250))
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
         }
+        failStartup(id: id)
+    }
+
+    private func failStartup(id: UUID) {
+        guard backendID == id else { return }
+        stop()
         error = "服务启动后未能响应，请检查 Python 依赖。"
         status = "本地引擎离线"
     }
 
     func stop() {
-        process?.terminate()
-        process = nil
+        backendID = nil
+        connectTask?.cancel()
+        connectTask = nil
+        startupTimeoutTask?.cancel()
+        startupTimeoutTask = nil
+        port = nil
+        endpoint.baseURL = nil
+        backend.stop()
     }
 }
 
@@ -185,8 +218,9 @@ private final class CachedPreview: NSObject {
         return url
     }
 
-    func json(_ path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
+    func json(_ path: String, body: [String: Any]? = nil, timeout: TimeInterval = 60) async throws -> [String: Any] {
         var request = URLRequest(url: try url(path))
+        request.timeoutInterval = timeout
         if let body {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

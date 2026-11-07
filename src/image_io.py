@@ -1053,7 +1053,12 @@ def enhanced_dng_source_data(
             np.asarray(camera_whitebalance[:3], dtype=np.float64)
             if camera_whitebalance is not None else np.asarray([], dtype=np.float64)
         )
-        black_levels = tuple(int(value) for value in raw.black_level_per_channel[:4])
+        channel_black_levels = raw.black_level_per_channel
+        try:
+            # BlackLevelRepeatDim 对应传感器位置；LibRaw 的列表按颜色通道排列。
+            black_levels = tuple(int(channel_black_levels[int(index)]) for index in pattern.flat)
+        except (IndexError, TypeError, ValueError, OverflowError) as exc:
+            raise EnhancedDNGColorError("CFA black levels do not match the color pattern") from exc
         white_level = int(raw.white_level)
         sizes = raw.sizes if hasattr(raw, "sizes") else None
         crop_origin = (

@@ -9,7 +9,7 @@ import { photoExportRunning } from "../stores/photoExport";
 import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
 import { BASE_URL } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
-import { cachePreviewResponse, getCachedPreview, hasCachedPreview, createPreviewUrl, releasePreviewUrl } from "../stores/previewCache";
+import { cachePreviewResponse, getValidatedCachedPreview, hasCachedPreview, createPreviewUrl, releasePreviewUrl } from "../stores/previewCache";
 import {
   autoSaveError, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
   sharedDehazeAutoByPhoto, sharedDehazeAutoExposureByPhoto,
@@ -600,7 +600,7 @@ async function fetchPreview(
   signal: AbortSignal,
 ): Promise<PreviewAsset> {
   const body = createPreviewBody(mode, context, previewLevel, fullResolution);
-  const cached = getCachedPreview(context.baseUrl, body);
+  const cached = await getValidatedCachedPreview(context.baseUrl, body, signal);
   let blob: Blob;
   let headers: Headers;
   if (cached) {

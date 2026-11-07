@@ -14,6 +14,8 @@ export interface CachedPreviewResponse {
 
 interface CacheEntry extends CachedPreviewResponse {
   byteLength: number;
+  sourceKey: string;
+  sourceVersion: string;
 }
 
 const entries = new Map<string, CacheEntry>();
@@ -49,13 +51,55 @@ export function previewCacheKey(baseUrl: string, body: Record<string, unknown>):
   return stableSerialize({ baseUrl, renderRequest });
 }
 
-export function getCachedPreview(
+function previewSourceKey(baseUrl: string, body: Record<string, unknown>): string | undefined {
+  if (typeof body.session_id !== "string" || !body.session_id
+    || typeof body.photo_id !== "string" || !body.photo_id) return undefined;
+  return stableSerialize({ baseUrl, sessionId: body.session_id, photoId: body.photo_id });
+}
+
+function removeEntry(key: string): void {
+  const entry = entries.get(key);
+  if (!entry) return;
+  totalBytes -= entry.byteLength;
+  entries.delete(key);
+}
+
+function invalidatePreviewSource(sourceKey: string): void {
+  for (const [key, entry] of entries) {
+    if (entry.sourceKey === sourceKey) removeEntry(key);
+  }
+}
+
+export async function getValidatedCachedPreview(
   baseUrl: string,
   body: Record<string, unknown>,
-): CachedPreviewResponse | undefined {
+  signal?: AbortSignal,
+): Promise<CachedPreviewResponse | undefined> {
   const key = previewCacheKey(baseUrl, body);
   const entry = entries.get(key);
   if (!entry) return undefined;
+
+  try {
+    const response = await fetch(
+      `${baseUrl}/api/enhance/source-version/${encodeURIComponent(String(body.session_id))}/${encodeURIComponent(String(body.photo_id))}`,
+      { cache: "no-store", signal },
+    );
+    if (!response.ok) throw new Error("无法验证原图版本，请重试预览");
+    const data: unknown = await response.json();
+    if (!data || typeof data !== "object" || !("version" in data)
+      || typeof data.version !== "string" || !data.version)
+      throw new Error("无法验证原图版本，请重试预览");
+    if (data.version !== entry.sourceVersion) {
+      invalidatePreviewSource(entry.sourceKey);
+      return undefined;
+    }
+    if (signal?.aborted) throw new DOMException("预览请求已取消", "AbortError");
+  } catch (error) {
+    if (!signal?.aborted && !(error instanceof DOMException && error.name === "AbortError"))
+      invalidatePreviewSource(entry.sourceKey);
+    throw error;
+  }
+  if (entries.get(key) !== entry) return undefined;
 
   // Reinsertion makes Map iteration order the LRU order.
   entries.delete(key);
@@ -79,28 +123,32 @@ export function cachePreviewResponse(
   blob: Blob,
 ): boolean {
   if (!response.ok || response.status === 204) return false;
+  const sourceKey = previewSourceKey(baseUrl, body);
+  const sourceVersion = response.headers.get("X-Source-Version");
+  if (!sourceKey || !sourceVersion) return false;
+
+  for (const entry of entries.values()) {
+    if (entry.sourceKey === sourceKey && entry.sourceVersion !== sourceVersion) {
+      invalidatePreviewSource(sourceKey);
+      break;
+    }
+  }
 
   const key = previewCacheKey(baseUrl, body);
-  const existing = entries.get(key);
-  if (existing) {
-    totalBytes -= existing.byteLength;
-    entries.delete(key);
-  }
+  removeEntry(key);
 
   const byteLength = blob.size;
   if (byteLength > PREVIEW_CACHE_LIMIT_BYTES || PREVIEW_CACHE_LIMIT_BYTES <= 0) return false;
 
   const headers: Array<[string, string]> = [];
   response.headers.forEach((value, name) => headers.push([name, value]));
-  entries.set(key, { blob, headers, byteLength });
+  entries.set(key, { blob, headers, byteLength, sourceKey, sourceVersion });
   totalBytes += byteLength;
 
   while ((totalBytes > PREVIEW_CACHE_LIMIT_BYTES || entries.size > PREVIEW_CACHE_LIMIT_ENTRIES) && entries.size > 0) {
     const oldestKey = entries.keys().next().value as string | undefined;
     if (oldestKey === undefined) break;
-    const oldest = entries.get(oldestKey);
-    entries.delete(oldestKey);
-    if (oldest) totalBytes -= oldest.byteLength;
+    removeEntry(oldestKey);
   }
   return entries.has(key);
 }

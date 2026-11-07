@@ -25,10 +25,15 @@ Python 通过 `native_dense.py` 调用这些可选 C ABI。旧动态库缺少相
 ```bash
 cmake -S native-renderer -B /private/tmp/imprint-dense-build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build /private/tmp/imprint-dense-build --parallel
-IMPRINT_NATIVE_RENDERER_LIB=/private/tmp/imprint-dense-build/libimprint_renderer.dylib /Users/hualaiwu/.conda/envs/py311/bin/python -m pytest -q native-renderer/tests/test_dense_kernels.py native-renderer/tests/test_lens_remap.py
+ctest --test-dir /private/tmp/imprint-dense-build --output-on-failure
+cmake -S native-sort -B /private/tmp/imprint-sort-build -DCMAKE_BUILD_TYPE=Release
+cmake --build /private/tmp/imprint-sort-build --parallel
+ctest --test-dir /private/tmp/imprint-sort-build --output-on-failure
 ```
 
 Windows 使用对应的 `Release/imprint_renderer.dll`，Linux 使用 `.so`。新的 CPU 算子与 GPU 可用性无关。macOS 数值对比和编译成功不能替代 Windows 编译、目标硬件 GPU 验证或发行包扫描。
+
+当前保留的 CTest 合约覆盖 CPU 数组边界、无效参数、整数转换、基础调整、物理去朦胧、LUT、相机空间传递和连拍评分。GPU 合约验证预览金字塔与输出缓冲区；GPU 不可用时返回 `77` 并由 CTest 标记跳过。历史 Python 数值对照结果不代表这些精简合约已重新执行完整实图验收。
 
 ## 本机结果（2026-10-07）
 
