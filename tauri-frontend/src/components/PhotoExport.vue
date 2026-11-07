@@ -27,6 +27,7 @@ const starting = ref(false);
 const cancelling = ref(false);
 let pollTimer: number | undefined;
 let polling = false;
+let jobBaseUrl = "";
 const selected = computed(() => sharedPhotoSource.value?.files.find(f => f.photo_id === sharedSelectedPhotoId.value));
 const exportFiles = computed(() => scope.value === "current" ? (selected.value ? [selected.value] : []) : sharedPhotoSource.value?.files ?? []);
 const failedFiles = computed(() => job.value?.files.filter(f => f.status === "failed") ?? []);
@@ -47,8 +48,8 @@ async function chooseOutput() {
   const result = await open({ multiple: false, directory: true, title: "选择 DNG 输出目录" });
   if (typeof result === "string") outputDir.value = result;
 }
-async function request(path: string, payload?: object) {
-  const response = await fetch(`${BASE_URL.value}${path}`, payload ? {
+async function request(path: string, payload?: object, baseUrl = BASE_URL.value) {
+  const response = await fetch(`${baseUrl}${path}`, payload ? {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   } : undefined);
   const data = await response.json();
@@ -59,7 +60,7 @@ async function pollJob() {
   if (!job.value || polling) return;
   polling = true;
   try {
-    job.value = await request(`/api/enhance/job/${job.value.job_id}`);
+    job.value = await request(`/api/enhance/job/${job.value.job_id}`, undefined, jobBaseUrl);
     photoExportRunning.value = ["queued", "running"].includes(job.value!.status);
     if (!photoExportRunning.value) {
       window.clearInterval(pollTimer);
@@ -81,11 +82,12 @@ async function startExport() {
   error.value = "";
   warningDialogOpen.value = false;
   const ids = exportFiles.value.map(f => f.photo_id);
+  const baseUrl = BASE_URL.value;
+  const sourceRevision = source.revision;
   try {
-    await flushPendingSaves();
-    if (autoSaveError.value) throw new Error(autoSaveError.value);
+    if (!baseUrl) throw new Error("本地服务未就绪，无法启动导出");
     const perPhoto = <T,>(values: Record<string, T>, fallback: T) => Object.fromEntries(ids.map(id => [id, values[id] ?? fallback]));
-    job.value = await request("/api/enhance/run", {
+    const payload = JSON.parse(JSON.stringify({
       session_id: source.session_id, photo_ids: ids, output_dir: outputDir.value,
       params_by_photo: perPhoto(sharedDehazeByPhoto.value, source.dehaze_defaults),
       auto_modes_by_photo: perPhoto(sharedDehazeAutoByPhoto.value, false),
@@ -95,7 +97,14 @@ async function startExport() {
       preset_ids_by_photo: perPhoto(sharedPresetByPhoto.value, null),
       render_backend: renderBackend.value, basic_backend: basicBackend.value, ricoh_backend: ricohBackend.value,
       compression: compression.value, bit_depth: bitDepth.value,
-    });
+    }));
+    await flushPendingSaves();
+    if (sharedPhotoSource.value?.session_id !== payload.session_id
+      || sharedPhotoSource.value?.revision !== sourceRevision || BASE_URL.value !== baseUrl)
+      throw new Error("照片来源或本地服务已变化，请重新开始导出");
+    if (autoSaveError.value) throw new Error(autoSaveError.value);
+    job.value = await request("/api/enhance/run", payload, baseUrl);
+    jobBaseUrl = baseUrl;
     window.clearInterval(pollTimer);
     pollTimer = window.setInterval(() => void pollJob(), 700);
     await pollJob();
@@ -107,7 +116,7 @@ async function startExport() {
 async function cancelExport() {
   if (!job.value || cancelling.value) return;
   cancelling.value = true;
-  try { await request(`/api/enhance/cancel/${job.value.job_id}`, {}); await pollJob(); }
+  try { await request(`/api/enhance/cancel/${job.value.job_id}`, {}, jobBaseUrl); await pollJob(); }
   catch (cause) { error.value = cause instanceof Error ? cause.message : "停止失败"; }
   finally { cancelling.value = false; }
 }

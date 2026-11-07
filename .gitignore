@@ -78,17 +78,6 @@ htmlcov/
 .ruff_cache/
 .pyre/
 .pytype/
-**/test/
-**/tests/
-**/__tests__/
-**/test_*
-**/Test*.*
-**/*_test.*
-**/*_tests.*
-**/*Test.*
-**/*Tests.*
-**/*.test.*
-**/*.spec.*
 /artifacts/acr_blackbox_fixtures/
 # Local Camera Raw investigation evidence (for example, lcr3520-*.json)
 /research/acr/reports/evidence/lcr*

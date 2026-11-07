@@ -15,6 +15,7 @@ from collections import OrderedDict
 from dataclasses import asdict
 from functools import lru_cache
 import gc
+import hashlib
 import json
 import os
 import shutil
@@ -225,6 +226,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=[
+        "X-Source-Version",
         "X-Image-Width", "X-Image-Height", "X-Dehaze-Nonlocal-Status",
         "X-Dehaze-Nonlocal-Reason", "X-Auto-Exposure-EV",
         "X-Auto-Exposure-Reason", "Server-Timing", "X-Preview-Base-Cache",
@@ -726,7 +728,7 @@ def _cached_display_preview(session_id: str, photo_id: str, path: Path,
     """
     stat = path.stat()
     key = (session_id, photo_id, max_edge, stat.st_mtime_ns, stat.st_size,
-           optical_correction, LENS_PREVIEW_VERSION)
+           optical_correction, LENS_PREVIEW_VERSION, enhanced_dng_source_identity(path))
     with _DISPLAY_PREVIEW_LOCK:
         cached = _DISPLAY_PREVIEW_CACHE.get(key)
         if cached is not None:
@@ -1259,6 +1261,7 @@ def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
                           stage_status: tuple | None = None,
                           camera_cache_out: dict[str, str] | None = None,
                           camera_source_future: concurrent.futures.Future | None = None,
+                          preview_source_identity: tuple | None = None,
                           processed_needs_correction: bool = False,
                           ) -> tuple[np.ndarray, str, str]:
     """Render the native camera anchor before display quantization and EV clipping.
@@ -1276,6 +1279,8 @@ def _profile_display_base(processed: np.ndarray, reference: np.ndarray,
                                    interpolation=cv2.INTER_AREA)
         key = _camera_profile_preview_source_key(path, tuple(reference.shape), preview)
         if preview:
+            if preview_source_identity is not None and key[-1] != preview_source_identity:
+                raise RuntimeError("source changed before loading camera-profile preview")
             with _DISPLAY_PREVIEW_LOCK:
                 cached = _CAMERA_PROFILE_SOURCE_CACHE.get(key)
                 if cached is not None:
@@ -2197,6 +2202,7 @@ def _cached_dehazed_display_preview(
         PROFILE_PREVIEW_VERSION, profile.fingerprint if profile is not None else None,
         manual_exposure_ev if profile is not None else 0.0,
         ricoh_preset_id, ricoh_backend, BASIC_PREVIEW_VERSION,
+        enhanced_dng_source_identity(path),
     )
     with _DISPLAY_PREVIEW_LOCK:
         cached = _DEHAZED_PREVIEW_CACHE.get(key)
@@ -2267,6 +2273,7 @@ def _cached_dehazed_display_preview(
                 corrected, image, metadata, path, profile, manual_exposure_ev,
                 preview=True, backend=backend,
                 camera_source_future=camera_future,
+                preview_source_identity=key[-1],
                 processed_needs_correction=batch_correction,
             )
             status += (profile_status, profile_backend)
@@ -2858,8 +2865,57 @@ def get_enhance_render_status():
     }}
 
 
+def _preview_source_version(path: Path) -> str:
+    """为源文件生成不包含本地路径的预览版本。"""
+    identity = enhanced_dng_source_identity(path)
+    return hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+
+
+@app.get("/api/enhance/source-version/{session_id}/{photo_id}")
+def get_enhance_source_version(session_id: str, photo_id: str):
+    with _ENHANCE_LOCK:
+        path = _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).get(photo_id)
+    if path is None:
+        return JSONResponse(status_code=404, content={"error": "照片会话或照片已失效"})
+    try:
+        version = _preview_source_version(Path(path))
+    except (OSError, RuntimeError, ValueError):
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    with _ENHANCE_LOCK:
+        current = _ENHANCE_SESSIONS.get(session_id, {}).get("files", {}).get(photo_id)
+        if current != path:
+            return JSONResponse(status_code=404, content={"error": "照片会话或照片已失效"})
+    return JSONResponse(content={"version": version}, headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/enhance/preview")
 def create_enhance_preview(req: EnhancePreviewRequest):
+    with _ENHANCE_LOCK:
+        path = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
+    if path is None:
+        return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
+    try:
+        version = _preview_source_version(Path(path))
+    except (OSError, RuntimeError, ValueError):
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    response = _create_enhance_preview(req)
+    if response.status_code != 200:
+        return response
+    try:
+        current_version = _preview_source_version(Path(path))
+    except (OSError, RuntimeError, ValueError):
+        return JSONResponse(status_code=404, content={"error": "当前照片不存在"})
+    with _ENHANCE_LOCK:
+        current = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
+        if current != path:
+            return JSONResponse(status_code=404, content={"error": "去朦胧预览会话已失效"})
+    if current_version != version:
+        return JSONResponse(status_code=409, content={"error": "照片已更新，请重新生成预览"})
+    response.headers["X-Source-Version"] = version
+    return response
+
+
+def _create_enhance_preview(req: EnhancePreviewRequest):
     with _ENHANCE_LOCK:
         path = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
     if path is None or not Path(path).is_file():
@@ -2927,7 +2983,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                      effective_preset_id, render_mode, basic_mode, req.ricoh_backend,
                      bool(req.color_manage_srgb), PROFILE_PREVIEW_VERSION,
                      profile.fingerprint if profile is not None else None,
-                     tuple(basic[key] for key in sorted(basic)))
+                     tuple(basic[key] for key in sorted(basic)),
+                     enhanced_dng_source_identity(path))
     except Exception as exc:
         if isinstance(exc, _PreviewSuperseded):
             return Response(status_code=204)

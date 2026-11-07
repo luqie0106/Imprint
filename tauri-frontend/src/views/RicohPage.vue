@@ -8,7 +8,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { photoChangeSummary, rangeChangeStyle } from "../photoUi";
 import { BASE_URL, isServerReady } from "../stores/api";
 import { basicBackend, renderBackend, ricohBackend } from "../stores/renderOptions";
-import { cachePreviewResponse, getCachedPreview, hasCachedPreview, createPreviewUrl, releasePreviewUrl } from "../stores/previewCache";
+import { cachePreviewResponse, getValidatedCachedPreview, hasCachedPreview, createPreviewUrl, releasePreviewUrl } from "../stores/previewCache";
 import {
   autoSaveError, flushPendingSaves, markPhotoChanged, sharedBasicByPhoto,
   sharedDehazeAutoByPhoto, sharedDehazeAutoExposureByPhoto,
@@ -74,6 +74,7 @@ const basicParamsByPhoto = sharedBasicByPhoto;
 const selectedId = ref("");
 const originalUrl = ref("");
 const originalFullResolution = ref(false);
+let originalGeneration = 0;
 const effectUrl = ref("");
 const mode = ref<PreviewMode>("effect");
 const split = ref(50);
@@ -349,6 +350,7 @@ function releasePreview() {
   if (effectUrl.value) releasePreviewUrl(effectUrl.value);
   originalUrl.value = "";
   originalFullResolution.value = false;
+  originalGeneration = 0;
   effectUrl.value = "";
 }
 interface PreviewAsset { url: string; width: number; height: number }
@@ -404,7 +406,7 @@ function createPreviewBody(context: PreviewRequestContext, mode: "original" | "d
 }
 
 async function requestPreview(body: Record<string, unknown>, context: PreviewRequestContext): Promise<PreviewAsset> {
-  const cached = getCachedPreview(context.baseUrl, body);
+  const cached = await getValidatedCachedPreview(context.baseUrl, body);
   let blob: Blob;
   let headers: Headers;
   if (cached) {
@@ -439,9 +441,14 @@ function applyOriginalPreview(asset: PreviewAsset, context: PreviewRequestContex
     if (asset.url) releasePreviewUrl(asset.url);
     return;
   }
+  if (originalGeneration === context.token && originalFullResolution.value && !context.fullResolution) {
+    if (asset.url) releasePreviewUrl(asset.url);
+    return;
+  }
   if (originalUrl.value) releasePreviewUrl(originalUrl.value);
   originalUrl.value = asset.url;
   originalFullResolution.value = context.fullResolution;
+  originalGeneration = context.token;
   if (context.fullResolution && asset.width && asset.height) {
     sourceImageWidth.value = asset.width;
     sourceImageHeight.value = asset.height;

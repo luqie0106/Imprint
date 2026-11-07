@@ -621,18 +621,18 @@ def _compression_tag(compression: str) -> int:
 def _packed_strip_bytes(strip: np.ndarray, bits_per_sample: int) -> bytes:
     """Return a TIFF strip with MSB-first packed 10/12/14-bit samples.
 
-    DNG packs all samples in a strip continuously; padding is added only once
-    at the end of the strip, not at every scanline boundary. Work is limited
-    to one strip so full-resolution photos do not need a second image-sized
-    bit buffer.
+    Each scanline is padded to a whole byte. Work is limited to one strip so
+    full-resolution photos do not need a second image-sized bit buffer.
     """
     if bits_per_sample == 16:
         return strip.astype("<u2", copy=False).tobytes(order="C")
     if bits_per_sample == 8:
         return strip.astype(np.uint8).tobytes(order="C")
-    samples = strip.reshape(-1).astype(">u2", copy=False)
-    bits = np.unpackbits(samples.view(np.uint8)).reshape(samples.size, 16)
-    return np.packbits(bits[:, 16 - bits_per_sample:].reshape(-1)).tobytes()
+    rows = strip.shape[0]
+    samples = strip.reshape(rows, -1).astype(">u2", copy=False)
+    bits = np.unpackbits(samples.view(np.uint8), axis=1).reshape(rows, -1, 16)
+    row_bits = bits[:, :, 16 - bits_per_sample:].reshape(rows, -1)
+    return np.packbits(row_bits, axis=1).tobytes()
 
 
 def _jpeg_preview(image: np.ndarray, max_edge: int = 1024,
@@ -663,6 +663,31 @@ def _unique_output_path(output_dir: Path, source: Path, name_suffix: str = "_deh
     while candidate.exists():
         candidate = output_dir / f"{source.stem}{name_suffix}_{index}.dng"
         index += 1
+    return candidate
+
+
+def _commit_output_file(
+    temporary: Path,
+    output_dir: Path,
+    source: Path,
+    name_suffix: str = "_dehaze",
+) -> Path:
+    """Publish a complete temporary file without replacing another output."""
+    if name_suffix not in {"_dehaze", "_ricoh"}:
+        raise ValueError("unsupported DNG output suffix")
+    with _OUTPUT_LOCK:
+        index = 1
+        while True:
+            numbered_suffix = name_suffix if index == 1 else f"{name_suffix}_{index}"
+            candidate = output_dir / f"{source.stem}{numbered_suffix}.dng"
+            try:
+                # 同一文件系统中的硬链接原子创建目标，跨进程也不会覆盖已有文件。
+                os.link(temporary, candidate)
+            except FileExistsError:
+                index += 1
+                continue
+            break
+    temporary.unlink()
     return candidate
 
 
@@ -697,7 +722,7 @@ def write_linear_dng(
     compressed_spool = None
     if compression == "none":
         strip_byte_counts = [
-            ((end - start) * width * 3 * bits_per_sample + 7) // 8
+            (end - start) * row_bytes
             for start, end in strip_rows
         ]
     else:
@@ -869,11 +894,7 @@ def write_linear_dng(
             signature = check.read(4)
         if temporary.stat().st_size < 1024 or signature != b"II*\x00":
             raise OSError("DNG validation failed before commit")
-        with _OUTPUT_LOCK:
-            # Re-check inside the process-wide commit lock so simultaneous jobs can
-            # never replace one another's output.
-            final_path = _unique_output_path(destination_dir, source, name_suffix)
-            os.replace(temporary, final_path)
+        final_path = _commit_output_file(temporary, destination_dir, source, name_suffix)
         if compressed_spool is not None:
             compressed_spool.close()
         return final_path
@@ -1579,26 +1600,7 @@ def write_enhanced_dng(
             if temporary.stat().st_size != output_end or signature != b"II*\x00":
                 raise OSError("DNG validation failed before commit")
 
-            # A hard link is an atomic create-if-absent operation on the same
-            # filesystem. It keeps the complete temporary file visible at once
-            # without allowing another process to overwrite an existing DNG.
-            with _OUTPUT_LOCK:
-                index = 1
-                while True:
-                    candidate = destination_dir / (
-                        f"{source.stem}_dehaze.dng"
-                        if index == 1
-                        else f"{source.stem}_dehaze_{index}.dng"
-                    )
-                    try:
-                        os.link(temporary, candidate)
-                    except FileExistsError:
-                        index += 1
-                        continue
-                    final_path = candidate
-                    break
-            temporary.unlink()
-            return final_path
+            return _commit_output_file(temporary, destination_dir, source)
         except Exception:
             temporary.unlink(missing_ok=True)
             raise

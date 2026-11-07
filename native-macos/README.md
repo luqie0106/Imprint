@@ -19,3 +19,9 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk swift run Imprin
 程序会在当前目录或其父目录寻找 `src/app_api.py`，优先使用 `IMPRINT_PYTHON`，其次使用当前 Conda/venv 环境，最后尝试 `~/.conda/envs/py311/bin/python`。从其他目录运行时可设置 `IMPRINT_PROJECT_ROOT` 为项目根目录。Sidecar 监听 `127.0.0.1` 的随机端口，原生客户端从其启动输出读取端口。
 
 Swift Package 是开发运行入口，尚未配置签名、沙盒权限或 `.app` 发布打包。macOS 系统文件选择器负责照片与目录选择。
+
+## 后端生命周期验证
+
+在项目根目录运行 `python3 native-macos/Tests/test_backend_lifecycle.py -v`。测试用 `swiftc` 在临时目录编译独立进程管理组件，只启动合成子进程；覆盖正常退出、`SIGINT`、`SIGTERM`、忽略终止请求后的强制退出、启动失败、重复启动和实例隔离，并通过目标 PID 与监听端口检查残留。此测试不启动真实 FastAPI 服务。
+
+`swift build --package-path native-macos` 验证完整客户端编译。启动超过 60 秒未就绪时，客户端会回收本实例启动的后端；正常退出与信号退出使用同一进程清理入口。

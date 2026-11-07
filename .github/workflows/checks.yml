@@ -1,0 +1,64 @@
+name: Regression Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install regression test dependencies
+        run: python -m pip install pytest numpy Pillow rawpy opencv-python-headless
+      - name: Check Python syntax
+        run: python -m compileall -q src
+      - name: Run Python regressions
+        run: python -m pytest -q tests
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tauri-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tauri-frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Run frontend regressions
+        run: node --test tests/*.test.mjs
+
+  native:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test native renderer
+        run: |
+          cmake -S native-renderer -B native-renderer/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native-renderer/build --parallel
+          ctest --test-dir native-renderer/build --output-on-failure
+      - name: Build and test native sort
+        run: |
+          cmake -S native-sort -B native-sort/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native-sort/build --parallel
+          ctest --test-dir native-sort/build --output-on-failure
+      - name: Build macOS client
+        run: swift build --package-path native-macos
+      - name: Test owned backend lifecycle
+        run: python3 native-macos/Tests/test_backend_lifecycle.py -v
