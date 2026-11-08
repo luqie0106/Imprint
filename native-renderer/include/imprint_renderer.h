@@ -727,6 +727,28 @@ IMPRINT_API im_status im_native_acr_profile_hsl_controls(
     double profile_scalar, uint32_t monochrome_profile, uint32_t convert_to_gray,
     im_acr_profile_hsl_controls_result *output);
 
+/* Local CPU composition of prepared profile HSL controls and modern SDR
+   HSL/Vibrance pixels, NOT a complete ACR pipeline. Caller explicitly supplies
+   matching color SDR profile defaults (monochrome=false, convert_to_gray=0);
+   no XMP parsing, real profile selection, tone normalization or HDR is inferred.
+   current[25] is H8/S8/L8 in Red/Orange/Yellow/Green/Aqua/Blue/Purple/Magenta
+   order, followed by Vibrance. All current values must be finite in [-100,100];
+   the first 24 must be integers. profile_defaults[24] is int32; values outside
+   [-100,100], including sentinel -999999, are skipped by the profile loop.
+   profile_scalar is the explicit independent finite scalar in [0,2]. The
+   profile loop's rounded integer HSL result feeds apply_hsl; Vibrance retains
+   current[24] unchanged. Input is float32 linear ProPhoto RGB, finite in [0,1].
+   Dimensions are positive; sample counts equal width*height*3, at most 2^29.
+   All pointers require natural alignment and non-wrapping declared spans.
+   Destination must not overlap source, current or profile_defaults. Invalid
+   input returns INVALID_ARGUMENT; other exceptions return RUNTIME_ERROR.
+   Every failure leaves the entire destination unchanged. */
+IMPRINT_API im_status im_native_acr_profile_hsl_sdr_rgbf32(
+    uint32_t width, uint32_t height, const float *source, size_t source_samples,
+    const double *current, size_t current_count,
+    const int32_t *profile_defaults, size_t default_count, double profile_scalar,
+    float *destination, size_t destination_samples);
+
 /* Prepared numeric snapshot, not an Adobe object or serialized TIFF record.
    Pairs are unsigned numerator/denominator in this order: source fields
    +0x30,+0x38,+0x40,+0x48,+0x90,+0x98. Scales are source +0xe0,+0xe8.

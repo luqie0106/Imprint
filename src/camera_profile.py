@@ -28,7 +28,7 @@ from native_renderer import (
     NativeRendererError, native_camera_profile, native_camera_profile_transfer,
     clear_camera_profile_gpu_cache,
     native_acr_white_temperature,
-    native_acr_hsl_sdr, native_acr_grading_sdr, native_acr_profile_tone,
+    native_acr_hsl_sdr, native_acr_profile_hsl_sdr, native_acr_grading_sdr, native_acr_profile_tone,
     native_acr_prepare_profile_camera, native_acr_camera_float,
     native_acr_scale_sdr, native_acr_project_srgb, native_acr_profile_stage_sdr,
     native_acr_prepare_huesatmap, native_acr_illuminant_temperatures,
@@ -36,6 +36,7 @@ from native_renderer import (
     native_acr_buffer_to_float, native_acr_validate_profile_gain_payload,
 )
 from acr_profile_metadata import read_acr_profile_tags, read_embedded_acr_profile_tags
+from acr_hsl_fragments import ACR_HSL_FRAGMENT_VERSION, hsl_fragment_defaults
 from dng_writer import _embedded_profile_tags
 from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profile_dng
 
@@ -45,6 +46,7 @@ PROFILE_PREVIEW_VERSION += "-acr-camera-v1-look-bulk-sdr-cpp-v1"
 PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v5-source-neutral"
 PROFILE_PREVIEW_VERSION += "-acr-buffer-u16-f32-cpp-v1"
 PROFILE_PREVIEW_VERSION += "-pgtm2-metadata-cpp-v1"
+PROFILE_PREVIEW_VERSION += "-" + ACR_HSL_FRAGMENT_VERSION
 _ACR_PROFILE_WHITE_ENABLED = os.environ.get("IMPRINT_ACR_PROFILE_WHITE") == "1"
 if _ACR_PROFILE_WHITE_ENABLED:
     PROFILE_PREVIEW_VERSION += "-acr-white-cpp-v1"
@@ -928,6 +930,9 @@ def render_profile(
         grading = np.asarray(acr_color.get("grading", [0.0] * 12 + [50.0, 0.0]), dtype=np.float64)
         if hsl.shape != (25,) or grading.shape != (14,):
             raise ValueError("ACR experiment requires HSL25 and Grading14 controls")
+        fragment = acr_color.get("hsl_fragment", "none")
+        profile_hsl_defaults = hsl_fragment_defaults(fragment)
+        profile_hsl_amount = acr_color.get("hsl_fragment_amount", 1.0)
         if min(camera_u16.shape[:2]) <= 0:
             raise ValueError("ACR experiment requires a nonempty camera image")
         endpoint_kelvin = native_acr_illuminant_temperatures(profile.calibration_illuminants)
@@ -970,7 +975,9 @@ def render_profile(
             looked = (native_acr_profile_stage_sdr(
                 exposed, profile.look_table, profile.look_dims, profile.look_encoding,
             ) if profile.look_table is not None else exposed)
-            colored = native_acr_hsl_sdr(looked, hsl)
+            colored = (native_acr_profile_hsl_sdr(
+                looked, hsl, profile_hsl_defaults, profile_hsl_amount,
+            ) if profile_hsl_defaults is not None else native_acr_hsl_sdr(looked, hsl))
             if acr_color.get("profile_tone", True):
                 toned = native_acr_profile_tone(colored, profile.tone_curve)
             else:

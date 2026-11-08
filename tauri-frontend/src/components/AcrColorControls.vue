@@ -98,6 +98,20 @@ function reset() {
           <section class="min-w-0 rounded-lg bg-slate-50 p-2.5 dark:bg-zinc-800/70">
             <h3 class="mb-2 text-[11px] font-semibold">HSL</h3>
             <label class="mb-2 block min-w-0 text-[10px]">
+              <span class="mb-1 block">Profile HSL 片段（CPU）</span>
+              <select v-model="config.hsl_fragment" class="block w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-900" :disabled="controlsDisabled" aria-label="Profile HSL 片段">
+                <option value="none">关闭：仅手动 HSL</option>
+                <option value="modern03_hsl">Modern 03 · 仅 HSL 片段</option>
+                <option value="modern04_hsl">Modern 04 · 仅 HSL 片段</option>
+                <option value="vintage07_hsl">Vintage 07 · 仅 HSL 片段</option>
+              </select>
+            </label>
+            <p v-if="config.hsl_fragment !== 'none'" class="mb-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">仅合并已验证的 HSL 默认值；不含完整 Adobe Profile 的 LUT、曲线或局部修正，不自动读取照片的 Look 选择。</p>
+            <label v-if="config.hsl_fragment !== 'none'" class="mb-2 block min-w-0 text-[10px]">
+              <span class="flex min-w-0 justify-between gap-2"><span>片段强度</span><span class="shrink-0 font-mono">{{ Math.round(config.hsl_fragment_amount * 100) }}%</span></span>
+              <input v-model.number="config.hsl_fragment_amount" class="app-range mt-0.5 block w-full min-w-0" type="range" min="0" max="2" step="0.01" :disabled="controlsDisabled" aria-label="Profile HSL 片段强度" />
+            </label>
+            <label class="mb-2 block min-w-0 text-[10px]">
               <span class="mb-1 block">色相范围</span>
               <select v-model.number="selectedHslColor" class="block w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-900" :disabled="controlsDisabled" aria-label="HSL 色相范围">
                 <option v-for="(color, index) in hslColors" :key="color" :value="index">{{ color }}</option>

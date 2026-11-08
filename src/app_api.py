@@ -45,7 +45,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from burst_filter import BurstFilter, RawEvaluator
 from model_manager import (
@@ -343,6 +343,14 @@ class AcrColorPreviewRequest(BaseModel):
     profile_tone: bool = True
     hsl: list[float] = Field(default_factory=lambda: [0.0] * 25)
     grading: list[float] = Field(default_factory=lambda: [0.0] * 12 + [50.0, 0.0])
+    hsl_fragment: Literal["none", "modern03_hsl", "modern04_hsl", "vintage07_hsl"] = "none"
+    hsl_fragment_amount: float = Field(default=1.0, ge=0.0, le=2.0)
+
+    @model_validator(mode="after")
+    def validate_fragment_current(self):
+        if self.hsl_fragment != "none" and any(value != np.trunc(value) for value in self.hsl[:24]):
+            raise ValueError("HSL 片段合并要求前 24 个 HSL 参数为整数")
+        return self
 
     @field_validator("hsl")
     @classmethod
@@ -416,6 +424,8 @@ def _acr_color_cache_identity(acr_color: Mapping[str, Any] | None) -> tuple | No
         bool(acr_color.get("profile_tone", True)),
         tuple(float(value) for value in acr_color.get("hsl", ())),
         tuple(float(value) for value in acr_color.get("grading", ())),
+        acr_color.get("hsl_fragment", "none"),
+        float(acr_color.get("hsl_fragment_amount", 1.0)),
     )
 
 

@@ -3465,6 +3465,63 @@ class _AcrProfileHslControlsResult(ctypes.Structure):
                 ("wrote_mask", ctypes.c_uint32)]
 
 
+def native_acr_profile_hsl_sdr(
+    rgb: np.ndarray, current: object, profile_defaults: object, profile_scalar: float,
+) -> np.ndarray:
+    """Compose prepared color-Profile HSL24 merging and SDR pixels in C++ CPU.
+
+    Explicit HSL-only defaults; no Look selection, metadata loading or complete
+    Prepare pipeline. Current is HSL25 with integral first 24 UI slots.
+    """
+    image = np.asarray(rgb)
+    if (image.dtype != np.float32 or image.ndim != 3 or image.shape[2] != 3
+            or min(image.shape[:2]) <= 0 or not np.isfinite(image).all()
+            or np.any(image < 0) or np.any(image > 1)):
+        raise ValueError("Profile HSL pixels require finite float32 RGB in [0,1]")
+    try:
+        controls = np.asarray(current, dtype=np.float64)
+        raw_defaults = np.asarray(profile_defaults, dtype=object)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError("invalid Profile HSL controls") from exc
+    if (controls.shape != (25,) or not np.isfinite(controls).all()
+            or np.any(controls < -100) or np.any(controls > 100)
+            or not np.equal(controls[:24], np.trunc(controls[:24])).all()):
+        raise ValueError("Profile HSL requires HSL25 with integral first 24 slots")
+    if raw_defaults.shape != (24,) or any(
+        isinstance(x, (bool, np.bool_)) or not isinstance(x, (int, np.integer))
+        or not -(1 << 31) <= int(x) < (1 << 31) for x in raw_defaults
+    ):
+        raise ValueError("Profile HSL defaults must contain 24 int32 values")
+    if (isinstance(profile_scalar, (bool, np.bool_))
+            or not isinstance(profile_scalar, (int, float, np.integer, np.floating))):
+        raise ValueError("Profile HSL scalar must be finite and in [0,2]")
+    try:
+        scalar = float(profile_scalar)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("Profile HSL scalar must be finite and in [0,2]") from exc
+    if not np.isfinite(scalar) or not 0 <= scalar <= 2:
+        raise ValueError("Profile HSL scalar must be finite and in [0,2]")
+    image = np.ascontiguousarray(image)
+    controls = np.ascontiguousarray(controls)
+    defaults = np.ascontiguousarray(raw_defaults, dtype=np.int32)
+    output = np.empty_like(image)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_profile_hsl_sdr_rgbf32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide composed Profile HSL pixels")
+    fp, dp, ip = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_int32)
+    function.argtypes = [ctypes.c_uint32, ctypes.c_uint32, fp, ctypes.c_size_t,
+                         dp, ctypes.c_size_t, ip, ctypes.c_size_t, ctypes.c_double,
+                         fp, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    status = function(image.shape[1], image.shape[0], image.ctypes.data_as(fp), image.size,
+                      controls.ctypes.data_as(dp), 25, defaults.ctypes.data_as(ip), 24, scalar,
+                      output.ctypes.data_as(fp), output.size)
+    if status:
+        raise NativeRendererError(f"Native composed Profile HSL failed (status {status})")
+    return output
+
+
 def native_acr_profile_hsl_controls(
     current: object, profile_defaults: object, profile_scalar: float,
     *, monochrome_profile: bool = False, convert_to_gray: int = 0,

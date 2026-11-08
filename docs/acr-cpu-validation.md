@@ -122,3 +122,61 @@ D50 `(0.3457,0.3585)`，不是直接复用源 AsShotNeutral 准备的 Camera。
 本次补齐的是已接入颜色预览的源白点来源；实际 guide 的 Profile、Stage4
 像素、EV90/epsilon、可选阶段仍需同请求绑定。详细证据：
 `research/acr/reports/evidence/2026-11-08-raw-request-source/`。
+
+## 2026-11-08：Profile HSL 合并正式接入像素预览
+
+新增正式 CPU 源文件 `native-renderer/src/acr_profile_hsl_pixels.cpp`，导出
+`im_native_acr_profile_hsl_sdr_rgbf32`。它先使用已恢复的 Profile HSL24
+非线性合并和整数舍入，再执行既有 SDR HSL 像素算子；自然饱和度保持独立。
+输入错误、非法像素或输出重叠会在写入前拒绝，目标保持不变。
+
+用户入口：去朦胧／理光页面 → **ACR CPU 颜色实验** → 启用 → HSL 内
+**Profile HSL 片段（CPU）**。可显式选择：
+
+|片段|已验证的稀疏默认值，其余24槽保留sentinel|
+|---|---|
+|Modern 03 · 仅HSL|橙色饱和度−14、橙色明亮度−7|
+|Modern 04 · 仅HSL|橙色饱和度−10|
+|Vintage 07 · 仅HSL|蓝色饱和度−29|
+
+强度0–200%，与手动HSL按恢复公式合并。**这不是完整Adobe Profile：不含
+其LUT、曲线、局部修正或其它设置，不自动推断照片选中了哪个Look。** 此入口
+仍只影响预览，不写XMP、不影响现有导出；原图模式忽略实验，理光预设启用时
+实验暂停。关闭片段维持原来的手动HSL路径，默认关闭。
+
+Python接入位于 `src/native_renderer.py`、`src/camera_profile.py`；片段纯数值
+清单位于 `src/acr_hsl_fragments.py`。缓存包含片段ID、强度和版本，低分辨率、
+全分辨率及最终显示层隔离。没有增加任意本地文件GET接口或新增Python依赖；
+PyInstaller已加入新模块，现有macOS/Windows CMake流程会构建新CPU文件。
+
+实际验证：
+
+- Python产品路由／渲染／metadata／缓存相关 **238 passed**；控制算子等另一组
+  **196 passed**（两组有重叠，不相加）。
+- 正式native非GPU CTest **31/31 passed**，新增组合测试120组逐bit一致及失败
+  原子性；前端 `npm run build` 成功。
+- 两张现有RAW的 **28次真实HTTP请求**通过；0%与关闭像素相同，100%/200%
+  有实际变化，重复请求响应一致，original不受影响；4个RAW/sidecar指纹保持。
+- 新组合入口在已有70组HSL TIFF上与分开执行的结果逐bit一致；平均ΔE76为
+  Hue `0.0476400241344`、Saturation `0.0478528321362`、Luminance
+  `0.0510153126009`。13组色轮灰阶TIFF平均ΔE76 `0.0100741159024`，指标与
+  前检查点一致。85张TIFF指纹保持。该TIFF路径仍使用既有固定tone/工作空间
+  转换，不冒充完整RAW渲染或基础高光回归。
+- 两个真实编辑页的新增控件已通过浏览器布局检查：同窗口有溢出／无溢出
+  时卡片、直方图、select和slider横向差异0 CSS px；gutter回退同样稳定。
+  已连接真实后端打开DJI0539，界面报告“已应用”并显示实际照片。
+
+本机开发库SHA-256：
+`eb3d7ab47ceab652f606df9557cdfd4f76d48ce09cca03fc850d9fd915aece90`。
+未重打安装包，未验证Windows实际运行。证据位于
+`research/acr/reports/evidence/2026-11-08-hsl-fragment-product/`。
+
+全量Python测试实际为 **5287 passed、5 failed**（149.68秒），不能称全量通过。
+五项为combined preview色彩转换、physical shadow budget、progressive preview
+尺寸、shared XMP preset保持及per-photo Ricoh export测试。另在内存加载HEAD的
+`native_renderer.py`、`camera_profile.py`、`app_api.py`重跑这五项，同样全部
+失败于相同断言；此对照仍使用当前native库，不宣称完整旧二进制环境基线。
+本轮未修改这些测试或对应去朦胧/XMP/导出实现来制造通过结果。
+
+上述是可用的Profile HSL局部功能交付，不是实际照片自动Look选择或完整高光
+链完成；GPU分析与“CPU整体完成”提交条件仍未满足。
