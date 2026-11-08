@@ -94,3 +94,31 @@ Prepare effects、跨source层mask、mode4、非零原点/ROI、完整BuildStats
 及最终高光联动尚未闭合。现有fixture目录未找到带可信controls记录的
 Profile切换或基础Highlights2012成对样本；高光色轮TIFF不是基础高光样本。
 当前CPU检查点不代表整体目标完成，也没有启动GPU pipeline分析。
+
+## 2026-11-08 继续：DNG 源白点绑定
+
+现有 ACR CPU 颜色预览对同文件、scene-referred DNG 优先读取原始
+`AsShotNeutral`（50728，三个 RATIONAL），原样送入既有 native 白点准备。
+max-normalization 和 1e6 量化仍在 C++ 执行。旁侧参考 DNG 的白点不作为
+NEF 的源白点；缺少该 tag 时继续使用原 caller neutral。显式非零
+ColorimetricReference 尚不支持此 scene 路径，会拒绝解析。
+
+Profile fingerprint 与 preview version 更新为 `acr-huesatmap-v5-source-neutral`，
+缓存包含原 tag payload。新增及相关测试 **166 passed**，原 Profile 路径
+回归 **30 passed**；两张 RAW 的 **20 次 HTTP 预览**通过，响应 hash 与前一
+检查点一致，源 RAW/sidecar 未变，未留下新 worker 线程。
+
+实图边界：`DJI_0539.DNG` 绑定 Embedded 的同文件原始 neutral；
+`LCR_1132.NEF` 继续使用自身 LibRaw neutral，未误用参考 DNG 的白点。
+`DJI_0523.DNG` 的选中名称 Adobe Standard 与内嵌 Embedded 冲突，仍按
+既有规则拒绝，未换用猜测 Profile。
+
+同时补核了高光 guide 白点：`dae4e4` 内独立参数的 mode8/xy setter 写入
+D50 `(0.3457,0.3585)`，不是直接复用源 AsShotNeutral 准备的 Camera。
+保存指令 404 条校验通过，14 条局部原指令探针通过。用同一实图 Profile
+作数值见证时，AsShot 与 D50 的 CameraWhite 不同；这解释了为什么当前
+颜色预览 Camera 参数还不能直接当高光 guide 参数。
+
+本次补齐的是已接入颜色预览的源白点来源；实际 guide 的 Profile、Stage4
+像素、EV90/epsilon、可选阶段仍需同请求绑定。详细证据：
+`research/acr/reports/evidence/2026-11-08-raw-request-source/`。

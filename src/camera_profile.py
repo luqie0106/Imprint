@@ -42,7 +42,7 @@ from image_io import RAW_SUFFIXES, camera_profile_names, matching_embedded_profi
 
 PROFILE_PREVIEW_VERSION = "camera-profile-preview-v3-gpu-stages"
 PROFILE_PREVIEW_VERSION += "-acr-camera-v1-look-bulk-sdr-cpp-v1"
-PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v4-source-calibration"
+PROFILE_PREVIEW_VERSION += "-acr-huesatmap-v5-source-neutral"
 PROFILE_PREVIEW_VERSION += "-acr-buffer-u16-f32-cpp-v1"
 PROFILE_PREVIEW_VERSION += "-pgtm2-metadata-cpp-v1"
 _ACR_PROFILE_WHITE_ENABLED = os.environ.get("IMPRINT_ACR_PROFILE_WHITE") == "1"
@@ -73,6 +73,12 @@ _PROFILE_CACHE_SIZE = 24
 @dataclass(frozen=True)
 class Profile:
     """A validated camera profile and the file identity used to load it.
+
+    The ACR scene-white path uses unmodified AsShotNeutral rational doubles
+    only from the source DNG itself, gated by ``source_calibration_enabled``.
+    If absent or loaded from an adjacent reference, it uses the caller's
+    LibRaw neutral. Native preparation owns normalization and quantization.
+    This neutral-only, scene-referred path is not a complete Stage4 state.
 
     ``profile_gain_table_map2_payload`` is the serialized selected-profile
     payload after C++ validation. It is retained as metadata only and is not
@@ -107,6 +113,7 @@ class Profile:
     source_calibration1: np.ndarray | None = None
     source_calibration2: np.ndarray | None = None
     profile_gain_table_map2_payload: bytes | None = None
+    source_camera_neutral: np.ndarray | None = None
 
 
 def _file_signature(path: Path) -> tuple[int, int, int, int] | None:
@@ -313,9 +320,22 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
 
     source_calibration_enabled = _acr_extended and _source_dng
     analog_balance = None
+    camera_neutral = None
     calibration1 = calibration2 = None
     calibration_matches = True
     if source_calibration_enabled:
+        if 50879 in tags:
+            if int(tags[50879].kind) != 3:
+                raise ValueError("source ColorimetricReference must contain a SHORT value")
+            if _require_values(tags, 50879, 1)[0] != 0:
+                raise ValueError("source ColorimetricReference must be scene-referred (0)")
+        if 50728 in tags:
+            if int(tags[50728].kind) != 5:
+                raise ValueError("source AsShotNeutral must contain RATIONAL values")
+            camera_neutral = _require_values(tags, 50728, 3)
+            if np.any(camera_neutral <= 0):
+                raise ValueError("source AsShotNeutral must contain three finite positive values")
+            camera_neutral = _readonly(camera_neutral)
         if 50727 in tags:
             if int(tags[50727].kind) != 5:
                 raise ValueError("source AnalogBalance must contain RATIONAL values")
@@ -406,6 +426,7 @@ def _parse_profile(tags_list: list[Any], expected_name: str, fingerprint: tuple[
         source_calibration1=calibration1,
         source_calibration2=calibration2,
         profile_gain_table_map2_payload=profile_gain_table_map2_payload,
+        source_camera_neutral=camera_neutral,
     )
 
 
@@ -588,7 +609,7 @@ def _resolve_cached(
             source_signature, neighbor_signature,
         )
         if acr_extended:
-            fingerprint = ("acr-huesatmap-v4-source-calibration", *fingerprint)
+            fingerprint = ("acr-huesatmap-v5-source-neutral", *fingerprint)
             return _parse_profile(
                 tags, expected_name, fingerprint, _acr_extended=True,
                 _source_dng=source.suffix.lower() == ".dng" and source == reference,
@@ -847,6 +868,8 @@ def _acr_profile_camera_controls(
     analog_balance = np.ones(3, dtype=np.float64)
     calibration1 = calibration2 = identity
     if profile.source_calibration_enabled:
+        if profile.source_camera_neutral is not None:
+            neutral = profile.source_camera_neutral
         analog_balance = native_acr_prepare_analog_balance(profile.source_analog_balance)
         if profile.source_calibration1 is not None:
             calibration1 = native_acr_prepare_camera_calibration(profile.source_calibration1).reshape(-1)
