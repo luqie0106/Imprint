@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -12,6 +13,20 @@ struct GrayImage {
     std::vector<float> pixels;
 };
 
+struct LocalToneLevelExtent {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+struct LocalToneGeometry {
+    std::array<LocalToneLevelExtent,16> levels{};
+    std::uint32_t level_count = 0;
+    std::uint32_t statistics_level = 0;
+};
+// Complete zero-origin image only: <=16 ceil-halved levels (0095b478/688),
+// source statistics and collapse callback use the same index (006fbbc8 /
+// 00a089f0). This describes local pyramid levels, not source/Stage4 levels.
+LocalToneGeometry prepare_local_tone_geometry(std::uint32_t width, std::uint32_t height);
+
 // Named subset of flags=0 BuildStats needed for local-mask anchors and tone
 // nodes. This is not the full 33-double Adobe stats object (moments omitted).
 struct LogSceneStats {
@@ -22,10 +37,17 @@ struct LogSceneStats {
     std::size_t effective_count;
     bool fallback;
 };
+// Saved 009d6fac flags=0 selected fields: asymmetric raw floor/ceil quantiles,
+// effective repeat filtering and grouped/FMA representative center. Retains
+// the saved upper-rank post-decrement scan, not a replacement quantile mean.
+// The remaining 33-double statistics, loader and runtime dispatch are omitted.
 LogSceneStats build_log_scene_stats(const float *pixels, std::size_t count, double epsilon);
 
 // Recovered CPU float, zero-origin, unskewed Gaussian resize. Coordinates
 // clamp before phase selection; edge/column/corner samples repeat nearest.
+// Float weights with double normalization sum; explicit 01341a30 vertical
+// and 0134147c horizontal baseline arithmetic, V then H. Does not infer
+// optimized dispatch or reuse the ordinary cubic coefficient generator.
 // This is a tone-pyramid component, not a complete Highlights operator.
 GrayImage resize_gray(const float *pixels, std::uint32_t width,
                       std::uint32_t height, std::uint32_t output_width,
@@ -41,8 +63,26 @@ double select_log_epsilon(int source_mode, double stored_flare);
 // Exact recovered terminal stages: weighted RGB -> nonnegative gray ->
 // exp2 gain -> log2(gray + epsilon), with the 2^120 upper protection.
 // Input is the pre-gray working domain, not automatically linear sRGB.
+// Uses the fixed 00889340 float constants and G-product/R-FMA/B-FMA order,
+// not acr_gray's Q14 coefficient preparation. EV90==+/-0 omits the gain stage;
+// otherwise gain is float(exp2(double EV90)). No post-gain [0,1] clamp.
 GrayImage make_gray_log(const float *rgb, std::uint32_t width,
                         std::uint32_t height, double gain_ev, double epsilon);
+
+struct LocalRemapSampling {
+    float low;
+    float high;
+    std::uint32_t intervals;
+    float step;
+    float inverse_step;
+};
+// Endpoints are already clamped against the statistics median +/-20 by the
+// caller. 00a0c25c / 00a0b958 use FCVTPS (ceil), not truncation. The native
+// supported range remains <=40.001; invalid/unrepresentable inputs throw.
+LocalRemapSampling prepare_local_remap_sampling(double low, double high);
+// 00dafa20 + 012fff5c: explicit prepared low/high statistics and sigma mode.
+// Preserves both observed binary64 FMADD sites. Does not compute statistics.
+double prepare_local_mask_sigma(double low, double high, double epsilon, int sigma_mode);
 
 // Recovered full-image local Laplacian remap component. low/high must already
 // be derived from the effective log statistics (not raw percentiles). Samples

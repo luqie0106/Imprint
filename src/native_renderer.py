@@ -3459,6 +3459,69 @@ def native_acr_profile_gain_control130(
     return int(result.value), bool(result.wrote), float(result.blended)
 
 
+class _AcrProfileHslControlsResult(ctypes.Structure):
+    _fields_ = [("values", ctypes.c_int32 * 24),
+                ("blended", ctypes.c_double * 24),
+                ("wrote_mask", ctypes.c_uint32)]
+
+
+def native_acr_profile_hsl_controls(
+    current: object, profile_defaults: object, profile_scalar: float,
+    *, monochrome_profile: bool = False, convert_to_gray: int = 0,
+) -> tuple[np.ndarray, int, np.ndarray]:
+    """Merge prepared Profile HSL24 controls in C++ CPU.
+
+    Returns (integer H8/S8/L8 controls, wrote_mask, pre-rounding doubles).
+    The caller resolves the profile-name predicate and full ConvertToGray byte
+    at the indexed-loop point. This does not read a DCP, run all Prepare writers
+    or apply pixel HSL; scalar is the independent Q+b60 value.
+    """
+    arrays = []
+    for name, values in (("current", current), ("profile_defaults", profile_defaults)):
+        try:
+            raw = np.asarray(values, dtype=object)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Profile HSL {name} must contain 24 int32 values") from exc
+        if raw.shape != (24,) or any(
+            isinstance(x, (bool, np.bool_)) or not isinstance(x, (int, np.integer))
+            or not -(1 << 31) <= int(x) < (1 << 31) for x in raw
+        ):
+            raise ValueError(f"Profile HSL {name} must contain 24 int32 values")
+        arrays.append(np.ascontiguousarray(raw, dtype=np.int32))
+    if not isinstance(monochrome_profile, (bool, np.bool_)):
+        raise ValueError("Profile monochrome predicate must be boolean")
+    if (isinstance(convert_to_gray, (bool, np.bool_))
+            or not isinstance(convert_to_gray, (int, np.integer))
+            or not 0 <= int(convert_to_gray) <= 255):
+        raise ValueError("Profile ConvertToGray must be a byte")
+    if (isinstance(profile_scalar, (bool, np.bool_))
+            or not isinstance(profile_scalar, (int, float, np.integer, np.floating))):
+        raise ValueError("Profile scalar must be finite")
+    try:
+        scalar = float(profile_scalar)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("Profile scalar must be finite") from exc
+    if not np.isfinite(scalar):
+        raise ValueError("Profile scalar must be finite")
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_profile_hsl_controls", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide Profile HSL control preparation")
+    pointer = ctypes.POINTER(ctypes.c_int32)
+    function.argtypes = [pointer, ctypes.c_size_t, pointer, ctypes.c_size_t,
+                         ctypes.c_double, ctypes.c_uint32, ctypes.c_uint32,
+                         ctypes.POINTER(_AcrProfileHslControlsResult)]
+    function.restype = ctypes.c_int
+    result = _AcrProfileHslControlsResult()
+    status = function(arrays[0].ctypes.data_as(pointer), 24,
+                      arrays[1].ctypes.data_as(pointer), 24, scalar,
+                      int(monochrome_profile), int(convert_to_gray), ctypes.byref(result))
+    if status:
+        raise NativeRendererError(f"Native Profile HSL control preparation failed (status {status})")
+    return (np.ctypeslib.as_array(result.values).copy(), int(result.wrote_mask),
+            np.ctypeslib.as_array(result.blended).copy())
+
+
 def native_acr_quantize_profile_gain_scalar(value: float) -> float:
     """Quantize the recovered local profile scalar in C++ CPU.
 

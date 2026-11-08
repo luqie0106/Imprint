@@ -76,6 +76,8 @@ set(IMPRINT_RENDERER_SOURCES
     src/acr_profile_gain_cache.cpp
     src/acr_profile_gain_control130.cpp
     src/acr_profile_gain_control130_api.cpp
+    src/acr_profile_hsl_controls.cpp
+    src/acr_profile_hsl_controls_api.cpp
     src/acr_profile_gain_scalar.cpp
     src/acr_profile_gain_scalar_api.cpp
     src/acr_source_rational.cpp
@@ -96,6 +98,8 @@ set(IMPRINT_RENDERER_SOURCES
     src/acr_warp_api.cpp
     src/acr_buffer_format.cpp
     src/acr_buffer_format_api.cpp
+    src/acr_pipe_format.cpp
+    src/acr_guide_camera_black.cpp
     src/acr_camera_combined.cpp
     src/acr_camera_combined_api.cpp
     src/acr_postcamera_black.cpp
@@ -190,6 +194,7 @@ target_compile_definitions(imprint_renderer PRIVATE IMPRINT_RENDERER_BUILD ${IMP
 target_link_libraries(imprint_renderer PRIVATE Threads::Threads)
 # Keep the dense CPU operators' float32 evaluation order aligned with NumPy.
 if(MSVC)
+    set_source_files_properties(src/acr_profile_hsl_controls.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_exposure_allocation.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_resample_axis.cpp src/acr_resample_matrix.cpp src/acr_resample_plan.cpp src/acr_render_geometry.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_stage3_prepared_image.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
@@ -200,13 +205,14 @@ if(MSVC)
     set_source_files_properties(src/acr_profile_gain_map.cpp src/acr_profile_gain_cache.cpp src/acr_profile_gain_control130.cpp src/acr_profile_gain_control130_api.cpp src/acr_profile_gain_scalar.cpp src/acr_profile_gain_scalar_api.cpp src/acr_source_rational.cpp src/acr_source_stage3_geometry.cpp src/acr_source_stage3_geometry_api.cpp src/acr_profile_gain_image.cpp src/acr_profile_gain_image_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_profile_gain_apply.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_profile_gain_coordinates.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
-    set_source_files_properties(src/acr_camera_combined.cpp src/acr_camera_combined_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+    set_source_files_properties(src/acr_camera_combined.cpp src/acr_camera_combined_api.cpp src/acr_guide_camera_black.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_postcamera_black.cpp src/acr_postcamera_black_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_source_crop.cpp src/acr_source_pyramid.cpp src/acr_colorspec_api.cpp src/acr_source_linearization.cpp tools/acr_source_linearization_validation.cpp src/acr_stage3_core3.cpp tools/acr_stage3_core3_validation.cpp tools/acr_stage3_core3_bridge.cpp src/acr_stage3_core3_colour.cpp tools/acr_stage3_core3_colour_validation.cpp tools/acr_stage3_core3_colour_bridge.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/acr_exposure_black_prepare.cpp src/acr_exposure_context_lut.cpp src/acr_exposure_epsilon.cpp src/acr_exposure_sdr_mask.cpp src/acr_profile_u16.cpp src/acr_exposure_signed.cpp src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_exposure_anchor_api.cpp src/acr_source_log.cpp src/acr_gray.cpp src/acr_anchor_geometry.cpp src/acr_resample_coefficients.cpp src/acr_resample_row.cpp src/acr_resample_vertical.cpp src/acr_resample_separable.cpp src/acr_gray_log_api.cpp src/acr_u16_store.cpp src/acr_illuminant.cpp src/acr_illuminant_api.cpp src/acr_profile_table.cpp src/acr_profile_stage.cpp src/acr_profile_table_blend.cpp src/acr_huesatmap_prepare.cpp src/acr_huesatmap_prepare_api.cpp src/acr_huesatmap_gain_api.cpp src/acr_profile_encoding.cpp src/acr_profile_look_api.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
     set_source_files_properties(src/dense_kernels.cpp src/warp_kernels.cpp src/camera_profile_kernels.cpp src/acr_color_kernels.cpp src/acr_profile_tone.cpp src/acr_negative_curve.cpp src/acr_exposure.cpp src/acr_camera_prepare.cpp src/acr_colorspec.cpp src/acr_display.cpp src/acr_flare.cpp src/acr_highlight_stat.cpp src/acr_tone_kernels.cpp src/acr_tone_mapping.cpp src/acr_camera_kernels.cpp src/acr_tone_pixels.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:strict")
 else()
+    set_source_files_properties(src/acr_profile_hsl_controls.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_exposure_allocation.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_resample_axis.cpp src/acr_resample_matrix.cpp src/acr_resample_plan.cpp src/acr_render_geometry.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_stage3_prepared_image.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
@@ -217,7 +223,7 @@ else()
     set_source_files_properties(src/acr_profile_gain_map.cpp src/acr_profile_gain_cache.cpp src/acr_profile_gain_control130.cpp src/acr_profile_gain_control130_api.cpp src/acr_profile_gain_scalar.cpp src/acr_profile_gain_scalar_api.cpp src/acr_source_rational.cpp src/acr_source_stage3_geometry.cpp src/acr_source_stage3_geometry_api.cpp src/acr_profile_gain_image.cpp src/acr_profile_gain_image_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_profile_gain_apply.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_profile_gain_coordinates.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
-    set_source_files_properties(src/acr_camera_combined.cpp src/acr_camera_combined_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+    set_source_files_properties(src/acr_camera_combined.cpp src/acr_camera_combined_api.cpp src/acr_guide_camera_black.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_postcamera_black.cpp src/acr_postcamera_black_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_source_crop.cpp src/acr_source_pyramid.cpp src/acr_colorspec_api.cpp src/acr_source_linearization.cpp tools/acr_source_linearization_validation.cpp src/acr_stage3_core3.cpp tools/acr_stage3_core3_validation.cpp tools/acr_stage3_core3_bridge.cpp src/acr_stage3_core3_colour.cpp tools/acr_stage3_core3_colour_validation.cpp tools/acr_stage3_core3_colour_bridge.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
     set_source_files_properties(src/acr_exposure_black_prepare.cpp src/acr_exposure_context_lut.cpp src/acr_exposure_epsilon.cpp src/acr_exposure_sdr_mask.cpp src/acr_profile_u16.cpp src/acr_exposure_signed.cpp src/acr_exposure_limit.cpp src/acr_exposure_limit_api.cpp src/acr_exposure_rgb.cpp src/acr_exposure_rgb_prepare.cpp src/acr_whites.cpp src/acr_exposure_anchor_api.cpp src/acr_source_log.cpp src/acr_gray.cpp src/acr_anchor_geometry.cpp src/acr_resample_coefficients.cpp src/acr_resample_row.cpp src/acr_resample_vertical.cpp src/acr_resample_separable.cpp src/acr_gray_log_api.cpp src/acr_u16_store.cpp src/acr_illuminant.cpp src/acr_illuminant_api.cpp src/acr_profile_table.cpp src/acr_profile_stage.cpp src/acr_profile_table_blend.cpp src/acr_huesatmap_prepare.cpp src/acr_huesatmap_prepare_api.cpp src/acr_huesatmap_gain_api.cpp src/acr_profile_encoding.cpp src/acr_profile_look_api.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
@@ -338,6 +344,16 @@ if(BUILD_TESTING)
 
     add_executable(imprint_renderer_benchmark tools/l2_benchmark.cpp)
     target_link_libraries(imprint_renderer_benchmark PRIVATE imprint_renderer)
+
+    # Prepared CPU format/encoding state only; this does not discover guide
+    # stages or execute pixel conversions, virtual callbacks, or GPU paths.
+    add_executable(imprint_acr_pipe_format_test
+        tests/acr_pipe_format_test.cpp
+        src/acr_pipe_format.cpp
+    )
+    target_include_directories(imprint_acr_pipe_format_test PRIVATE src)
+    target_compile_features(imprint_acr_pipe_format_test PRIVATE cxx_std_17)
+    add_test(NAME native_acr_pipe_format_validation COMMAND imprint_acr_pipe_format_test)
 
     # Recovered aligned 2x2 fast-Bayer branch: integer accumulator, padding,
     # alias and failure-atomicity checks against an in-test reference. The

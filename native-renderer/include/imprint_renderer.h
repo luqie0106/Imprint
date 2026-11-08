@@ -705,6 +705,28 @@ IMPRINT_API im_status im_native_acr_profile_gain_control130(
 IMPRINT_API im_status im_native_acr_profile_gain_scalar_quantize(
     double input, double *output);
 
+typedef struct im_acr_profile_hsl_controls_result {
+    int32_t values[24];
+    double blended[24];
+    uint32_t wrote_mask;
+} im_acr_profile_hsl_controls_result;
+
+/* Profile indexed-loop HSL IDs43..66 (H8/S8/L8), not the pixel HSL stage.
+   Both arrays contain exactly 24 int32 loop-time slots. Profile defaults
+   outside [-100,100], including -999999, are skipped. Current slots retain
+   their full int32 domain; eligible results are rounded/clamped to [-100,100].
+   monochrome_profile is the resolved 78abb0 predicate (0/1); convert_to_gray
+   is the full profile+124 byte (0..255), with exactly 1 disabling these lanes.
+   Scalar must be finite and is the independent Q+b60, not ProfileGain amount.
+   The caller supplies matching state; no profile/metadata/Prepare discovery.
+   Null, misaligned, wrapped or input/output-overlapping spans are rejected.
+   Every failure leaves output untouched. */
+IMPRINT_API im_status im_native_acr_profile_hsl_controls(
+    const int32_t *current, size_t current_count,
+    const int32_t *profile_defaults, size_t default_count,
+    double profile_scalar, uint32_t monochrome_profile, uint32_t convert_to_gray,
+    im_acr_profile_hsl_controls_result *output);
+
 /* Prepared numeric snapshot, not an Adobe object or serialized TIFF record.
    Pairs are unsigned numerator/denominator in this order: source fields
    +0x30,+0x38,+0x40,+0x48,+0x90,+0x98. Scales are source +0xe0,+0xe8.
