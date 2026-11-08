@@ -19,6 +19,14 @@ interface CacheEntry extends CachedPreviewResponse {
 const entries = new Map<string, CacheEntry>();
 let totalBytes = 0;
 
+function usesPhotoHslPacket(body: Record<string, unknown>): boolean {
+  const color = body.acr_color as { enabled?: boolean; photo_hsl_source?: string } | undefined;
+  // The frontend cannot observe sidecar/embedded packet edits. Always let the
+  // backend re-read its explicit source and key its own caches by packet digest.
+  return body.mode !== "original" && color?.enabled === true
+    && color.photo_hsl_source !== undefined && color.photo_hsl_source !== "none";
+}
+
 function normalizeForJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(item => normalizeForJson(item));
   if (value && typeof value === "object") {
@@ -53,6 +61,7 @@ export function getCachedPreview(
   baseUrl: string,
   body: Record<string, unknown>,
 ): CachedPreviewResponse | undefined {
+  if (usesPhotoHslPacket(body)) return undefined;
   const key = previewCacheKey(baseUrl, body);
   const entry = entries.get(key);
   if (!entry) return undefined;
@@ -64,6 +73,7 @@ export function getCachedPreview(
 }
 
 export function hasCachedPreview(baseUrl: string, body: Record<string, unknown>): boolean {
+  if (usesPhotoHslPacket(body)) return false;
   const key = previewCacheKey(baseUrl, body);
   const entry = entries.get(key);
   if (!entry) return false;
@@ -78,6 +88,7 @@ export function cachePreviewResponse(
   response: Pick<Response, "ok" | "status" | "headers">,
   blob: Blob,
 ): boolean {
+  if (usesPhotoHslPacket(body)) return false;
   if (!response.ok || response.status === 204) return false;
 
   const key = previewCacheKey(baseUrl, body);

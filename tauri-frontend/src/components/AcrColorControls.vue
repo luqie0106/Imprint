@@ -39,6 +39,7 @@ const config = computed(() => {
   return saved ?? getAcrColorConfig("");
 });
 const controlsDisabled = computed(() => !props.photoId || props.presetApplied);
+const photoHslSelected = computed(() => config.value.photo_hsl_source !== "none");
 const statusText = computed(() => {
   if (props.showingOriginal) return "原图：未应用";
   if (props.presetApplied) return "理光预设启用期间暂停";
@@ -59,6 +60,17 @@ function gradingIndex(channel: number) {
 function setEnabled(event: Event) {
   if (!props.photoId || props.presetApplied) return;
   config.value.enabled = (event.target as HTMLInputElement).checked;
+}
+
+function setPhotoHslSource(event: Event) {
+  const source = (event.target as HTMLSelectElement).value;
+  if (source !== "none" && source !== "embedded" && source !== "sidecar") return;
+  config.value.photo_hsl_source = source;
+  if (source !== "none") {
+    config.value.hsl_fragment = "none";
+    config.value.hsl = [...Array(24).fill(0), config.value.hsl[24]];
+  }
+  emit("change");
 }
 
 function reset() {
@@ -98,8 +110,17 @@ function reset() {
           <section class="min-w-0 rounded-lg bg-slate-50 p-2.5 dark:bg-zinc-800/70">
             <h3 class="mb-2 text-[11px] font-semibold">HSL</h3>
             <label class="mb-2 block min-w-0 text-[10px]">
+              <span class="mb-1 block">照片 HSL 来源（仅顶层）</span>
+              <select :value="config.photo_hsl_source" class="block w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-900" :disabled="controlsDisabled" aria-label="照片 HSL 来源" @change="setPhotoHslSource">
+                <option value="none">手动参数／显式片段</option>
+                <option value="embedded">照片内嵌 XMP · HSL24</option>
+                <option value="sidecar">同名侧车 XMP · HSL24</option>
+              </select>
+            </label>
+            <p v-if="photoHslSelected" class="mb-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">仅将选定 packet 的顶层 HSL24 用于本实验；不推断 Adobe 的最终 Profile。带 Look、灰度或来源不明确时拒绝预览。切换来源会清零手动 HSL24；自然饱和度和色轮仍用手动参数。</p>
+            <label class="mb-2 block min-w-0 text-[10px]">
               <span class="mb-1 block">Profile HSL 片段（CPU）</span>
-              <select v-model="config.hsl_fragment" class="block w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-900" :disabled="controlsDisabled" aria-label="Profile HSL 片段">
+              <select v-model="config.hsl_fragment" class="block w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-900" :disabled="controlsDisabled || photoHslSelected" aria-label="Profile HSL 片段">
                 <option value="none">关闭：仅手动 HSL</option>
                 <option value="modern03_hsl">Modern 03 · 仅 HSL 片段</option>
                 <option value="modern04_hsl">Modern 04 · 仅 HSL 片段</option>
@@ -118,8 +139,8 @@ function reset() {
               </select>
             </label>
             <label v-for="(channel, index) in hslChannels" :key="channel.label" class="mb-1.5 block min-w-0 text-[10px] last:mb-0">
-              <span class="flex min-w-0 justify-between gap-2"><span>{{ channel.label }}</span><span class="shrink-0 font-mono">{{ config.hsl[hslIndex(index)] }}</span></span>
-              <input v-model.number="config.hsl[hslIndex(index)]" class="app-range mt-0.5 block w-full min-w-0" type="range" :min="channel.min" :max="channel.max" :step="channel.step" :disabled="controlsDisabled" :aria-label="`HSL ${hslColors[selectedHslColor]} ${channel.label}`" />
+              <span class="flex min-w-0 justify-between gap-2"><span>{{ channel.label }}</span><span class="shrink-0 font-mono">{{ photoHslSelected ? '由 XMP 提供' : config.hsl[hslIndex(index)] }}</span></span>
+              <input v-model.number="config.hsl[hslIndex(index)]" class="app-range mt-0.5 block w-full min-w-0" type="range" :min="channel.min" :max="channel.max" :step="channel.step" :disabled="controlsDisabled || photoHslSelected" :aria-label="`HSL ${hslColors[selectedHslColor]} ${channel.label}`" />
             </label>
             <label class="mt-2 block min-w-0 text-[10px]">
               <span class="flex min-w-0 justify-between gap-2"><span>自然饱和度</span><span class="shrink-0 font-mono">{{ config.hsl[24] }}</span></span>

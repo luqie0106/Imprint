@@ -70,7 +70,9 @@ from auto_exposure import apply_auto_exposure, estimate_auto_exposure
 from dehaze_physical import apply_physical_dehaze, get_last_physical_backend
 from native_renderer import (
     NativeRendererError, _float_range_valid, get_native_status, get_native_physical_status, native_basic, native_ricoh,
+    native_acr_profile_hsl_controls, native_acr_quantize_profile_gain_scalar,
 )
+from acr_photo_hsl import PhotoHslError, inspect_photo_hsl
 from native_sort import get_native_sort_status
 from dng_writer import write_enhanced_dng, write_linear_dng
 from camera_profile import (
@@ -338,6 +340,38 @@ class EnhanceSessionRequest(BaseModel):
     input_dir: str = ""
 
 
+class AcrPhotoHslInspectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_id: str
+    photo_id: str
+    packet_source: Literal["embedded", "sidecar"]
+
+
+def _photo_hsl_monochrome(camera_profile: str) -> bool:
+    # 1297638 strips exactly one case-sensitive Group prefix. 78abb0 uses
+    # ASCII-insensitive prefix matching, not the Look's display Name.
+    name = camera_profile
+    if len(name.encode("utf-8")) > 7 and name.startswith("Group: "):
+        name = name[7:]
+    name = name.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+    return name.startswith((
+        "camera monochrome", "camera l monochrome", "camera monotone",
+        "camera hard monotone", "camera soft monotone", "camera acros",
+        "camera bw", "camera leica monochrome", "camera flat monochrome",
+        "camera deep tone monochrome",
+    ))
+
+
+def _photo_hsl_preview_error(exc: PhotoHslError) -> JSONResponse:
+    if exc.code == "consumer_state_unbound":
+        message = "选定 XMP 含 Look；其最终消费状态尚未绑定，未应用照片 HSL 预览"
+    elif exc.code == "color_hsl_required":
+        message = "选定 XMP 为灰度或单色设置，当前彩色 HSL 实验不支持"
+    else:
+        message = "选定 XMP 不满足严格读取条件，未应用照片 HSL 预览"
+    return JSONResponse(status_code=422, content={"error": message, "reason": exc.code})
+
+
 class AcrColorPreviewRequest(BaseModel):
     enabled: bool = False
     profile_tone: bool = True
@@ -345,11 +379,16 @@ class AcrColorPreviewRequest(BaseModel):
     grading: list[float] = Field(default_factory=lambda: [0.0] * 12 + [50.0, 0.0])
     hsl_fragment: Literal["none", "modern03_hsl", "modern04_hsl", "vintage07_hsl"] = "none"
     hsl_fragment_amount: float = Field(default=1.0, ge=0.0, le=2.0)
+    photo_hsl_source: Literal["none", "embedded", "sidecar"] = "none"
 
     @model_validator(mode="after")
     def validate_fragment_current(self):
         if self.hsl_fragment != "none" and any(value != np.trunc(value) for value in self.hsl[:24]):
             raise ValueError("HSL 片段合并要求前 24 个 HSL 参数为整数")
+        if self.photo_hsl_source != "none" and (
+            self.hsl_fragment != "none" or any(value != 0 for value in self.hsl[:24])
+        ):
+            raise ValueError("照片 HSL 来源不能与手动 HSL24 或片段同时使用")
         return self
 
     @field_validator("hsl")
@@ -411,10 +450,28 @@ class EnhancePreviewRequest(BaseModel):
     ricoh_preset_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
-def _effective_acr_color(req: EnhancePreviewRequest) -> dict[str, Any] | None:
+def _effective_acr_color(req: EnhancePreviewRequest, path: Path | None = None) -> dict[str, Any] | None:
     if req.mode != "dehazed" or not req.acr_color.enabled:
         return None
-    return req.acr_color.model_dump()
+    color = req.acr_color.model_dump()
+    if color["photo_hsl_source"] != "none":
+        if path is None:
+            raise PhotoHslError("photo_unavailable")
+        snapshot = inspect_photo_hsl(path, color["photo_hsl_source"])
+        # Missing Look in a disk packet does NOT prove a null Adobe consumer.
+        # This opt-in path copies only top-level HSL controls into our existing
+        # experiment. Any explicit Look needs an as-yet-unbound Prepare path.
+        if snapshot["look"] is not None:
+            raise PhotoHslError("consumer_state_unbound")
+        name = snapshot["current_camera_profile"]
+        # No Look gate is inferred here. These are explicitly imported current
+        # controls for our independently validated camera-profile experiment.
+        # A present monochrome name/gray flag contradicts its color-only scope.
+        if snapshot["current_convert_to_gray"] or (name and _photo_hsl_monochrome(name)):
+            raise PhotoHslError("color_hsl_required")
+        color["hsl"] = [*snapshot["current24"], color["hsl"][24]]
+        color["photo_hsl_identity"] = (snapshot["version"], snapshot["packet_sha256"])
+    return color
 
 
 def _acr_color_cache_identity(acr_color: Mapping[str, Any] | None) -> tuple | None:
@@ -426,6 +483,8 @@ def _acr_color_cache_identity(acr_color: Mapping[str, Any] | None) -> tuple | No
         tuple(float(value) for value in acr_color.get("grading", ())),
         acr_color.get("hsl_fragment", "none"),
         float(acr_color.get("hsl_fragment_amount", 1.0)),
+        acr_color.get("photo_hsl_source", "none"),
+        acr_color.get("photo_hsl_identity"),
     )
 
 
@@ -1790,7 +1849,8 @@ def _invalidate_full_resolution_export_source(
 
 def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
                                   params: DehazeParams, backend: str,
-                                  profile: Any = None, exposure_ev: float = 0.0
+                                  profile: Any = None, exposure_ev: float = 0.0,
+                                  acr_color_snapshot: Mapping[str, Any] | None = None,
                                   ) -> tuple[np.ndarray, tuple, bool, str]:
     """Called under the full-preview lock; cache a single immutable RGB8 base."""
     _assert_preview_current(req)
@@ -1802,7 +1862,8 @@ def _full_resolution_display_base(req: EnhancePreviewRequest, path: Path,
             and _FULL_RESOLUTION_ACTIVE_SOURCE_IDENTITY != full_export_identity):
         _clear_previous_full_resolution_decoded_source(req.session_id, req.photo_id)
         _clear_full_resolution_preview_caches()
-    effective_acr_color = _effective_acr_color(req)
+    effective_acr_color = (acr_color_snapshot if acr_color_snapshot is not None
+                           else _effective_acr_color(req, path))
     key = (*source_identity,
            DEHAZE_ALGORITHM_VERSION, AUTO_EXPOSURE_ALGORITHM_VERSION,
            LENS_PREVIEW_VERSION, tuple(params.__dict__.items()), req.algorithm, req.auto_mode,
@@ -2867,6 +2928,50 @@ def get_enhance_photo_metadata(session_id: str, photo_id: str):
     return metadata
 
 
+@app.post("/api/enhance/acr-hsl")
+def inspect_enhance_photo_hsl(req: AcrPhotoHslInspectRequest):
+    """Inspect one explicit packet, never claim a final Adobe consumer binding."""
+    with _ENHANCE_LOCK:
+        path = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
+    if path is None or not Path(path).is_file():
+        return JSONResponse(status_code=404, content={"error": "照片会话或照片已失效"})
+    try:
+        snapshot = inspect_photo_hsl(Path(path), req.packet_source)
+        look = snapshot["look"]
+        local_merge = None
+        reason = "no_explicit_look"
+        if look is not None:
+            # The loader scalar is quantized in C++, but it is NOT presented as
+            # consumption-time P+b60. The original parsed value stays in look.
+            scalar = native_acr_quantize_profile_gain_scalar(look["amount"])
+            name = look["camera_profile"]
+            reason = "camera_profile_unbound"
+            if name is not None:
+                values, mask, _ = native_acr_profile_hsl_controls(
+                    snapshot["current24"], look["defaults24"], scalar,
+                    monochrome_profile=_photo_hsl_monochrome(name),
+                    convert_to_gray=int(look["convert_to_gray"]),
+                )
+                local_merge = {"values24": values.tolist(), "wrote_mask": mask,
+                               "quantized_loader_amount": scalar,
+                               "scope": "metadata_projection_only"}
+                reason = "consumer_state_unbound"
+        result = {**snapshot, "local_merge": local_merge, "local_merge_reason": reason}
+    except PhotoHslError as exc:
+        return JSONResponse(status_code=422, content={
+            "error": "照片 HSL 元数据不满足当前严格读取条件", "reason": exc.code,
+        })
+    except NativeRendererError:
+        return JSONResponse(status_code=503, content={"error": "本机 ACR CPU 算子不可用"})
+    except Exception:
+        return JSONResponse(status_code=422, content={"error": "读取照片 HSL 元数据失败"})
+    with _ENHANCE_LOCK:
+        current = _ENHANCE_SESSIONS.get(req.session_id, {}).get("files", {}).get(req.photo_id)
+    if current != path:
+        return JSONResponse(status_code=404, content={"error": "照片会话或照片已失效"})
+    return JSONResponse(content=result, headers={"Cache-Control": "private, no-store"})
+
+
 @app.post("/api/enhance/xmp")
 def save_enhance_session_xmp(req: EnhanceXmpRequest):
     with _ENHANCE_LOCK:
@@ -2971,7 +3076,6 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             status_code=422,
             content={"error": "ACR 颜色实验目前不支持同时使用理光预设"},
         )
-    effective_acr_color = _effective_acr_color(req)
     params = req.params.to_params()
     dehaze_values = tuple((key, float(value)) for key, value in params.__dict__.items())
     basic = req.basic_params.values()
@@ -2985,6 +3089,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             return JSONResponse(status_code=400, content={"error": "未知的理光预设"})
     try:
         _assert_preview_current(req)
+        effective_acr_color = _effective_acr_color(req, Path(path))
         profile_resolver = resolve_acr_profile if effective_acr_color is not None else resolve_profile
         should_prepare_concurrently = False
         if not req.full_resolution and req.mode == "dehazed":
@@ -3032,6 +3137,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                      profile.fingerprint if profile is not None else None,
                      _acr_color_cache_identity(effective_acr_color),
                      tuple(basic[key] for key in sorted(basic)))
+    except PhotoHslError as exc:
+        return _photo_hsl_preview_error(exc)
     except Exception as exc:
         if isinstance(exc, _PreviewSuperseded):
             return Response(status_code=204)
@@ -3055,7 +3162,8 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 content=payload,
                 media_type="image/jpeg",
                 headers={
-                    "Cache-Control": "private, max-age=3600",
+                    "Cache-Control": ("private, no-store" if req.acr_color.photo_hsl_source != "none"
+                                      else "private, max-age=3600"),
                     "X-Image-Width": str(width),
                     "X-Image-Height": str(height),
                     "X-Dehaze-Nonlocal-Status": nonlocal_status,
@@ -3124,6 +3232,7 @@ def create_enhance_preview(req: EnhancePreviewRequest):
                 else:
                     display, preview_status, hit, decode_hit = _full_resolution_display_base(
                         req, Path(path), params, render_mode,
+                        acr_color_snapshot=effective_acr_color,
                         **({"profile": profile, "exposure_ev": basic["exposure"]} if profile is not None else {}),
                     )
                     nonlocal_status, nonlocal_reason, auto_exposure_ev, auto_exposure_reason = preview_status[:4]
@@ -3229,7 +3338,9 @@ def create_enhance_preview(req: EnhancePreviewRequest):
             content=payload,
             media_type="image/jpeg",
             headers={
-                "Cache-Control": "private, no-store" if req.full_resolution else "private, max-age=3600",
+                "Cache-Control": ("private, no-store" if req.full_resolution
+                                  or req.acr_color.photo_hsl_source != "none"
+                                  else "private, max-age=3600"),
                 **preview_headers,
                 "X-Image-Width": str(width),
                 "X-Image-Height": str(height),

@@ -7,6 +7,7 @@ export interface AcrColorConfig {
   grading: number[];
   hsl_fragment: "none" | "modern03_hsl" | "modern04_hsl" | "vintage07_hsl";
   hsl_fragment_amount: number;
+  photo_hsl_source: "none" | "embedded" | "sidecar";
 }
 
 export type AcrColorRenderStatus = "off" | "applied" | "fallback";
@@ -21,6 +22,7 @@ export function createDefaultAcrColorConfig(): AcrColorConfig {
     grading: [...Array(12).fill(0), 50, 0],
     hsl_fragment: "none",
     hsl_fragment_amount: 1,
+    photo_hsl_source: "none",
   };
 }
 
@@ -32,6 +34,7 @@ export function cloneAcrColorConfig(config: AcrColorConfig): AcrColorConfig {
     grading: [...config.grading],
     hsl_fragment: config.hsl_fragment ?? "none",
     hsl_fragment_amount: config.hsl_fragment_amount ?? 1,
+    photo_hsl_source: config.photo_hsl_source ?? "none",
   };
 }
 

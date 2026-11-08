@@ -180,3 +180,60 @@ PyInstaller已加入新模块，现有macOS/Windows CMake流程会构建新CPU�
 
 上述是可用的Profile HSL局部功能交付，不是实际照片自动Look选择或完整高光
 链完成；GPU分析与“CPU整体完成”提交条件仍未满足。
+
+## 2026-11-08：真实照片 XMP HSL 读取与限定预览
+
+正式新增 `src/acr_photo_hsl.py`，将已恢复的字段规则用于**明确选择的单个照片
+packet**，不复用首个 Description 或递归搜索的宽松语义。顶层 current24 与
+`Look/Parameters` defaults24 分开；缺项分别投影为0与−999999，显式0有效。
+category7关闭先置0，nested gray再置sentinel。整数、bool和结构不在支持子集
+时明确拒绝，不吞成“缺少Look”。该模块不执行Adobe Prepare或资源查找。
+
+新增会话限定 `POST /api/enhance/acr-hsl`，只接受 session_id、photo_id、
+packet_source=`embedded|sidecar`，不接受路径。它可返回白名单HSL字段和局部
+native合并：Amount使用既有C++百分位量化，defaults/current使用既有C++合并；
+返回始终包含 `consumer_bound=false`。这个量化值是loader投影，**不是已经证明的
+消费时P+b60**。CameraProfile缺失时不猜单色谓词、不计算local_merge。
+
+用户可验证入口：两个编辑页 → ACR CPU颜色实验 → **照片HSL来源（仅顶层）**。
+可明确选择内嵌或同名侧车XMP，只将top-level HSL24送入既有CPU像素算子；
+自然饱和度、色轮仍由现有手动参数提供，导出和XMP写入不变。
+带显式Look的packet全部拒绝像素应用，灰度/明确单色设置同样拒绝。缺少磁盘
+Look不推导Adobe消费时null pair；该入口只是本实验的显式current-controls导入。
+两份来源不自动合并、不推断优先级，不使用UUID/key相等来认证实际选中资源。
+
+照片来源模式禁止同时手动HSL24或片段；切入该模式会清零手动HSL24，界面显示
+“由XMP提供”。backend每请求只读一次快照，低/全分辨率显示缓存均带来源、
+解析版本和原始packet SHA；前端绕过此模式的blob缓存，避免阻止后端检查XMP
+变动，HTTP使用no-store。原图/关闭模式不读packet，默认仍为手动模式。
+
+安全与打包：只读，源文件/侧车读取前后检查stat身份；4MiB上限、UTF8、禁止
+DTD/entity、重复/复杂scalar/多顶层Description拒绝。仅embedded允许实图的
+精确subject标签 `DJI Meta Data`，不允许任意非空subject或URI。PyInstaller已
+包含新模块；无需新增依赖，现有CI的`src/*.py`哈希覆盖它，未改全局环境。
+
+实际验证与限制：
+
+- 新模块/API/现有HSL路由一组 **364 passed**；跨模块一组 **221 passed**，
+  两组有重叠。覆盖scope、sentinel、非法字段、失败不使用旧缓存、来源互斥、
+  native失败不退回近似公式、同请求快照及低/全分辨率缓存失效。
+- 前端类型检查与生产构建成功；非GPU CTest **31/31**。两个编辑页有/无溢出，
+  stable与auto回退均测，卡片/滑块/直方图/select左右差异0 CSS px。
+- 四张RAW的8份packet请求：6份成功读取，2份Nikon内嵌packet因多顶层
+  Description明确422。DJI0523的内嵌current有**11槽非零**（此前摘要误计10），
+  nested defaults全部sentinel、局部native wrote_mask=0；带Look像素请求422。
+- DJI0539与LCR1132侧车导入各完成真实/重复/同控件手动请求，JPEG逐byte相同、
+  后端cpp_cpu_acr；两份实际侧车HSL均全零，**不是非零实图效果证明**。另真实
+  浏览器连接DJI0539后端显示照片与“已应用”，与UI fixture布局截图分开保存。
+- LCR9472侧车可读取，但现有相机Profile不可用，预览422；未绕过resolver。
+  8个RAW/sidecar、85张既有TIFF指纹保持，native库SHA保持上个检查点。未改DNG或导出流程。
+- 最终全量pytest实际 **5605 passed、5 failed**（150.02秒）；仍为前述五项断言，
+  没有改弱、跳过或顺手修改它们。不能称全量通过。
+
+本轮静态复核仅复用缓存与原指令：3,068个word匹配固定切片，新反编译0、
+新反汇编0；`b657dc:mov x2,0`、`b657e0:mov w3,0`接`b657e4:b67ef0`，
+IDs43–66的version分支均为true、准入均转mono/gray分支。后续Look替换、默认
+安装以及消费时Amount仍未闭合，不能将该局部数据导入称为真实自动Profile→HSL。
+证据：`research/acr/reports/evidence/2026-11-08-photo-hsl-product/`。
+完整高光Stage4/Camera/EV90/epsilon同请求绑定与最终高光TIFF回归仍未完成；
+GPU分析/实现未开始。
