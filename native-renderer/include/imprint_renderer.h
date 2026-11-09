@@ -771,6 +771,23 @@ IMPRINT_API im_status im_native_acr_source_stage3_geometry_normalize(
     const im_acr_source_stage3_geometry *input,
     im_acr_source_stage3_geometry *output);
 
+/* b69664 Basic-slot prefix only, before curve/collection/header normalization.
+   current[132] is int32 Basic ID order; header[16] is the byte snapshot P+4..13
+   (hex offsets). For mapped IDs 18..118, a zero group byte writes that ID's
+   mode-2 default; any nonzero byte preserves the input. Other IDs, including
+   ToneMapStrength 129 and ProfileGainTableMap 130, are not defaulted here.
+   HSL IDs 43..66 all use header[7] (P+b). No sentinel fill, Look/Amount merge,
+   profile selection, full Prepare, Stage4 inference or pixel processing.
+   Counts must be exactly 132,16,132,5. reset_mask has one bit per Basic ID,
+   marking an executed store even if unchanged; unused bits 132..159 are zero.
+   All four buffers must be pairwise disjoint; int32/uint32 buffers aligned.
+   Invalid spans/counts leave both destination and reset_mask unchanged. */
+IMPRINT_API im_status im_native_acr_basic_flag_slots(
+    const int32_t *current, size_t current_count,
+    const uint8_t *header, size_t header_count,
+    int32_t *destination, size_t destination_count,
+    uint32_t *reset_mask, size_t mask_count);
+
 /* Explicit prepared, complete zero-origin log-guide -> local delta mask.
    This does not decode RAW, build Camera/Stage4/EV90 inputs, infer epsilon,
    select an Adobe request, or apply final Highlights/Shadows to RGB.

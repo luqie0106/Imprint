@@ -171,7 +171,9 @@ struct GuideLocalMaskResult {
 // are tested as nonzero, not bit0. Level tokens model source+678 and
 // source+798..7b8; they are opaque and never dereferenced. No pixels/bounds or
 // Stage4 format are inferred from them. A profile-bearing input must first
-// execute the unresolved clone/Prepare/recursive branch and be resnapshotted.
+// execute clone/Prepare (including the conditional b93244 Look consumer), and
+// be resnapshotted at the recursive entry. b69664's Basic flag-slot prefix
+// alone is not that full preparation; original caller flags are not reused.
 struct GuideSourceLevelInput {
     bool profile_pair_present = false;
     std::uint8_t field_ad9 = 0;

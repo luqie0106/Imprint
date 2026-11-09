@@ -27,13 +27,16 @@ Imprint的去朦胧、理光页面右侧有 **ACR CPU 颜色实验**：
 
 - `acr_guide_camera_black.hpp/.cpp`：prepared Camera→black/pin→固定灰度/
   条件EV90/log→local mask组合，失败原子提交；完整零原点图像、显式
-  boundary mode2。source level选择、独立base cache槽、transfer分类分别处理。
+  boundary mode2/4。source level选择、独立base cache槽、transfer分类分别处理。
 - `acr_tone_kernels.cpp`：保存指令确定的灰度FMA、raw分位数/分组统计、
   Gaussian权重和横纵求和顺序、ceil remap采样和sigma；统一内部统计层。
 - `acr_profile_hsl_controls.hpp/.cpp`：Profile/current HSL24非线性控制
   合并，显式解析好的单色predicate/灰度byte、完整int32输入、skip/wrote mask。
   正式ABI和Python `native_acr_profile_hsl_controls`可调用，尚未自动从
   真实Profile元数据生成这些控制输入。
+- `acr_basic_flag_slots.hpp/.cpp`：`b69664` 的132槽flag-reset前缀，正式ABI
+  与Python `native_acr_basic_flag_slots` 可调用。仅零group byte写mode2默认，
+  非零保留；不包含后续header/curve、sentinel与Look消费，详见本日附录。
 
 不能把上述prepared输入合同称为实际Stage4身份证明，或把各局部helper
 相加当作完成原调度器。Profile合并可直接改写ToneMapStrength；仍需跟踪
@@ -89,10 +92,12 @@ ctest --test-dir native-renderer/build --output-on-failure -E native_renderer_gp
 
 ## 剩余目标
 
-真实source/Stage4/Camera/EV90/epsilon的同请求绑定、profile递归与其余
-Prepare effects、跨source层mask、mode4、非零原点/ROI、完整BuildStats
+真实source/Stage4/Camera/EV90/epsilon的同请求绑定、profile准备与其余
+Prepare effects、跨source层mask、非零原点/ROI、完整BuildStats
 及最终高光联动尚未闭合。现有fixture目录未找到带可信controls记录的
 Profile切换或基础Highlights2012成对样本；高光色轮TIFF不是基础高光样本。
+mode4 prepared算子已完成；profile递归的局部正常返回边界见本日附录，
+仍不是完整Prepare成功终止或真实请求绑定。
 当前CPU检查点不代表整体目标完成，也没有启动GPU pipeline分析。
 
 ## 2026-11-08 继续：DNG 源白点绑定
@@ -307,3 +312,73 @@ delta, diagnostics = native_acr_guide_mask_prepared(
 **完成的是mode4 prepared算子，不是完整CPU高光验收。** 真实source/Stage4、
 guide默认Profile/Camera、EV90/epsilon同请求绑定、非零原点/ROI、跨层mask和
 最终高光TIFF仍未完成；没有据此开始GPU分析或实现。
+
+## 2026-11-09 继续：Prepare 的 Basic flag-reset 前缀
+
+沿 `db01a4 → b757d0 → b69664/b93244` 复用旧缓存/原指令，新增正式
+`native-renderer/src/acr_basic_flag_slots.hpp/.cpp`、安全ABI与
+`src/native_renderer.py:native_acr_basic_flag_slots`。这不是重复mode4工作。
+
+恢复范围仅为 `b69664:b69684..b696c8` 的132槽前缀：
+
+- 输入是132个int32 Basic槽，以及实际参数头 `P+4..13`（十六进制）的16字节。
+- IDs18..118按九组读取对应byte；**恰为0**才写 `b5df18(ID,2)` 默认值，
+  1..255一律保留。不是只认1，也不先clamp或把sentinel当特殊情况。
+- HSL IDs43..66全部读取 `header[7] = P+b`；为0时24槽写0。前缀不会清
+  后续独立Look的defaults，后续合并仍可产生非零HSL。
+- ID129 ToneMapStrength、ID130 ProfileGainTableMap没有此flag映射，原样保留，
+  包括sentinel；**不是证明它们在完整Prepare里不变**。后续sentinel/Look writer
+  仍须单独执行，不能用本前缀将最终guide sigma设为0。
+- 返回5个uint32的store mask，即使写入值相同也记录；高28个unused bits为0。
+  原header不修改；后面的curve/vector/header置1不在这个入口里。
+
+```python
+from native_renderer import native_acr_basic_flag_slots
+
+# current: int32 shape(132,)，header: uint8 shape(16,)，均为显式参数快照。
+values, reset_mask = native_acr_basic_flag_slots(current, header)
+```
+
+这是正式Python→C ABI→C++入口，无Python算术fallback；未将照片XMP缺失字段
+猜成header，未改变两个编辑页当前HSL行为，也未启用不完整高光。
+ABI检查精确counts、null/alignment/地址回绕及四个buffer两两重叠；所有非法
+输入都在读取前拒绝，并保持两个输出。Python可接strided/unaligned/read-only
+数组，输入相互共享时建立分离快照，不触碰原数组。
+
+递归边界的新局部核对：保守普通CFG验证 `b757d0` 正常返回必过末尾 `P+b50`
+检查；非空则进入 `b93244`，其正常非空返回必经merge、pair clear和Amount=1。
+在**常规独立参数/owner对象、clear后无隐藏回写**协议下，`db0218` 的递归
+入口读到空pair，进入直接选层；限定的是显式 `db01a4` 递归，不是内部
+`b83674` 递归的终止保证。选层仍读取准备后副本的ad9/adb，不能复用原caller。
+`b75454` 仍能重新准备/安装Profile；未证明其最终字段和像素来源。
+
+实际验证（本轮新库）：
+
+- 六份既有指令文件共638个唯一word匹配固定切片；新反编译0，新反汇编0。
+  保留原前缀及原mapping/default leaves，6处显式call/literal重定位，人工
+  epilogue停在前缀末尾；链接后81个保留word再次匹配。
+- 原前缀5,120组完整内存对照，15,073,280字节一致。正式ABI与原前缀另做
+  5,120组：**675,840槽及全部store mask一致**。
+- 新算子/组合与HSL/guide边界定向 **573 passed**；不重叠的guide组件
+  **276 passed**；最终合并重跑 **849 passed**。CPU CTest **33/33**。
+  ASan/UBSan组件及ABI检查通过、stderr空，
+  macOS leak detector关闭。CMake、py_compile和diff检查通过。
+- 70组已有HSL TIFF：明确synthetic header保留路径经过新前缀及零defaults
+  merge后，与直接HSL **1,260,000像素逐bit一致**；清零路径另1,260,000像素
+  等于identity。Hue/Saturation/Luminance平均ΔE76保持
+  `0.0476400241344 / 0.0478528321362 / 0.0510153126009`。
+- 13组色轮TIFF新库回归平均ΔE76保持 `0.0100741159024`。这些不是完整
+  Prepare/照片Profile联动或基础高光等价证明，未拟合参数。
+- 四RAW两来源检查和预览接受/拒绝结果保持；DJI0539/LCR1132的已有六次预览
+  响应hash保持。8个RAW/sidecar及85张TIFF指纹保持，未写照片。
+- 全量pytest实际 **6301 passed、5 failed**（163.10秒），仍是同五项断言，
+  没有删除、跳过或弱化测试。新库SHA-256：
+  `7fe7e3be1ec6981bf7a93f29ad07225c60e03b9607fe36b2e542d58e4460f6cf`。
+
+打包/依赖配置已核，无新依赖，无需改PyInstaller收集；未重打安装包、未测
+Windows实机。持久证据：
+`research/acr/reports/evidence/2026-11-09-basic-flag-slots/`。
+
+**下一缺口仍是同请求绑定**：实际递归后ad9/adb、`b75454` 最终状态以及对应
+Stage4/Camera/EV90/epsilon。当前结果只闭合并实现其中一段确定的前置算子，
+不据此声称完整高光已完成，不启动GPU。

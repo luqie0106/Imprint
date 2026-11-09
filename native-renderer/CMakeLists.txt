@@ -77,6 +77,8 @@ set(IMPRINT_RENDERER_SOURCES
     src/acr_profile_gain_control130.cpp
     src/acr_profile_gain_control130_api.cpp
     src/acr_profile_hsl_controls.cpp
+    src/acr_basic_flag_slots.cpp
+    src/acr_basic_flag_slots_api.cpp
     src/acr_profile_hsl_controls_api.cpp
     src/acr_profile_hsl_pixels.cpp
     src/acr_profile_gain_scalar.cpp
@@ -358,6 +360,16 @@ if(BUILD_TESTING)
         target_compile_options(imprint_acr_guide_mode4_test PRIVATE -fno-fast-math -ffp-contract=off)
     endif()
     add_test(NAME native_acr_guide_mode4_validation COMMAND imprint_acr_guide_mode4_test)
+
+    add_executable(imprint_acr_basic_flag_slots_test
+        tools/acr_basic_flag_slots_validation.cpp
+        src/acr_basic_flag_slots.cpp
+        src/acr_basic_flag_slots_api.cpp
+    )
+    target_compile_features(imprint_acr_basic_flag_slots_test PRIVATE cxx_std_17)
+    target_include_directories(imprint_acr_basic_flag_slots_test PRIVATE include src)
+    target_compile_definitions(imprint_acr_basic_flag_slots_test PRIVATE IMPRINT_RENDERER_BUILD)
+    add_test(NAME native_acr_basic_flag_slots_validation COMMAND imprint_acr_basic_flag_slots_test)
 
     add_library(imprint_dehaze_reference_test SHARED
         tests/dehaze_reference_bridge.cpp

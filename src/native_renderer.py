@@ -2632,6 +2632,47 @@ def native_acr_prepare_black_response(
     return output
 
 
+def native_acr_basic_flag_slots(
+    current: np.ndarray, header: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run only Prepare's b69664 132-slot flag reset prefix in C++.
+
+    ``header`` is the actual P+4..13 (hex) byte snapshot, not UI booleans.
+    Returns values and a five-word store mask. HSL uses header[7]; unmapped
+    ID129 is retained, including a sentinel that later Prepare may resolve.
+    Does not normalize the remaining header/curves, consume a Look, select a
+    Profile, or bind any of these fields to the photo/guide pixel request.
+    """
+    if (not isinstance(current, np.ndarray) or current.dtype != np.int32
+            or current.shape != (132,)):
+        raise ValueError("Basic flag slots require an int32 array of 132 values")
+    if (not isinstance(header, np.ndarray) or header.dtype != np.uint8
+            or header.shape != (16,)):
+        raise ValueError("Basic flag slots require a uint8 array of 16 header bytes")
+    values = np.require(current, requirements=["C", "A"])
+    flags = np.require(header, requirements=["C", "A"])
+    # The raw ABI requires disjoint input spans as well as separate outputs.
+    if np.shares_memory(values, flags):
+        flags = flags.copy()
+    output, reset_mask = np.empty(132, np.int32), np.empty(5, np.uint32)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_basic_flag_slots", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide Basic flag slots")
+    ip, bp, up = (ctypes.POINTER(t) for t in (ctypes.c_int32, ctypes.c_uint8, ctypes.c_uint32))
+    function.argtypes = [ip, ctypes.c_size_t, bp, ctypes.c_size_t,
+                         ip, ctypes.c_size_t, up, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    status = function(values.ctypes.data_as(ip), values.size, flags.ctypes.data_as(bp), flags.size,
+                      output.ctypes.data_as(ip), output.size,
+                      reset_mask.ctypes.data_as(up), reset_mask.size)
+    if status == 1:
+        raise ValueError("Native Basic flag slots rejected the input snapshot")
+    if status:
+        raise NativeRendererError(f"Native Basic flag slots failed (status {status})")
+    return output, reset_mask
+
+
 def native_acr_guide_mask_prepared(
     log_guide: np.ndarray, epsilon: float, *, sigma_mode: int, boundary_mode: int,
 ) -> tuple[np.ndarray, np.ndarray]:
