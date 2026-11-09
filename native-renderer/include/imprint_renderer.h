@@ -771,6 +771,23 @@ IMPRINT_API im_status im_native_acr_source_stage3_geometry_normalize(
     const im_acr_source_stage3_geometry *input,
     im_acr_source_stage3_geometry *output);
 
+/* Explicit prepared, complete zero-origin log-guide -> local delta mask.
+   This does not decode RAW, build Camera/Stage4/EV90 inputs, infer epsilon,
+   select an Adobe request, or apply final Highlights/Shadows to RGB.
+   Finite float32 HxW, >=2 and <=2^26 pixels, each axis <=65535.
+   source_epsilon is explicit, in (0,2^-12], nonzero as float; sigma_mode=0..2.
+   boundary_mode=2 is ordinary; 4 runs two half-swapped passes plus horizontal
+   blend when width>=2, otherwise ordinary. No other boundary modes supported.
+   Both sample counts equal width*height. Diagnostics are exactly 20 doubles:
+   source, pre-alignment mask, aligned mask stats, six each ordered
+   [center, low, high, median, effective_count, fallback(0/1)], then sigma and
+   statistics_level. Mode4 stats come from the second pass, not the blend.
+   All buffers aligned, nonoverlapping, and unchanged on failure. */
+IMPRINT_API im_status im_native_acr_guide_mask_prepared_f32(
+    uint32_t width, uint32_t height, const float *log_guide, size_t source_count,
+    double source_epsilon, uint32_t sigma_mode, uint32_t boundary_mode,
+    float *delta, size_t destination_count, double *diagnostics, size_t diagnostic_count);
+
 /* Recovered CPU tone subset on two prepared float32 RGB images of identical
    geometry. guide_rgb is the domain entering MakeGrayLog after camera and
    earlier preparation; tone_rgb is the domain at the enabled tone stage.

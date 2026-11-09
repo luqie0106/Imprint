@@ -101,6 +101,7 @@ set(IMPRINT_RENDERER_SOURCES
     src/acr_buffer_format_api.cpp
     src/acr_pipe_format.cpp
     src/acr_guide_camera_black.cpp
+    src/acr_guide_mask_api.cpp
     src/acr_camera_combined.cpp
     src/acr_camera_combined_api.cpp
     src/acr_postcamera_black.cpp
@@ -340,6 +341,23 @@ if(BUILD_TESTING)
     target_include_directories(imprint_acr_profile_hsl_pixels_test PRIVATE src)
     target_link_libraries(imprint_acr_profile_hsl_pixels_test PRIVATE imprint_renderer)
     add_test(NAME native_acr_profile_hsl_pixels_validation COMMAND imprint_acr_profile_hsl_pixels_test)
+
+    # Internal prepared mode4 guide-mask operator. No Adobe source identity or
+    # final Highlights mapping is inferred from the synthetic test buffers.
+    add_executable(imprint_acr_guide_mode4_test
+        tools/acr_guide_mode4_validation.cpp
+        src/acr_tone_kernels.cpp
+        src/acr_guide_mask_api.cpp
+    )
+    target_compile_features(imprint_acr_guide_mode4_test PRIVATE cxx_std_17)
+    target_include_directories(imprint_acr_guide_mode4_test PRIVATE include src)
+    target_compile_definitions(imprint_acr_guide_mode4_test PRIVATE IMPRINT_RENDERER_BUILD)
+    if(MSVC)
+        target_compile_options(imprint_acr_guide_mode4_test PRIVATE /fp:strict)
+    else()
+        target_compile_options(imprint_acr_guide_mode4_test PRIVATE -fno-fast-math -ffp-contract=off)
+    endif()
+    add_test(NAME native_acr_guide_mode4_validation COMMAND imprint_acr_guide_mode4_test)
 
     add_library(imprint_dehaze_reference_test SHARED
         tests/dehaze_reference_bridge.cpp

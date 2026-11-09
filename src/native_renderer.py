@@ -2632,6 +2632,61 @@ def native_acr_prepare_black_response(
     return output
 
 
+def native_acr_guide_mask_prepared(
+    log_guide: np.ndarray, epsilon: float, *, sigma_mode: int, boundary_mode: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Prepared log-guide -> delta and 20 named-order diagnostics in C++ CPU.
+
+    Requires the actual prepared log domain and explicit source epsilon. This
+    is not a RAW/highlights adapter and does not infer Stage4, Camera or EV90.
+    Boundary 4 uses two swapped passes; boundary 2 remains the ordinary path.
+    Diagnostics: three [center,low,high,median,count,fallback] blocks, sigma,
+    statistics_level. The complete 33-field Adobe BuildStats is not returned.
+    """
+    import operator
+
+    if (not isinstance(log_guide, np.ndarray) or log_guide.dtype != np.float32
+            or log_guide.ndim != 2 or log_guide.size < 2 or log_guide.size > (1 << 26)
+            or any(n <= 0 or n > 65535 for n in log_guide.shape)
+            or not np.isfinite(log_guide).all()):
+        raise ValueError("Guide mask requires a finite nonempty float32 HxW log plane")
+    try:
+        if (isinstance(epsilon, (bool, np.bool_))
+                or not isinstance(epsilon, (int, float, np.integer, np.floating))):
+            raise ValueError
+        source_epsilon = float(epsilon)
+        if (not math.isfinite(source_epsilon) or not 0 < source_epsilon <= 2.0**-12
+                or np.float32(source_epsilon) == 0):
+            raise ValueError
+        if any(isinstance(v, (bool, np.bool_)) for v in (sigma_mode, boundary_mode)):
+            raise ValueError
+        sigma, boundary = operator.index(sigma_mode), operator.index(boundary_mode)
+        if sigma not in (0, 1, 2) or boundary not in (2, 4):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Guide mask requires epsilon in (0,2^-12], sigma 0..2 and boundary 2/4") from exc
+    source = np.require(log_guide, requirements=["C", "A"])
+    output = np.empty_like(source)
+    diagnostics = np.empty(20, np.float64)
+    library, _ = _get_library()
+    function = getattr(library, "im_native_acr_guide_mask_prepared_f32", None)
+    if function is None:
+        raise NativeRendererError("Native library does not provide prepared guide masks")
+    fp, dp = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_double)
+    function.argtypes = [ctypes.c_uint32, ctypes.c_uint32, fp, ctypes.c_size_t,
+                         ctypes.c_double, ctypes.c_uint32, ctypes.c_uint32,
+                         fp, ctypes.c_size_t, dp, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    status = function(source.shape[1], source.shape[0], source.ctypes.data_as(fp), source.size,
+                      source_epsilon, sigma, boundary, output.ctypes.data_as(fp), output.size,
+                      diagnostics.ctypes.data_as(dp), diagnostics.size)
+    if status in (1, 4):
+        raise ValueError("Native guide mask rejected its prepared inputs")
+    if status:
+        raise NativeRendererError(f"Native guide mask failed (status {status})")
+    return output, diagnostics
+
+
 def native_acr_post_tone_stats_prepared(log_plane: np.ndarray, epsilon: float) -> np.ndarray:
     """Compute [p0.01%, p1%, p99%, high, population] in C++.
 

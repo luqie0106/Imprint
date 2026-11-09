@@ -152,8 +152,11 @@ struct GuideLocalMaskRequest {
     std::array<std::int32_t,4> bounds{};
     GuideGrayLogControls guide;
     int sigma_mode = 0;
-    // Resolved source+1600 (009e035c), independent of sigma mode. Require 2
-    // explicitly: 00a0855c's mode4 horizontal blend path is not implemented.
+    // Explicit resolved source+1600 (009e035c), independent of sigma mode:
+    // 2 is the ordinary pass; 4 adds the recovered swapped pass/horizontal
+    // blend only for width >=2. Width1 uses the ordinary pass for either.
+    // This prepared adapter does not infer the source value or Adobe's
+    // scheduler/tile traversal; only complete zero-origin guides are admitted.
     std::uint32_t boundary_mode = 0;
 };
 
@@ -210,6 +213,8 @@ GuideMaskTransfer classify_guide_mask_transfer(std::uint32_t cached_source_level
 // One prepared invocation owns both guide and mask: same bounds and epsilon,
 // statistics/collapse level, and a snapshot of the supplied controls. No
 // independently prepared log/stats/mask inputs can be mixed into this call.
+// Boundary4 preserves the second pass's statistics for delta/alignment; the
+// blended image is not restatted. Boundary2 remains the ordinary single pass.
 // It does not prove actual source/Stage4 identity, discover optional-stage
 // predicates, rescale a mask to another source level, or execute final SH.
 // Source is padded HWC as above, at least 2 pixels; result stays intact on

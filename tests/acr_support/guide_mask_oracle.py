@@ -31,7 +31,8 @@ def geometry(width,height):
     return levels,selected
 
 
-def reference(log,epsilon,mode):
+def full_bank_pass(log,epsilon,mode):
+    """One ordinary pass, retaining the selected collapse callback's stats."""
     log=np.asarray(log,np.float32)
     guide=pyramid(log)
     _,level=geometry(log.shape[1],log.shape[0])
@@ -65,6 +66,43 @@ def reference(log,epsilon,mode):
         collapsed=np.float32(resize(collapsed,bands[lev].shape)+bands[lev])
         if lev==level:second,_=selected_stats(collapsed.flat,epsilon)
     assert second is not None
+    return collapsed,first,second,s,level
+
+
+def swap_left_right(log,inverse=False):
+    log=np.asarray(log,np.float32)
+    width=log.shape[1]
+    assert width>=2
+    split=width//2 if inverse else (width+1)//2
+    return np.concatenate((log[:,split:],log[:,:split]),axis=1)
+
+
+def blend_horizontal(first,second):
+    first=np.asarray(first,np.float32)
+    second=np.asarray(second,np.float32)
+    assert first.shape==second.shape and first.shape[1]>=2
+    inverse=np.float32(np.float32(1)/np.float32(first.shape[1]-1))
+    output=np.empty_like(first)
+    for x in range(first.shape[1]):
+        t=np.clip(np.float32(np.float32(x)*inverse),np.float32(0),np.float32(1))
+        a=abs(fma32(t,np.float32(2),np.float32(-1)))
+        wide=float(a)
+        weight=np.float32((wide*wide)*LIBM.fma(-2.,wide,3.))
+        for y in range(first.shape[0]):
+            difference=np.float32(second[y,x]-first[y,x])
+            output[y,x]=fma32(weight,difference,first[y,x])
+    return output
+
+
+def reference(log,epsilon,mode,boundary=2):
+    log=np.asarray(log,np.float32)
+    if boundary not in (2,4):raise ValueError('unsupported boundary mode')
+    collapsed,first,second,s,level=full_bank_pass(log,epsilon,mode)
+    if boundary==4 and log.shape[1]>=2:
+        other,first,second,s,level=full_bank_pass(swap_left_right(log),epsilon,mode)
+        collapsed=blend_horizontal(collapsed,swap_left_right(other,inverse=True))
+    # Both stats objects are the second pass writes for boundary4. Neither
+    # the inverse permutation nor the final blend invokes another callback.
     aligned=list(second)
     shift=first[0]-second[0]
     for i in range(3):aligned[i]+=shift

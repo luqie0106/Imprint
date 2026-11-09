@@ -237,6 +237,46 @@ GrayImage resize_gray(const float *pixels, std::uint32_t width,
     return output;
 }
 
+GrayImage swap_left_right_gray(const float *pixels, std::uint32_t width,
+                               std::uint32_t height, bool inverse) {
+    const auto count = extent(width,height);
+    if (width < 2) throw std::invalid_argument("swap requires width >=2");
+    finite_pixels(pixels,count);
+    const auto shift = inverse ? width/2 : (width+1)/2;
+    GrayImage output{width,height,std::vector<float>(count)};
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const auto row = static_cast<std::size_t>(y)*width;
+        std::copy_n(pixels+row+shift,width-shift,output.pixels.data()+row);
+        std::copy_n(pixels+row,shift,output.pixels.data()+row+width-shift);
+    }
+    return output;
+}
+
+GrayImage blend_horizontal_gray(const float *first, const float *second,
+                                std::uint32_t width, std::uint32_t height) {
+    const auto count = extent(width,height);
+    if (width < 2) throw std::invalid_argument("blend requires width >=2");
+    finite_pixels(first,count);
+    finite_pixels(second,count);
+    const float inverse_width = 1.0f/static_cast<float>(width-1);
+    GrayImage output{width,height,std::vector<float>(count)};
+    for (std::uint32_t x = 0; x < width; ++x) {
+        const float t = std::clamp(static_cast<float>(x)*inverse_width,0.0f,1.0f);
+        const float a = std::abs(std::fma(t,2.0f,-1.0f));
+        const double a64 = a;
+        // 00a094dc..508 / 00a09588..5a4: widen before the square and
+        // double FMADD, multiply in double, then round the weight to float.
+        const float weight = static_cast<float>((a64*a64)*std::fma(-2.0,a64,3.0));
+        for (std::uint32_t y = 0; y < height; ++y) {
+            const auto i = static_cast<std::size_t>(y)*width+x;
+            const float difference = second[i]-first[i];
+            output.pixels[i] = std::fma(weight,difference,first[i]);
+        }
+    }
+    finite_result(output);
+    return output;
+}
+
 double calculate_flare_for_log(const float *pixels, std::size_t pixel_count,
                                 std::uint32_t channels) {
     if (!pixel_count || !channels || channels > 4 || pixel_count > kMaxSamples/channels) {
@@ -516,39 +556,60 @@ double prepare_local_mask_sigma(double low, double high, double epsilon, int sig
 }
 
 LocalToneMask build_local_tone_mask(const float *log_gray, std::uint32_t width,
-                                    std::uint32_t height, double epsilon, int sigma_mode) {
+                                    std::uint32_t height, double epsilon, int sigma_mode,
+                                    std::uint32_t boundary_mode) {
     const auto count = extent(width, height);
     if (count < 2 || !std::isfinite(epsilon) || epsilon <= 0.0 || epsilon > kDefaultEpsilon ||
-        sigma_mode < 0 || sigma_mode > 2) {
+        sigma_mode < 0 || sigma_mode > 2 || (boundary_mode != 2 && boundary_mode != 4)) {
         throw std::invalid_argument("invalid local tone mask parameters");
     }
     finite_pixels(log_gray, count);
-    GrayImage statistics_image{width, height, std::vector<float>(log_gray,log_gray+count)};
     const auto geometry = prepare_local_tone_geometry(width,height);
-    const auto statistics_level = geometry.statistics_level;
-    for (std::uint32_t level = 1; level <= statistics_level; ++level) {
-        const auto next = geometry.levels[level];
-        statistics_image = resize_gray(statistics_image.pixels.data(),statistics_image.width,
-                                       statistics_image.height,next.width,next.height);
+    struct PassResult {
+        GrayImage collapsed;
+        LogSceneStats source_stats;
+        LogSceneStats mask_stats;
+        double sigma;
+        std::uint32_t statistics_level;
+    };
+    const auto run_pass = [&](const float *pixels) {
+        GrayImage statistics_image{width, height, std::vector<float>(pixels,pixels+count)};
+        const auto statistics_level = geometry.statistics_level;
+        for (std::uint32_t level = 1; level <= statistics_level; ++level) {
+            const auto next = geometry.levels[level];
+            statistics_image = resize_gray(statistics_image.pixels.data(),statistics_image.width,
+                                           statistics_image.height,next.width,next.height);
+        }
+        const auto source_stats = build_log_scene_stats(statistics_image.pixels.data(),
+                                                        statistics_image.pixels.size(),epsilon);
+        const double sigma = prepare_local_mask_sigma(source_stats.low,source_stats.high,epsilon,sigma_mode);
+        // The anchor endpoints are evaluated in f32 by 00a0c1c8/00a0b650.
+        const float median = static_cast<float>(source_stats.median);
+        const float low = std::max(static_cast<float>(source_stats.low),median-20.0f);
+        const float high = std::min(static_cast<float>(source_stats.high),median+20.0f);
+        LogSceneStats mask_stats{};
+        auto collapsed = local_laplacian_gray(pixels,width,height,low,high,1.0,0.0,sigma,
+                                              &mask_stats,statistics_level,epsilon);
+        return PassResult{std::move(collapsed),source_stats,mask_stats,sigma,statistics_level};
+    };
+    auto pass = run_pass(log_gray);
+    if (boundary_mode == 4 && width >= 2) {
+        const auto swapped = swap_left_right_gray(log_gray,width,height);
+        auto second = run_pass(swapped.pixels.data());
+        const auto restored = swap_left_right_gray(second.collapsed.pixels.data(),width,height,true);
+        second.collapsed = blend_horizontal_gray(pass.collapsed.pixels.data(),restored.pixels.data(),width,height);
+        // 00a0855c calls 00a0889c twice with the same stats/remapper pointers.
+        // Keep the second writes: neither the first stats nor blend stats.
+        pass = std::move(second);
     }
-    const auto source_stats = build_log_scene_stats(statistics_image.pixels.data(),
-                                                    statistics_image.pixels.size(),epsilon);
-    const double sigma = prepare_local_mask_sigma(source_stats.low,source_stats.high,epsilon,sigma_mode);
-    // The anchor endpoints are evaluated in f32 by 00a0c1c8/00a0b650.
-    const float median = static_cast<float>(source_stats.median);
-    const float low = std::max(static_cast<float>(source_stats.low),median-20.0f);
-    const float high = std::min(static_cast<float>(source_stats.high),median+20.0f);
-    LogSceneStats mask_stats{};
-    const auto collapsed = local_laplacian_gray(log_gray,width,height,low,high,1.0,0.0,sigma,
-                                                &mask_stats,statistics_level,epsilon);
-    auto delta = build_delta_mask(log_gray,collapsed.pixels.data(),width,height,
-                                  source_stats.center,mask_stats.center);
-    const double shift = source_stats.center-mask_stats.center;
-    auto aligned = mask_stats;
+    auto delta = build_delta_mask(log_gray,pass.collapsed.pixels.data(),width,height,
+                                  pass.source_stats.center,pass.mask_stats.center);
+    const double shift = pass.source_stats.center-pass.mask_stats.center;
+    auto aligned = pass.mask_stats;
     aligned.center += shift;
     aligned.low += shift;
     aligned.high += shift;
-    return {std::move(delta),source_stats,mask_stats,aligned,sigma,statistics_level};
+    return {std::move(delta),pass.source_stats,pass.mask_stats,aligned,pass.sigma,pass.statistics_level};
 }
 
 }  // namespace imprint::acr

@@ -1,6 +1,6 @@
 # ACR CPU 重建与本机验证
 
-更新：2026-11-08。本文记录已验证的局部CPU能力及产品入口；完整ACR
+更新：2026-11-09。本文记录已验证的局部CPU能力及产品入口；完整ACR
 高光/RAW管线尚未完成。GPU实现等待ACR GPU pipeline分析完成。
 
 ## 用户可验证的入口
@@ -237,3 +237,73 @@ IDs43–66的version分支均为true、准入均转mono/gray分支。后续Look�
 证据：`research/acr/reports/evidence/2026-11-08-photo-hsl-product/`。
 完整高光Stage4/Camera/EV90/epsilon同请求绑定与最终高光TIFF回归仍未完成；
 GPU分析/实现未开始。
+
+## 2026-11-09：高光 guide 的 mode4 双遍正式实现
+
+在正式 `native-renderer/src/acr_tone_kernels.cpp/.hpp` 实现保存函数
+`a0855c → a08b54/a08cc8/a08e8c → a09134/a09264` 的prepared子域：
+
+1. 普通局部mask pass；
+2. guide每行向左循环位移`ceil(width/2)`，不是左右翻转；
+3. 第二次普通pass，重新计算统计与sigma；
+4. 第二幅collapse结果逆向位移`floor(width/2)`，奇数宽度不能用同一位移；
+5. 按水平权重混合，再与原guide生成delta。
+
+`t=clamp(float(x)*(1.f/float(width-1)),0,1)`，`a=abs(fmaf(t,2,-1))`；
+权重在double计算`(a*a)*fma(-2,a,3)`再转float，最终为
+`fmaf(weight, second-first, first)`。端点也执行减法与FMA，不能直接copy second。
+最终source/mask统计和sigma保留**第二pass**的写入，不使用第一pass，也不对
+blend重新BuildStats。boundary4且width1依原gate使用普通pass；其它unsupported
+boundary仍拒绝。现有boundary2运算顺序、旧测试和默认行为保持。
+
+`native-renderer/src/acr_guide_camera_black.cpp` 的prepared Camera→log→mask
+同调用组合已经消费新分支；失败保持整个旧result、输入与request不变。
+
+新增正式 `native-renderer/src/acr_guide_mask_api.cpp`：
+`im_native_acr_guide_mask_prepared_f32`，以及 `src/native_renderer.py` 的
+`native_acr_guide_mask_prepared`，可直接调用而非只存在研究probe：
+
+```python
+from native_renderer import native_acr_guide_mask_prepared
+
+# log_guide 是已正确准备的 float32 HxW log guide，epsilon 来自同一准备状态；
+# 不是直接将普通预览RGB或LibRaw数组当作Adobe Stage4。
+delta, diagnostics = native_acr_guide_mask_prepared(
+    log_guide, epsilon, sigma_mode=1, boundary_mode=4,
+)
+```
+
+支持完整zero-origin、每轴≤65535、2..2^26个finite像素；明确传epsilon、sigma
+和boundary，不猜source请求。返回delta及20项诊断：三组六项统计
+`[center,low,high,median,count,fallback]`，然后sigma与statistics_level。
+不是完整33项Adobe BuildStats。buffer misalignment、地址回绕、重叠、非法参数
+及晚NaN失败时两个输出均保持；Python无算术fallback。
+
+实际验证：
+
+- 保存指令/新bounded raw核对1,060个唯一word；七个callee均来自已有SQLite
+  反编译缓存，**新反编译0**。新增7份有界反汇编，未启动Ghidra/Adobe或改工程。
+- 保留原blend完整body（219个word＋显式adapter）执行264,112像素，与独立
+  公式逐bit一致；scalar片段128值一致；swap构造28组通过。链接产物另外核
+  219＋69个保留word与原切片一致，wrapper替换与覆盖限制单独记录。
+- 相关source/正式object/公开ABI/Python测试 **313 passed**；新fixed-bit
+  CTest见证、15组双遍mask、width1与非法输入检查通过；非GPU CTest **32/32**。
+- ASan+UBSan检查swap/blend、双遍mask及正式ABI失败原子性，exit0、stderr空；
+  macOS leak detector关闭，不认领完整闭源函数的sanitizer证明。
+- 新库重跑已有70组HSL和13组色轮TIFF，指标与上一检查点相同。没有mode4
+  Adobe配对TIFF，不能把这组颜色回归称为mode4或完整高光等价验证。
+- 四RAW×两来源inspection及既有预览接受/拒绝回归保持；两张可用RAW的6次
+  导入/重复/同控件手动预览响应hash与前检查点相同。8个RAW/sidecar与85张
+  TIFF指纹保持。新库SHA-256：
+  `06e0b8df963e1fbf0540d871bc695b98853cad8cd3bd5e6f4ccce8e89c9e5a92`。
+- 全量pytest实际 **5782 passed、5 failed**（162.85秒），仍为前述五项相同
+  失败断言。没有删除、跳过或弱化测试。CMake构建、py_compile、diff检查通过。
+
+本轮未改Vue、HTTP高光开关或DNG导出；未装新依赖。打包沿用现有native library
+收集和`native_renderer` hidden import；CI CMake源与cache哈希自动包含新文件。
+没有重打安装包或Windows实机验证。证据目录：
+`research/acr/reports/evidence/2026-11-09-guide-mode4/`。
+
+**完成的是mode4 prepared算子，不是完整CPU高光验收。** 真实source/Stage4、
+guide默认Profile/Camera、EV90/epsilon同请求绑定、非零原点/ROI、跨层mask和
+最终高光TIFF仍未完成；没有据此开始GPU分析或实现。

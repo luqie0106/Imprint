@@ -53,6 +53,16 @@ GrayImage resize_gray(const float *pixels, std::uint32_t width,
                       std::uint32_t height, std::uint32_t output_width,
                       std::uint32_t output_height);
 
+// Prepared zero-origin mode4 components (00a08cc8/00a08e8c, 00a09264).
+// Swap rotates each row left by ceil(width/2), or floor(width/2) for inverse;
+// odd-width forward is not self-inverse. Copies preserve the input float bits.
+// Blend uses the recovered float/double smooth horizontal weight and explicit
+// FMA ordering. Both require width >=2 and finite, complete compact images.
+GrayImage swap_left_right_gray(const float *pixels, std::uint32_t width,
+                               std::uint32_t height, bool inverse = false);
+GrayImage blend_horizontal_gray(const float *first, const float *second,
+                                std::uint32_t width, std::uint32_t height);
+
 // Input is the already normalized image entering CalculateFlareForLog;
 // caller is responsible for the preceding black/precision stages. Returns
 // the stored flare field, which may be zero. It is not yet log's epsilon.
@@ -112,7 +122,13 @@ struct LocalToneMask {
 // Native chain from an already prepared log guide: Gaussian/BuildStats,
 // adaptive sigma, incremental remap/collapse callback, BuildDeltaMask. This
 // still excludes source image/color preparation and the final SH mapping.
+// Complete zero-origin images only. Boundary2 is the ordinary single pass;
+// boundary4 with width >=2 adds a swapped second pass and horizontal blend.
+// Delta/alignment retain the second pass's source/collapse statistics, not
+// statistics rebuilt from the blend. Width1 boundary4 uses the ordinary pass.
+// Other boundary modes are rejected; sigma mode is independent of boundary.
 LocalToneMask build_local_tone_mask(const float *log_gray, std::uint32_t width,
-                                    std::uint32_t height, double epsilon, int sigma_mode);
+                                    std::uint32_t height, double epsilon, int sigma_mode,
+                                    std::uint32_t boundary_mode = 2);
 
 }  // namespace imprint::acr

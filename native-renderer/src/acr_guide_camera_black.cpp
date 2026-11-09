@@ -542,7 +542,8 @@ GuideCameraBlackStatus apply_guide_local_mask_prepared(
     if (height <= 0 || width <= 0 || height > 65535 || width > 65535 ||
         (height == 1 && width == 1))
         return Status::invalid_dimensions;
-    if (request.boundary_mode != 2u) return Status::unsupported_boundary;
+    if (request.boundary_mode != 2u && request.boundary_mode != 4u)
+        return Status::unsupported_boundary;
     if (request.sigma_mode < 0 || request.sigma_mode > 2) return Status::invalid_controls;
     // The stricter prefix's active-RGB limit is checked before allocation.
     if (std::uint64_t{static_cast<std::uint32_t>(height)} *
@@ -556,7 +557,7 @@ GuideCameraBlackStatus apply_guide_local_mask_prepared(
             height,width,candidate.request.guide,candidate.guide);
         if (status != Status::ok) return status;
         candidate.mask = build_local_tone_mask(candidate.guide.log_gray.data(),width,height,
-            candidate.request.guide.source_epsilon,candidate.request.sigma_mode);
+            candidate.request.guide.source_epsilon,candidate.request.sigma_mode,candidate.request.boundary_mode);
         if (candidate.mask.delta.width != static_cast<std::uint32_t>(width) ||
             candidate.mask.delta.height != static_cast<std::uint32_t>(height) ||
             candidate.mask.statistics_level != candidate.geometry.statistics_level)

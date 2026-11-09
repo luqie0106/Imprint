@@ -278,6 +278,26 @@ extern "C" int acr_test_local_tone_geometry(std::uint32_t width,std::uint32_t he
     } catch (...) { return 1; }
 }
 
+extern "C" int acr_test_swap_left_right(const float* src,std::uint32_t width,
+    std::uint32_t height,std::uint32_t inverse,float* dst,std::size_t dst_count) noexcept {
+    if (!dst || inverse > 1u || std::uint64_t{width}*height > dst_count) return 1;
+    try {
+        const auto candidate=imprint::acr::swap_left_right_gray(src,width,height,inverse!=0u);
+        std::copy(candidate.pixels.begin(),candidate.pixels.end(),dst);
+        return 0;
+    } catch (...) { return 1; }
+}
+
+extern "C" int acr_test_blend_horizontal(const float* first,const float* second,
+    std::uint32_t width,std::uint32_t height,float* dst,std::size_t dst_count) noexcept {
+    if (!dst || std::uint64_t{width}*height > dst_count) return 1;
+    try {
+        const auto candidate=imprint::acr::blend_horizontal_gray(first,second,width,height);
+        std::copy(candidate.pixels.begin(),candidate.pixels.end(),dst);
+        return 0;
+    } catch (...) { return 1; }
+}
+
 extern "C" int acr_test_guide_source_route(std::uint32_t profile_present,
     std::uint32_t ad9,std::uint32_t adb,std::uint32_t presence_mask,
     std::uint32_t strength,std::uint32_t cached_level,std::uint32_t request_level,
